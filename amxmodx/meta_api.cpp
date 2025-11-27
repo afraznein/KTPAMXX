@@ -153,6 +153,7 @@ int FF_ClientDisconnect = -1;
 int FF_ClientDisconnected = -1;
 int FF_ClientRemove = -1;
 int FF_ClientInfoChanged = -1;
+int FF_ClientCvarChanged = -1;  // KTP Custom: Real-time cvar change notification
 int FF_ClientPutInServer = -1;
 int FF_PluginInit = -1;
 int FF_PluginCfg = -1;
@@ -518,6 +519,7 @@ int	C_Spawn(edict_t *pent)
 	FF_ClientDisconnected = registerForward("client_disconnected", ET_IGNORE, FP_CELL, FP_CELL, FP_ARRAY, FP_CELL, FP_DONE);
 	FF_ClientRemove = registerForward("client_remove", ET_IGNORE, FP_CELL, FP_CELL, FP_STRING, FP_DONE);
 	FF_ClientInfoChanged = registerForward("client_infochanged", ET_IGNORE, FP_CELL, FP_DONE);
+	FF_ClientCvarChanged = registerForward("client_cvar_changed", ET_IGNORE, FP_CELL, FP_STRING, FP_STRING, FP_DONE);  // KTP Custom
 	FF_ClientPutInServer = registerForward("client_putinserver", ET_IGNORE, FP_CELL, FP_DONE);
 	FF_PluginCfg = registerForward("plugin_cfg", ET_IGNORE, FP_DONE);
 	FF_PluginPrecache = registerForward("plugin_precache", ET_IGNORE, FP_DONE);
@@ -1053,6 +1055,16 @@ void C_ClientUserInfoChanged_Post(edict_t *pEntity, char *infobuffer)
 		executeForwards(FF_ClientPutInServer, static_cast<cell>(pPlayer->index));
 	}
 
+	RETURN_META(MRES_IGNORED);
+}
+
+// KTP Custom: Real-time client cvar change notification
+// Called by ReHLDS when a client cvar query response is received
+// This enables real-time cvar validation without periodic polling
+void C_ClientCvarChanged(const edict_t *pEntity, const char *cvarName, const char *value)
+{
+	CPlayer *pPlayer = GET_PLAYER_POINTER(pEntity);
+	executeForwards(FF_ClientCvarChanged, static_cast<cell>(pPlayer->index), cvarName, value);
 	RETURN_META(MRES_IGNORED);
 }
 
@@ -1917,6 +1929,10 @@ C_DLLEXPORT int GetNewDLLFunctions(NEW_DLL_FUNCTIONS *pNewFunctionTable, int *in
 		gNewDLLFunctionTable.pfnCvarValue2 = C_CvarValue2;
 		g_NewDLL_Available = true;
 	}
+
+	// KTP Custom: Hook real-time client cvar change notification from ReHLDS
+	// This provides instant cvar validation without periodic polling
+	gNewDLLFunctionTable.pfnClientCvarChanged = C_ClientCvarChanged;
 
 	memcpy(pNewFunctionTable, &gNewDLLFunctionTable, sizeof(NEW_DLL_FUNCTIONS));
 

@@ -132,6 +132,23 @@ forward plugin_precache();
 forward client_infochanged(id);
 
 /**
+ * Called when a client cvar value changes (KTP Custom - requires KTPReHLDS).
+ *
+ * @note This forward provides real-time notification when any client cvar
+ *       value changes, including non-userinfo cvars like cl_cmdrate.
+ * @note This eliminates the need for periodic cvar polling and provides
+ *       instant detection for cvar validation/enforcement.
+ * @note Requires KTP-modified ReHLDS with pfnClientCvarChanged callback.
+ *
+ * @param id        Client index
+ * @param cvar      Name of the cvar that changed
+ * @param value     New value of the cvar
+ *
+ * @noreturn
+ */
+forward client_cvar_changed(id, const cvar[], const value[]);
+
+/**
  * Called when a client is connecting.
  *
  * @note This forward is called too early to do anything that directly affects
