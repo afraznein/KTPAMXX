@@ -88,3 +88,14 @@ plugins/compiled/
 *.amxx
 
 build_deps/
+
+# Local build scripts and configuration
+configure_build.bat
+configure_output.txt
+get-pip.py
+support/get-pip.py
+
+# Build dependencies (auto-cloned during build setup)
+metamod-am/
+support/ambuild/
+support/amxmodx/
