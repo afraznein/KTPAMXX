@@ -344,6 +344,7 @@ md -p JIT 2&gt;NUL
     <ClCompile Include="..\optimizer.cpp" />
     <ClCompile Include="..\power.cpp" />
     <ClCompile Include="..\sorting.cpp" />
+    <ClCompile Include="..\sm_crc32.cpp" />
     <ClCompile Include="..\srvcmd.cpp" />
     <ClCompile Include="..\stackstructs.cpp" />
     <ClCompile Include="..\string.cpp">
