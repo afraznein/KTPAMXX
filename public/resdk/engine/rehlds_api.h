@@ -207,6 +207,10 @@ typedef IHookChainRegistry<edict_t *, const char *> IRehldsHookRegistry_CreateFa
 typedef IHookChain<bool, netadr_t &, const uint8_t *, int> IRehldsHook_SV_CheckConnectionLessRateLimits;
 typedef IHookChainRegistry<bool, netadr_t &, const uint8_t *, int> IRehldsHookRegistry_SV_CheckConnectionLessRateLimits;
 
+//SV_Frame hook
+typedef IVoidHookChain<> IRehldsHook_SV_Frame;
+typedef IVoidHookChainRegistry<> IRehldsHookRegistry_SV_Frame;
+
 class IRehldsHookchains {
 public:
 	virtual ~IRehldsHookchains() { }
@@ -251,6 +255,7 @@ public:
 	virtual IRehldsHookRegistry_SV_EmitSound2* SV_EmitSound2() = 0;
 	virtual IRehldsHookRegistry_CreateFakeClient* CreateFakeClient() = 0;
 	virtual IRehldsHookRegistry_SV_CheckConnectionLessRateLimits* SV_CheckConnectionLessRateLimits() = 0;
+	virtual IRehldsHookRegistry_SV_Frame* SV_Frame() = 0;
 };
 
 struct RehldsFuncs_t {

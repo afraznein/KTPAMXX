@@ -77,7 +77,7 @@ int CPluginMngr::loadPluginsFromFile(const char* filename, bool warn)
 	// Find now folder
 	char pluginName[256], error[256], debug[256];
 	int debugFlag = 0;
-	const char *pluginsDir = get_localinfo("amxx_pluginsdir", "addons/amxmodx/plugins");
+	const char *pluginsDir = get_localinfo("amxx_pluginsdir", "addons/ktpamx/plugins");
 
 	char line[512];
 
@@ -784,7 +784,7 @@ void CPluginMngr::CALMFromFile(const char *file)
 			continue;
 		}
 
-		build_pathname_r(filename, sizeof(filename), "%s/%s", get_localinfo("amxx_pluginsdir", "addons/amxmodx/plugins"), pluginName);
+		build_pathname_r(filename, sizeof(filename), "%s/%s", get_localinfo("amxx_pluginsdir", "addons/ktpamx/plugins"), pluginName);
 
 		CacheAndLoadModules(filename);
 	}

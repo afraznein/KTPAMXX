@@ -645,7 +645,17 @@ SMCResult CGameConfig::ReadSMC_LeavingSection(const SMCStates *states)
 			{
 				if (strcmp(TempSig.library, "server") == 0)
 				{
-					addressInBase = reinterpret_cast<void*>(MDLL_Spawn);
+					// KTP: Get server library base address
+					// In Metamod mode, use MDLL_Spawn from gpGamedllFuncs
+					// In extension mode, use g_pGameEntityInterface from ReHLDS
+					if (g_bRunningWithMetamod)
+					{
+						addressInBase = reinterpret_cast<void*>(MDLL_Spawn);
+					}
+					else if (g_pGameEntityInterface && g_pGameEntityInterface->pfnSpawn)
+					{
+						addressInBase = reinterpret_cast<void*>(g_pGameEntityInterface->pfnSpawn);
+					}
 				}
 				else if (strcmp(TempSig.library, "engine") == 0)
 				{
@@ -745,7 +755,7 @@ bool CGameConfig::Reparse(char *error, size_t maxlength)
 	m_Addresses.clear();
 
 	char path[PLATFORM_MAX_PATH];
-	const char *dataDir = get_localinfo("amxx_datadir", "addons/amxmodx/data");
+	const char *dataDir = get_localinfo("amxx_datadir", "addons/ktpamx/data");
 
 	build_pathname_r(path, sizeof(path), "%s/gamedata/%s/master.games.txt", dataDir, m_File);
 
@@ -852,7 +862,7 @@ bool CGameConfig::Reparse(char *error, size_t maxlength)
 
 bool CGameConfig::EnterFile(const char *file, char *error, size_t maxlength)
 {
-	build_pathname_r(m_CurrentPath, sizeof(m_CurrentPath), "%s/gamedata/%s", get_localinfo("amxx_datadir", "addons/amxmodx/data"), file);
+	build_pathname_r(m_CurrentPath, sizeof(m_CurrentPath), "%s/gamedata/%s", get_localinfo("amxx_datadir", "addons/ktpamx/data"), file);
 
 	m_IgnoreLevel = 0;
 	m_ShouldBeReadingDefault = true;
@@ -1267,7 +1277,22 @@ bool CGameConfigManager::ResolveLibraryInfo(const char *library, void **baseAddr
 
 	if (!strcmp(library, "server"))
 	{
-		symbol = reinterpret_cast<void*>(MDLL_Spawn);
+		// KTP: Get server library base address
+		// In Metamod mode, use MDLL_Spawn from gpGamedllFuncs
+		// In extension mode, use g_pGameEntityInterface from ReHLDS
+		if (g_bRunningWithMetamod)
+		{
+			symbol = reinterpret_cast<void*>(MDLL_Spawn);
+		}
+		else if (g_pGameEntityInterface && g_pGameEntityInterface->pfnSpawn)
+		{
+			// Use pfnSpawn from game entity interface to find server DLL base
+			symbol = reinterpret_cast<void*>(g_pGameEntityInterface->pfnSpawn);
+		}
+		else
+		{
+			return false;
+		}
 	}
 	else if (!strcmp(library, "engine"))
 	{

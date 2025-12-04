@@ -1,7 +1,7 @@
 // vim: set ts=4 sw=4 tw=99 noet:
 //
-// AMX Mod X, based on AMX Mod by Aleksander Naszko ("OLO").
-// Copyright (C) The AMX Mod X Development Team.
+// KTP AMX, based on AMX Mod X by Aleksander Naszko ("OLO").
+// Copyright (C) The AMX Mod X Development Team, 2025 KTP.
 //
 // This software is licensed under the GNU General Public License, version 3 or higher.
 // Additional exceptions apply. For full license details, see LICENSE.txt or visit:
@@ -113,6 +113,17 @@ extern AMX_NATIVE_INFO g_GameConfigNatives[];
 #define SETCLIENTLISTENING  (*g_engfuncs.pfnVoice_SetClientListening)
 #define SETCLIENTMAXSPEED   (*g_engfuncs.pfnSetClientMaxspeed)
 
+// KTP: Game DLL function wrappers that work in both Metamod and extension mode
+// These use g_pGameEntityInterface which is set to either:
+// - gpGamedllFuncs->dllapi_table (Metamod mode)
+// - RehldsFuncs->GetEntityInterface() (ReHLDS extension mode)
+#define KTPAMX_ClientKill(pEntity)          (g_pGameEntityInterface ? g_pGameEntityInterface->pfnClientKill(pEntity) : (void)0)
+#define KTPAMX_ClientCommand(pEntity)       (g_pGameEntityInterface ? g_pGameEntityInterface->pfnClientCommand(pEntity) : (void)0)
+#define KTPAMX_ClientConnect(pE,n,a,r)      (g_pGameEntityInterface ? g_pGameEntityInterface->pfnClientConnect(pE,n,a,r) : 0)
+#define KTPAMX_ClientDisconnect(pEntity)    (g_pGameEntityInterface ? g_pGameEntityInterface->pfnClientDisconnect(pEntity) : (void)0)
+#define KTPAMX_ClientPutInServer(pEntity)   (g_pGameEntityInterface ? g_pGameEntityInterface->pfnClientPutInServer(pEntity) : (void)0)
+#define KTPAMX_Spawn(pEntity)               (g_pGameEntityInterface ? g_pGameEntityInterface->pfnSpawn(pEntity) : 0)
+
 #define MAX_BUFFER_LENGTH 16384
 
 char* UTIL_SplitHudMessage(register const char *src);
@@ -207,6 +218,9 @@ extern float g_game_timeleft;
 extern float g_task_time;
 extern float g_auth_time;
 extern bool g_NewDLL_Available;
+extern bool g_bRunningWithMetamod;        // KTP: True when running with Metamod
+extern bool g_bRehldsExtensionInit;       // KTP: True when initialized as ReHLDS extension
+extern DLL_FUNCTIONS *g_pGameEntityInterface;  // KTP: Game DLL functions - works in both modes
 extern hudtextparms_t g_hudset;
 //extern int g_edict_point;
 extern int g_players_num;
@@ -324,6 +338,15 @@ void Module_CacheFunctions();
 void Module_UncacheFunctions();
 
 void *Module_ReqFnptr(const char *funcName);	// modules.cpp
+
+// KTP: Module frame callback for modules that need per-frame processing (like cURL async)
+// This replaces Metamod's pfnStartFrame callback for modules in extension mode
+typedef void (*MODULEFRAMEFUNC)(void);
+
+// KTP: Module frame callback registration (modules.cpp)
+void MNF_RegModuleFrameFunc(MODULEFRAMEFUNC func);
+void MNF_UnregModuleFrameFunc(MODULEFRAMEFUNC func);
+void Module_ExecuteFrameCallbacks();
 
 // standard forwards
 // defined in meta_api.cpp

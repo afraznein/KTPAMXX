@@ -404,7 +404,7 @@ void UTIL_FakeClientCommand(edict_t *pEdict, const char *cmd, const char *arg1, 
 	// set the global "fake" flag so the Cmd_Arg* functions will be superceded
 	g_fakecmd.fake = true;
 	// tell the GameDLL that the client sent a command
-	MDLL_ClientCommand(pEdict);
+	KTPAMX_ClientCommand(pEdict);
 	// unset the global "fake" flag
 	g_fakecmd.fake = false;
 }

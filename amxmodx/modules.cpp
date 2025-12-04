@@ -828,7 +828,7 @@ bool LoadModule(const char *shortname, PLUG_LOADTIME now, bool simplify, bool no
 		pathString,
 		sizeof(pathString),
 		"%s/%s",
-		get_localinfo("amxx_modulesdir", "addons/amxmodx/modules"),
+		get_localinfo("amxx_modulesdir", "addons/ktpamx/modules"),
 		shortname);
 
 	if (simplify)
@@ -911,7 +911,7 @@ bool LoadModule(const char *shortname, PLUG_LOADTIME now, bool simplify, bool no
 	{
 		char *mmpathname = build_pathname_addons(
 							"%s/%s",
-							get_localinfo("amxx_modulesdir", "addons/amxmodx/modules"),
+							get_localinfo("amxx_modulesdir", "addons/ktpamx/modules"),
 							shortname);
 		ConvertModuleName(mmpathname, path);
 		module->attachMetamod(path, now);
@@ -1595,6 +1595,48 @@ cell MNF_PrepareCharArray(char *ptr, unsigned int size)
 
 ke::Vector<ke::AutoPtr<func_s>> g_functions;
 
+// KTP: Module frame callbacks for modules that need per-frame processing (like cURL async)
+ke::Vector<MODULEFRAMEFUNC> g_moduleFrameCallbacks;
+
+void MNF_RegModuleFrameFunc(MODULEFRAMEFUNC func)
+{
+	if (!func)
+		return;
+
+	// Check if already registered
+	for (size_t i = 0; i < g_moduleFrameCallbacks.length(); i++)
+	{
+		if (g_moduleFrameCallbacks[i] == func)
+			return;
+	}
+
+	g_moduleFrameCallbacks.append(func);
+}
+
+void MNF_UnregModuleFrameFunc(MODULEFRAMEFUNC func)
+{
+	if (!func)
+		return;
+
+	for (size_t i = 0; i < g_moduleFrameCallbacks.length(); i++)
+	{
+		if (g_moduleFrameCallbacks[i] == func)
+		{
+			g_moduleFrameCallbacks.remove(i);
+			return;
+		}
+	}
+}
+
+void Module_ExecuteFrameCallbacks()
+{
+	for (size_t i = 0; i < g_moduleFrameCallbacks.length(); i++)
+	{
+		if (g_moduleFrameCallbacks[i])
+			g_moduleFrameCallbacks[i]();
+	}
+}
+
 // Fnptr Request function for the new interface
 const char *g_LastRequestedFunc = NULL;
 #define REGISTER_FUNC(name, func) \
@@ -1630,6 +1672,7 @@ void *MNF_RegisterFunctionEx(void *pfn, const char *description)
 void Module_UncacheFunctions()
 {
 	g_functions.clear();
+	g_moduleFrameCallbacks.clear();  // KTP: Clear module frame callbacks
 }
 
 int MNF_SetPlayerTeamInfo(int player, int teamid, const char *teamname)
@@ -1751,8 +1794,24 @@ IGameConfigManager *MNF_GetConfigManager()
 	return &ConfigManager;
 }
 
+// KTP: Return pointer to engine functions for modules that need direct engine access
+enginefuncs_t* MNF_GetEngineFuncs()
+{
+	return &g_engfuncs;
+}
+
+// KTP: Return pointer to global variables for modules
+globalvars_t* MNF_GetGlobalVars()
+{
+	return gpGlobals;
+}
+
 void Module_CacheFunctions()
 {
+	// KTP: Engine function access for modules like ReAPI
+	REGISTER_FUNC("GetEngineFuncs", MNF_GetEngineFuncs)
+	REGISTER_FUNC("GetGlobalVars", MNF_GetGlobalVars)
+
 	REGISTER_FUNC("BuildPathname", build_pathname)
 	REGISTER_FUNC("BuildPathnameR", build_pathname_r)
 	REGISTER_FUNC("PrintSrvConsole", print_srvconsole)
@@ -1764,6 +1823,10 @@ void Module_CacheFunctions()
 	REGISTER_FUNC("RegisterFunction", MNF_RegisterFunction);
 	REGISTER_FUNC("RegisterFunctionEx", MNF_RegisterFunctionEx);
 	REGISTER_FUNC("GetConfigManager", MNF_GetConfigManager);
+
+	// KTP: Module frame callbacks for modules that need per-frame processing (like cURL)
+	REGISTER_FUNC("RegModuleFrameFunc", MNF_RegModuleFrameFunc);
+	REGISTER_FUNC("UnregModuleFrameFunc", MNF_UnregModuleFrameFunc);
 
 	// Amx scripts loading / unloading / managing
 	REGISTER_FUNC("GetAmxScript", MNF_GetAmxScript)

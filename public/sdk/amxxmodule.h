@@ -78,10 +78,14 @@ struct amxx_module_info_s
 // The next section is copied from the amx.h file
 // Copyright (c) ITB CompuPhase, 1997-2005
 
-#if defined HAVE_STDINT_H
+/* Use stdint.h for modern compilers */
+#if defined HAVE_STDINT_H || defined _MSC_VER || defined __GNUC__ || defined LINUX || defined __APPLE__
   #include <stdint.h>
+  #if !defined HAVE_STDINT_H
+    #define HAVE_STDINT_H
+  #endif
 #else
-  #if defined __LCC__ || defined __DMC__ || defined LINUX || defined __APPLE__
+  #if defined __LCC__ || defined __DMC__
     #if defined HAVE_INTTYPES_H
       #include <inttypes.h>
     #else
@@ -2223,6 +2227,11 @@ typedef void *			(*PFN_REGISTERFUNCTIONEX)		(void * /*pfn*/, const char * /*desc
 typedef void			(*PFN_MESSAGE_BLOCK)			(int /* mode */, int /* message */, int * /* opt */);
 typedef IGameConfigManager* (*PFN_GET_CONFIG_MANAGER)   ();
 
+// KTP: Module frame callback for per-frame processing (like cURL async)
+typedef void (*MODULEFRAMEFUNC)(void);
+typedef void			(*PFN_REG_MODULE_FRAME_FUNC)	(MODULEFRAMEFUNC);
+typedef void			(*PFN_UNREG_MODULE_FRAME_FUNC)	(MODULEFRAMEFUNC);
+
 extern PFN_ADD_NATIVES				g_fn_AddNatives;
 extern PFN_ADD_NEW_NATIVES			g_fn_AddNewNatives;
 extern PFN_BUILD_PATHNAME			g_fn_BuildPathname;
@@ -2304,6 +2313,10 @@ extern PFN_AMX_REREGISTER			g_fn_AmxReRegister;
 extern PFN_REGISTERFUNCTIONEX		g_fn_RegisterFunctionEx;
 extern PFN_MESSAGE_BLOCK			g_fn_MessageBlock;
 extern PFN_GET_CONFIG_MANAGER		g_fn_GetConfigManager;
+
+// KTP: Module frame callback functions
+extern PFN_REG_MODULE_FRAME_FUNC	g_fn_RegModuleFrameFunc;
+extern PFN_UNREG_MODULE_FRAME_FUNC	g_fn_UnregModuleFrameFunc;
 
 #ifdef MAY_NEVER_BE_DEFINED
 // Function prototypes for intellisense and similar systems
@@ -2466,6 +2479,10 @@ void MF_LogError(AMX *amx, int err, const char *fmt, ...);
 #define MF_RegisterFunctionEx g_fn_RegisterFunctionEx
 #define MF_MessageBlock g_fn_MessageBlock
 #define MF_GetConfigManager g_fn_GetConfigManager
+
+// KTP: Module frame callback macros
+#define MF_RegModuleFrameFunc g_fn_RegModuleFrameFunc
+#define MF_UnregModuleFrameFunc g_fn_UnregModuleFrameFunc
 
 #ifdef MEMORY_TEST
 /*** Memory ***/

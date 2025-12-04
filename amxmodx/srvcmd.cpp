@@ -68,7 +68,7 @@ void amx_command()
 	{
 		if (CMD_ARGC() < 3)
 		{
-			print_srvconsole("Usage: amxx plugin [ id ]\nFor a list of plugins, use the \"amxx plugins\" command\n");
+			print_srvconsole("Usage: amx plugin [ id ]\nFor a list of plugins, use the \"amx plugins\" command\n");
 		}
 		else
 		{
@@ -208,14 +208,15 @@ void amx_command()
 	else if (!strcmp(cmd, "version"))
 	{
 		print_srvconsole("%s %s (%s)\n", Plugin_info.name, Plugin_info.version, Plugin_info.url);
-		print_srvconsole("Authors:\n\tDavid \"BAILOPAN\" Anderson, Pavol \"PM OnoTo\" Marko\n");
+		print_srvconsole("Author:\n\tTony 'Nein_' (https://github.com/afraznein)\n");
+		print_srvconsole("Based on AMX Mod X by:\n\tDavid \"BAILOPAN\" Anderson, Pavol \"PM OnoTo\" Marko\n");
 		print_srvconsole("\tFelix \"SniperBeamer\" Geyer, Jonny \"Got His Gun\" Bergstrom\n");
 		print_srvconsole("\tLukasz \"SidLuke\" Wlasinski, Christian \"Basic-Master\" Hammacher\n");
 		print_srvconsole("\tBorja \"faluco\" Ferrer, Scott \"DS\" Ehlert\n");
 		print_srvconsole("Compiled: %s\n", AMXX_BUILD_TIME);
 #if defined(AMXX_GENERATED_BUILD)
-		print_srvconsole("Built from: https://github.com/alliedmodders/amxmodx/commit/%s\n", AMXX_SHA);
-		print_srvconsole("Build ID: %s:%s\n", AMXX_LOCAL_REV, AMXX_SHA);
+		print_srvconsole("Built from: https://github.com/afraznein/KTPAMXX/commit/%s\n", AMXX_SHA);
+		print_srvconsole("Build ID: %s\n", AMXX_SHA);
 #endif
 #if defined JIT && !defined ASM32
 		print_srvconsole("Core mode: JIT Only\n");
@@ -286,14 +287,14 @@ void amx_command()
 	}
 	else
 	{
-		print_srvconsole("Usage: amxx < command > [ argument ]\n");
+		print_srvconsole("Usage: amx < command > [ argument ]\n");
 		print_srvconsole("Commands:\n");
-		print_srvconsole("   version                    - display amxx version info\n");
+		print_srvconsole("   version                    - display KTP AMX version info\n");
 		print_srvconsole("   gpl                        - print the license\n");
 		print_srvconsole("   plugins [ criteria ]       - list plugins currently loaded or ones matching given search criteria\n");
 		print_srvconsole("   plugin [ id ]              - information about a plugin\n");
 		print_srvconsole("   modules                    - list modules currently loaded\n");
-		print_srvconsole("   cvars [ plugin ] [ index ] - list cvars handled by amxx or show information about a cvar if index is provided\n");
+		print_srvconsole("   cvars [ plugin ] [ index ] - list cvars handled by KTP AMX or show information about a cvar if index is provided\n");
 		print_srvconsole("   cmds [ plugin ]            - list commands registered by plugins\n");
 		print_srvconsole("   pause < plugin >           - pause a running plugin\n");
 		print_srvconsole("   unpause < plugin >         - unpause a previously paused plugin\n");

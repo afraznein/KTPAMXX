@@ -14,75 +14,75 @@ ModPackages = {
 }
 
 folder_list = [
-    'base/addons/amxmodx',
-    'base/addons/amxmodx/configs',
-    'base/addons/amxmodx/data',
-    'base/addons/amxmodx/data/gamedata',
-    'base/addons/amxmodx/data/gamedata/common.games',
-    'base/addons/amxmodx/data/gamedata/common.games/entities.games',
-    'base/addons/amxmodx/data/gamedata/common.games/entities.games/cstrike',
-    'base/addons/amxmodx/data/gamedata/common.games/entities.games/dod',
-    'base/addons/amxmodx/data/gamedata/common.games/entities.games/tfc',
-    'base/addons/amxmodx/data/gamedata/common.games/entities.games/gearbox',
-    'base/addons/amxmodx/data/gamedata/common.games/entities.games/valve',
-    'base/addons/amxmodx/data/gamedata/common.games/hostages.games',
-    'base/addons/amxmodx/data/gamedata/common.games/hostages.games/cstrike',
-    'base/addons/amxmodx/data/gamedata/common.games/others.games',
-    'base/addons/amxmodx/data/gamedata/common.games/others.games/cstrike',
-    'base/addons/amxmodx/data/gamedata/common.games/gamerules.games',
-    'base/addons/amxmodx/data/gamedata/common.games/gamerules.games/cstrike',
-    'base/addons/amxmodx/data/gamedata/common.games/gamerules.games/dod',
-    'base/addons/amxmodx/data/gamedata/common.games/gamerules.games/tfc',
-    'base/addons/amxmodx/data/gamedata/common.games/gamerules.games/gearbox',
-    'base/addons/amxmodx/data/gamedata/common.games/gamerules.games/valve',
-    'base/addons/amxmodx/data/gamedata/common.games/virtual.games',
-    'base/addons/amxmodx/data/gamedata/common.games/virtual.games/ag',
-    'base/addons/amxmodx/data/gamedata/common.games/virtual.games/cstrike',
-    'base/addons/amxmodx/data/gamedata/common.games/virtual.games/dod',
-    'base/addons/amxmodx/data/gamedata/common.games/virtual.games/esf',
-    'base/addons/amxmodx/data/gamedata/common.games/virtual.games/esf_openbeta',
-    'base/addons/amxmodx/data/gamedata/common.games/virtual.games/gearbox',
-    'base/addons/amxmodx/data/gamedata/common.games/virtual.games/ns',
-    'base/addons/amxmodx/data/gamedata/common.games/virtual.games/svencoop',
-    'base/addons/amxmodx/data/gamedata/common.games/virtual.games/tfc',
-    'base/addons/amxmodx/data/gamedata/common.games/virtual.games/ts',
-    'base/addons/amxmodx/data/gamedata/common.games/virtual.games/valve',
-    'base/addons/amxmodx/data/gamedata/modules.games',
-    'base/addons/amxmodx/data/lang',
-    'base/addons/amxmodx/dlls',
-    'base/addons/amxmodx/logs',
-    'base/addons/amxmodx/modules',
-    'base/addons/amxmodx/plugins',
-    'base/addons/amxmodx/scripting',
-    'base/addons/amxmodx/scripting/include',
-    'base/addons/amxmodx/scripting/testsuite',
-    'cstrike/addons/amxmodx/configs',
-    'cstrike/addons/amxmodx/data',
-    'cstrike/addons/amxmodx/plugins',
-    'cstrike/addons/amxmodx/modules',
-    'cstrike/addons/amxmodx/scripting',
-    'dod/addons/amxmodx/configs',
-    'dod/addons/amxmodx/data',
-    'dod/addons/amxmodx/plugins',
-    'dod/addons/amxmodx/modules',
-    'dod/addons/amxmodx/scripting',
-    'esf/addons/amxmodx/configs',
-    'esf/addons/amxmodx/plugins',
-    'esf/addons/amxmodx/scripting',
-    'ns/addons/amxmodx/configs',
-    'ns/addons/amxmodx/plugins',
-    'ns/addons/amxmodx/modules',
-    'ns/addons/amxmodx/scripting',
-    'tfc/addons/amxmodx/configs',
-    'tfc/addons/amxmodx/data',
-    'tfc/addons/amxmodx/plugins',
-    'tfc/addons/amxmodx/modules',
-    'tfc/addons/amxmodx/scripting',
-    'ts/addons/amxmodx/configs',
-    'ts/addons/amxmodx/data',
-    'ts/addons/amxmodx/plugins',
-    'ts/addons/amxmodx/modules',
-    'ts/addons/amxmodx/scripting',
+    'base/addons/ktpamx',
+    'base/addons/ktpamx/configs',
+    'base/addons/ktpamx/data',
+    'base/addons/ktpamx/data/gamedata',
+    'base/addons/ktpamx/data/gamedata/common.games',
+    'base/addons/ktpamx/data/gamedata/common.games/entities.games',
+    'base/addons/ktpamx/data/gamedata/common.games/entities.games/cstrike',
+    'base/addons/ktpamx/data/gamedata/common.games/entities.games/dod',
+    'base/addons/ktpamx/data/gamedata/common.games/entities.games/tfc',
+    'base/addons/ktpamx/data/gamedata/common.games/entities.games/gearbox',
+    'base/addons/ktpamx/data/gamedata/common.games/entities.games/valve',
+    'base/addons/ktpamx/data/gamedata/common.games/hostages.games',
+    'base/addons/ktpamx/data/gamedata/common.games/hostages.games/cstrike',
+    'base/addons/ktpamx/data/gamedata/common.games/others.games',
+    'base/addons/ktpamx/data/gamedata/common.games/others.games/cstrike',
+    'base/addons/ktpamx/data/gamedata/common.games/gamerules.games',
+    'base/addons/ktpamx/data/gamedata/common.games/gamerules.games/cstrike',
+    'base/addons/ktpamx/data/gamedata/common.games/gamerules.games/dod',
+    'base/addons/ktpamx/data/gamedata/common.games/gamerules.games/tfc',
+    'base/addons/ktpamx/data/gamedata/common.games/gamerules.games/gearbox',
+    'base/addons/ktpamx/data/gamedata/common.games/gamerules.games/valve',
+    'base/addons/ktpamx/data/gamedata/common.games/virtual.games',
+    'base/addons/ktpamx/data/gamedata/common.games/virtual.games/ag',
+    'base/addons/ktpamx/data/gamedata/common.games/virtual.games/cstrike',
+    'base/addons/ktpamx/data/gamedata/common.games/virtual.games/dod',
+    'base/addons/ktpamx/data/gamedata/common.games/virtual.games/esf',
+    'base/addons/ktpamx/data/gamedata/common.games/virtual.games/esf_openbeta',
+    'base/addons/ktpamx/data/gamedata/common.games/virtual.games/gearbox',
+    'base/addons/ktpamx/data/gamedata/common.games/virtual.games/ns',
+    'base/addons/ktpamx/data/gamedata/common.games/virtual.games/svencoop',
+    'base/addons/ktpamx/data/gamedata/common.games/virtual.games/tfc',
+    'base/addons/ktpamx/data/gamedata/common.games/virtual.games/ts',
+    'base/addons/ktpamx/data/gamedata/common.games/virtual.games/valve',
+    'base/addons/ktpamx/data/gamedata/modules.games',
+    'base/addons/ktpamx/data/lang',
+    'base/addons/ktpamx/dlls',
+    'base/addons/ktpamx/logs',
+    'base/addons/ktpamx/modules',
+    'base/addons/ktpamx/plugins',
+    'base/addons/ktpamx/scripting',
+    'base/addons/ktpamx/scripting/include',
+    'base/addons/ktpamx/scripting/testsuite',
+    'cstrike/addons/ktpamx/configs',
+    'cstrike/addons/ktpamx/data',
+    'cstrike/addons/ktpamx/plugins',
+    'cstrike/addons/ktpamx/modules',
+    'cstrike/addons/ktpamx/scripting',
+    'dod/addons/ktpamx/configs',
+    'dod/addons/ktpamx/data',
+    'dod/addons/ktpamx/plugins',
+    'dod/addons/ktpamx/modules',
+    'dod/addons/ktpamx/scripting',
+    'esf/addons/ktpamx/configs',
+    'esf/addons/ktpamx/plugins',
+    'esf/addons/ktpamx/scripting',
+    'ns/addons/ktpamx/configs',
+    'ns/addons/ktpamx/plugins',
+    'ns/addons/ktpamx/modules',
+    'ns/addons/ktpamx/scripting',
+    'tfc/addons/ktpamx/configs',
+    'tfc/addons/ktpamx/data',
+    'tfc/addons/ktpamx/plugins',
+    'tfc/addons/ktpamx/modules',
+    'tfc/addons/ktpamx/scripting',
+    'ts/addons/ktpamx/configs',
+    'ts/addons/ktpamx/data',
+    'ts/addons/ktpamx/plugins',
+    'ts/addons/ktpamx/modules',
+    'ts/addons/ktpamx/scripting',
 ]
 
 def split_all(path):
@@ -116,7 +116,7 @@ def CopyFiles(src, dest, files):
 
 # Copy core dlls.
 for dll in AMXX.binaries:
-  copy_binary(dll, folder_map['base/addons/amxmodx/dlls'])
+  copy_binary(dll, folder_map['base/addons/ktpamx/dlls'])
 
 # Copy modules.
 for module in AMXX.modules:
@@ -125,25 +125,25 @@ for module in AMXX.modules:
     package = ModPackages[parts[1]]
   else:
     package = 'base'
-  copy_binary(module, folder_map[package + '/addons/amxmodx/modules'])
+  copy_binary(module, folder_map[package + '/addons/ktpamx/modules'])
 
 # Copy the compiler.
-builder.AddCopy(AMXX.amxxpc.binary, folder_map['base/addons/amxmodx/scripting'])
-builder.AddCopy(AMXX.libpc300.binary, folder_map['base/addons/amxmodx/scripting'])
+builder.AddCopy(AMXX.amxxpc.binary, folder_map['base/addons/ktpamx/scripting'])
+builder.AddCopy(AMXX.libpc300.binary, folder_map['base/addons/ktpamx/scripting'])
 
 # Copy plugins.
 StatsPlugins = ['csstats.amxx']
 for amxx_file in AMXX.plugins:
   amxx_entry = AMXX.plugins[amxx_file]
   package = os.path.dirname(amxx_file)
-  output_folder = '/addons/amxmodx/plugins'
+  output_folder = '/addons/ktpamx/plugins'
   if not len(package):
     package = 'base'
   else:
     # Ugh - statsx plugins go into a random folder.
     name = os.path.basename(amxx_file)
     if name == package + 'stats.amxx' or name in StatsPlugins:
-      output_folder = '/addons/amxmodx/data'
+      output_folder = '/addons/ktpamx/data'
 
   builder.AddCopy(amxx_entry, folder_map[package + output_folder])
 
@@ -157,17 +157,17 @@ for amxx_file in AMXX.plugins:
       package,
       base_file + '.sma'
     )
-    builder.AddCopy(source_file, folder_map[package + '/addons/amxmodx/scripting'])
+    builder.AddCopy(source_file, folder_map[package + '/addons/ktpamx/scripting'])
 
 # Copy the generated version .inc.
 for generated_header in AMXX.generated_headers:
   if 'amxmodx_version.inc' in generated_header.path:
-    builder.AddCopy(generated_header, folder_map['base/addons/amxmodx/scripting/include'])
+    builder.AddCopy(generated_header, folder_map['base/addons/ktpamx/scripting/include'])
     break
 
 # Copy WinCSX.
 if builder.target_platform == 'windows':
-  builder.AddCopy(AMXX.csx_app.binary, folder_map['cstrike/addons/amxmodx/data'])
+  builder.AddCopy(AMXX.csx_app.binary, folder_map['cstrike/addons/ktpamx/data'])
 
 # Copy configuration files for each mod.
 configs = [
@@ -222,9 +222,9 @@ configs = [
 for config in configs:
   cfg_folder, cfg_file = os.path.split(config)
   if len(cfg_folder):
-    out_folder = cfg_folder + '/addons/amxmodx/configs'
+    out_folder = cfg_folder + '/addons/ktpamx/configs'
   else:
-    out_folder = 'base/addons/amxmodx/configs'
+    out_folder = 'base/addons/ktpamx/configs'
   builder.AddCopy(
     source = os.path.join(builder.sourcePath, 'configs', config),
     output_path = folder_map[out_folder]
@@ -348,7 +348,7 @@ scripting_files = [
   'include/vector.inc',
 ]
 for filename in scripting_files:
-  output_folder = 'base/addons/amxmodx/scripting'
+  output_folder = 'base/addons/ktpamx/scripting'
   inner_folder = os.path.dirname(filename)
   if len(inner_folder):
     output_folder += '/' + inner_folder
@@ -359,17 +359,17 @@ for filename in scripting_files:
 
 # Copy weird things.
 weirdfiles = [
-  ('modules/geoip/GeoLite2-Country.mmdb', 'base/addons/amxmodx/data'),
-  ('plugins/esf/ESF_mod_tutorial.txt', 'esf/addons/amxmodx/scripting'),
+  ('modules/geoip/GeoLite2-Country.mmdb', 'base/addons/ktpamx/data'),
+  ('plugins/esf/ESF_mod_tutorial.txt', 'esf/addons/ktpamx/scripting'),
 ]
 
 if builder.target_platform == 'windows':
   weirdfiles += [
-    ('plugins/compile.exe', 'base/addons/amxmodx/scripting'),
+    ('plugins/compile.exe', 'base/addons/ktpamx/scripting'),
   ]
 else:
   weirdfiles += [
-    ('plugins/compile.sh', 'base/addons/amxmodx/scripting'),
+    ('plugins/compile.sh', 'base/addons/ktpamx/scripting'),
   ]
 
 for source, dest in weirdfiles:
@@ -411,18 +411,18 @@ datafiles = [
 for datafile in datafiles:
   builder.AddCopy(
     source = os.path.join(builder.sourcePath, 'plugins', 'lang', datafile),
-    output_path = folder_map['base/addons/amxmodx/data/lang']
+    output_path = folder_map['base/addons/ktpamx/data/lang']
   )
 
 
-CopyFiles('gamedata/modules.games', 'base/addons/amxmodx/data/gamedata/modules.games',
+CopyFiles('gamedata/modules.games', 'base/addons/ktpamx/data/gamedata/modules.games',
   [
     'master.games.txt',
     'game.cstrike.txt',
   ]
 )
 
-CopyFiles('gamedata/common.games', 'base/addons/amxmodx/data/gamedata/common.games',
+CopyFiles('gamedata/common.games', 'base/addons/ktpamx/data/gamedata/common.games',
   [
     'master.games.txt',
     'functions.engine.txt',
@@ -430,73 +430,73 @@ CopyFiles('gamedata/common.games', 'base/addons/amxmodx/data/gamedata/common.gam
   ]
 )
 
-CopyFiles('gamedata/common.games/virtual.games/ag', 'base/addons/amxmodx/data/gamedata/common.games/virtual.games/ag',
+CopyFiles('gamedata/common.games/virtual.games/ag', 'base/addons/ktpamx/data/gamedata/common.games/virtual.games/ag',
   [
     'offsets-common.txt',
   ]
 )
 
-CopyFiles('gamedata/common.games/virtual.games/cstrike', 'base/addons/amxmodx/data/gamedata/common.games/virtual.games/cstrike',
+CopyFiles('gamedata/common.games/virtual.games/cstrike', 'base/addons/ktpamx/data/gamedata/common.games/virtual.games/cstrike',
   [
     'offsets-common.txt',
   ]
 )
 
-CopyFiles('gamedata/common.games/virtual.games/dod', 'base/addons/amxmodx/data/gamedata/common.games/virtual.games/dod',
+CopyFiles('gamedata/common.games/virtual.games/dod', 'base/addons/ktpamx/data/gamedata/common.games/virtual.games/dod',
   [
     'offsets-common.txt',
   ]
 )
 
-CopyFiles('gamedata/common.games/virtual.games/esf', 'base/addons/amxmodx/data/gamedata/common.games/virtual.games/esf',
+CopyFiles('gamedata/common.games/virtual.games/esf', 'base/addons/ktpamx/data/gamedata/common.games/virtual.games/esf',
   [
     'offsets-common.txt',
   ]
 )
 
-CopyFiles('gamedata/common.games/virtual.games/esf_openbeta', 'base/addons/amxmodx/data/gamedata/common.games/virtual.games/esf_openbeta',
+CopyFiles('gamedata/common.games/virtual.games/esf_openbeta', 'base/addons/ktpamx/data/gamedata/common.games/virtual.games/esf_openbeta',
   [
     'offsets-common.txt',
   ]
 )
 
-CopyFiles('gamedata/common.games/virtual.games/gearbox', 'base/addons/amxmodx/data/gamedata/common.games/virtual.games/gearbox',
+CopyFiles('gamedata/common.games/virtual.games/gearbox', 'base/addons/ktpamx/data/gamedata/common.games/virtual.games/gearbox',
   [
     'offsets-common.txt',
   ]
 )
 
-CopyFiles('gamedata/common.games/virtual.games/ns', 'base/addons/amxmodx/data/gamedata/common.games/virtual.games/ns',
+CopyFiles('gamedata/common.games/virtual.games/ns', 'base/addons/ktpamx/data/gamedata/common.games/virtual.games/ns',
   [
     'offsets-common.txt',
   ]
 )
 
-CopyFiles('gamedata/common.games/virtual.games/svencoop', 'base/addons/amxmodx/data/gamedata/common.games/virtual.games/svencoop',
+CopyFiles('gamedata/common.games/virtual.games/svencoop', 'base/addons/ktpamx/data/gamedata/common.games/virtual.games/svencoop',
   [
     'offsets-common.txt',
   ]
 )
 
-CopyFiles('gamedata/common.games/virtual.games/tfc', 'base/addons/amxmodx/data/gamedata/common.games/virtual.games/tfc',
+CopyFiles('gamedata/common.games/virtual.games/tfc', 'base/addons/ktpamx/data/gamedata/common.games/virtual.games/tfc',
   [
     'offsets-common.txt',
   ]
 )
 
-CopyFiles('gamedata/common.games/virtual.games/ts', 'base/addons/amxmodx/data/gamedata/common.games/virtual.games/ts',
+CopyFiles('gamedata/common.games/virtual.games/ts', 'base/addons/ktpamx/data/gamedata/common.games/virtual.games/ts',
   [
     'offsets-common.txt',
   ]
 )
 
-CopyFiles('gamedata/common.games/virtual.games/valve', 'base/addons/amxmodx/data/gamedata/common.games/virtual.games/valve',
+CopyFiles('gamedata/common.games/virtual.games/valve', 'base/addons/ktpamx/data/gamedata/common.games/virtual.games/valve',
   [
     'offsets-common.txt',
   ]
 )
 
-CopyFiles('gamedata/common.games/hostages.games/cstrike', 'base/addons/amxmodx/data/gamedata/common.games/hostages.games/cstrike',
+CopyFiles('gamedata/common.games/hostages.games/cstrike', 'base/addons/ktpamx/data/gamedata/common.games/hostages.games/cstrike',
   [
     'offsets-chostageimprov.txt',
     'offsets-chostagemanager.txt',
@@ -505,7 +505,7 @@ CopyFiles('gamedata/common.games/hostages.games/cstrike', 'base/addons/amxmodx/d
   ]
 )
 
-CopyFiles('gamedata/common.games/others.games/cstrike', 'base/addons/amxmodx/data/gamedata/common.games/others.games/cstrike',
+CopyFiles('gamedata/common.games/others.games/cstrike', 'base/addons/ktpamx/data/gamedata/common.games/others.games/cstrike',
   [
     'offsets-csound.txt',
     'offsets-cunifiedsignals.txt',
@@ -513,7 +513,7 @@ CopyFiles('gamedata/common.games/others.games/cstrike', 'base/addons/amxmodx/dat
   ]
 )
 
-CopyFiles('gamedata/common.games/entities.games/cstrike', 'base/addons/amxmodx/data/gamedata/common.games/entities.games/cstrike',
+CopyFiles('gamedata/common.games/entities.games/cstrike', 'base/addons/ktpamx/data/gamedata/common.games/entities.games/cstrike',
   [
     'offsets-cairtank.txt',
     'offsets-cak47.txt',
@@ -629,7 +629,7 @@ CopyFiles('gamedata/common.games/entities.games/cstrike', 'base/addons/amxmodx/d
   ]
 )
 
-CopyFiles('gamedata/common.games/entities.games/dod', 'base/addons/amxmodx/data/gamedata/common.games/entities.games/dod',
+CopyFiles('gamedata/common.games/entities.games/dod', 'base/addons/ktpamx/data/gamedata/common.games/entities.games/dod',
   [
     'offsets-c30cal.txt',
     'offsets-calliedbarney.txt',
@@ -791,7 +791,7 @@ CopyFiles('gamedata/common.games/entities.games/dod', 'base/addons/amxmodx/data/
   ]
 )
 
-CopyFiles('gamedata/common.games/entities.games/tfc', 'base/addons/amxmodx/data/gamedata/common.games/entities.games/tfc',
+CopyFiles('gamedata/common.games/entities.games/tfc', 'base/addons/ktpamx/data/gamedata/common.games/entities.games/tfc',
   [
     'offsets-cactanimating.txt',
     'offsets-cairtank.txt',
@@ -920,7 +920,7 @@ CopyFiles('gamedata/common.games/entities.games/tfc', 'base/addons/amxmodx/data/
   ]
 )
 
-CopyFiles('gamedata/common.games/entities.games/gearbox', 'base/addons/amxmodx/data/gamedata/common.games/entities.games/gearbox',
+CopyFiles('gamedata/common.games/entities.games/gearbox', 'base/addons/ktpamx/data/gamedata/common.games/entities.games/gearbox',
   [
     'offsets-cactanimating.txt',
     'offsets-cagrunt.txt',
@@ -1160,7 +1160,7 @@ CopyFiles('gamedata/common.games/entities.games/gearbox', 'base/addons/amxmodx/d
   ]
 )
 
-CopyFiles('gamedata/common.games/entities.games/valve', 'base/addons/amxmodx/data/gamedata/common.games/entities.games/valve',
+CopyFiles('gamedata/common.games/entities.games/valve', 'base/addons/ktpamx/data/gamedata/common.games/entities.games/valve',
   [
     'offsets-cactanimating.txt',
     'offsets-cagrunt.txt',
@@ -1303,13 +1303,13 @@ CopyFiles('gamedata/common.games/entities.games/valve', 'base/addons/amxmodx/dat
   ]
 )
 
-CopyFiles('gamedata/common.games/gamerules.games', 'base/addons/amxmodx/data/gamedata/common.games/gamerules.games',
+CopyFiles('gamedata/common.games/gamerules.games', 'base/addons/ktpamx/data/gamedata/common.games/gamerules.games',
   [
     'master.games.txt',
   ]
 )
 
-CopyFiles('gamedata/common.games/gamerules.games/cstrike', 'base/addons/amxmodx/data/gamedata/common.games/gamerules.games/cstrike',
+CopyFiles('gamedata/common.games/gamerules.games/cstrike', 'base/addons/ktpamx/data/gamedata/common.games/gamerules.games/cstrike',
   [
     'offsets-cgamerules.txt',
     'offsets-chalflifemultiplay.txt',
@@ -1317,14 +1317,14 @@ CopyFiles('gamedata/common.games/gamerules.games/cstrike', 'base/addons/amxmodx/
   ]
 )
 
-CopyFiles('gamedata/common.games/gamerules.games/dod', 'base/addons/amxmodx/data/gamedata/common.games/gamerules.games/dod',
+CopyFiles('gamedata/common.games/gamerules.games/dod', 'base/addons/ktpamx/data/gamedata/common.games/gamerules.games/dod',
   [
     'offsets-cdodteamplay.txt',
     'offsets-cspdodrules.txt',
   ]
 )
 
-CopyFiles('gamedata/common.games/gamerules.games/gearbox', 'base/addons/amxmodx/data/gamedata/common.games/gamerules.games/gearbox',
+CopyFiles('gamedata/common.games/gamerules.games/gearbox', 'base/addons/ktpamx/data/gamedata/common.games/gamerules.games/gearbox',
   [
     'offsets-chalflifecoopplay.txt',
     'offsets-chalflifectfplay.txt',
@@ -1333,7 +1333,7 @@ CopyFiles('gamedata/common.games/gamerules.games/gearbox', 'base/addons/amxmodx/
   ]
 )
 
-CopyFiles('gamedata/common.games/gamerules.games/tfc', 'base/addons/amxmodx/data/gamedata/common.games/gamerules.games/tfc',
+CopyFiles('gamedata/common.games/gamerules.games/tfc', 'base/addons/ktpamx/data/gamedata/common.games/gamerules.games/tfc',
   [
     'offsets-chalflifemultiplay.txt',
     'offsets-chalflifeteamplay.txt',
@@ -1341,7 +1341,7 @@ CopyFiles('gamedata/common.games/gamerules.games/tfc', 'base/addons/amxmodx/data
   ]
 )
 
-CopyFiles('gamedata/common.games/gamerules.games/valve', 'base/addons/amxmodx/data/gamedata/common.games/gamerules.games/valve',
+CopyFiles('gamedata/common.games/gamerules.games/valve', 'base/addons/ktpamx/data/gamedata/common.games/gamerules.games/valve',
   [
     'offsets-chalflifemultiplay.txt',
     'offsets-chalflifeteamplay.txt',
@@ -1359,5 +1359,5 @@ licenses = [
 for license in licenses:
   builder.AddCopy(
     source = os.path.join(builder.sourcePath, 'public', 'licenses', license),
-    output_path = folder_map['base/addons/amxmodx']
+    output_path = folder_map['base/addons/ktpamx']
   )

@@ -46,12 +46,16 @@ cell CForward::execute(cell *params, ForwardPreparedArray *preparedArrays)
 
 	cell globRetVal = 0;
 
+	AMXXLOG_Log("[KTP DEBUG CForward::execute] ENTRY forward='%s' numFuncs=%d", m_Name.chars(), (int)m_Funcs.length());
+
 	for (size_t i = 0; i < m_Funcs.length(); ++i)
 	{
 		auto iter = &m_Funcs[i];
+		AMXXLOG_Log("[KTP DEBUG CForward::execute] Checking plugin %d '%s' func=%d", (int)i, iter->pPlugin->getName(), iter->func);
 
 		if (iter->pPlugin->isExecutable(iter->func))
 		{
+			AMXXLOG_Log("[KTP DEBUG CForward::execute] Executing plugin %d '%s'...", (int)i, iter->pPlugin->getName());
 			// Get debug info
 			AMX *amx = iter->pPlugin->getAMX();
 			Debugger *pDebugger = (Debugger *)amx->userdata[UD_DEBUGGER];
@@ -124,6 +128,7 @@ cell CForward::execute(cell *params, ForwardPreparedArray *preparedArrays)
 #endif
 
 			int err = amx_ExecPerf(amx, &retVal, iter->func);
+			AMXXLOG_Log("[KTP DEBUG CForward::execute] amx_ExecPerf returned err=%d retVal=%d for plugin '%s'", err, (int)retVal, iter->pPlugin->getName());
 			// log runtime error, if any
 			if (err != AMX_ERR_NONE)
 			{
@@ -138,11 +143,13 @@ cell CForward::execute(cell *params, ForwardPreparedArray *preparedArrays)
 					LogError(amx, err, NULL);
 				}
 			}
-			
+
 			amx->error = AMX_ERR_NONE;
-			
+
 			if (pDebugger)
 				pDebugger->EndExec();
+
+			AMXXLOG_Log("[KTP DEBUG CForward::execute] Plugin '%s' handler complete, moving to next...", iter->pPlugin->getName());
 
 			// cleanup strings & arrays & values by reference
 			for (i = 0; i < m_NumParams; ++i)

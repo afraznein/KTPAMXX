@@ -81,26 +81,11 @@ public:
 	
 	bool Connect(const char* connectname, const char* ipaddress);
 
-	inline bool IsBot()
-	{
-		if ((pEdict->v.flags & FL_FAKECLIENT) == FL_FAKECLIENT)
-		{
-			return true;
-		}
-		
-		const char *auth = GETPLAYERAUTHID(pEdict); 	 
-		if (auth && (strcmp(auth, "BOT") == 0)) 	 
-		{
-			return true;
-		}
-		
-		return false;
-	}
+	// IsBot() - moved to CMisc.cpp for debug logging
+	bool IsBot();
 
-	inline bool IsAlive()
-	{
-		return ((pEdict->v.deadflag == DEAD_NO) && (pEdict->v.health > 0));
-	}
+	// IsAlive() - moved to CMisc.cpp for debug logging
+	bool IsAlive();
 
 	inline void Authorize() { authorized = true; }
 

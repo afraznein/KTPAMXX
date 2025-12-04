@@ -146,6 +146,16 @@ bool Vault::loadVault()
 
 		sscanf(lineRead, "%s%*[ \t]%[^\n]", key, value);
 
+		// KTP: Strip trailing whitespace including \r (carriage return) from value
+		// This prevents "Can't use values with ASCII control characters" errors
+		// when core.ini has Windows-style CRLF line endings
+		size_t len = strlen(value);
+		while (len > 0 && (value[len - 1] == '\r' || value[len - 1] == '\n' ||
+		                   value[len - 1] == ' ' || value[len - 1] == '\t'))
+		{
+			value[--len] = '\0';
+		}
+
 		if (isalpha(*key))
 		{
 			put(key, value);

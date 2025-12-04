@@ -17,7 +17,7 @@
 
 void CFlagManager::SetFile(const char *Filename)
 {
-	m_strConfigFile = build_pathname("%s/%s", get_localinfo("amxx_configsdir", "addons/amxmodx/configs"), Filename);
+	m_strConfigFile = build_pathname("%s/%s", get_localinfo("amxx_configsdir", "addons/ktpamx/configs"), Filename);
 
 	CreateIfNotExist();
 }

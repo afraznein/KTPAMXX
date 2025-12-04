@@ -193,11 +193,13 @@ CvarInfo* CvarManager::CreateCvar(const char* name, const char* value, const cha
 {
 	cvar_t*    var = nullptr;
 	CvarInfo* info = nullptr;
+	bool cvarExistedBeforeRegister = false;
 
 	if (!CacheLookup(name, &info))
 	{
 		// Not cached - Is cvar already exist?
 		var = CVAR_GET_POINTER(name);
+		cvarExistedBeforeRegister = (var != nullptr);
 
 		// Whether it exists, we need to prepare a new entry.
 		info = new CvarInfo(name, helpText, plugin, pluginId);
@@ -209,19 +211,30 @@ CvarInfo* CvarManager::CreateCvar(const char* name, const char* value, const cha
 			info->var        = var;
 			info->defaultval = var->string;
 			info->amxmodx    = false;
+			// Don't set value - keep the existing value
 		}
 		else
 		{
-			// Registers a new cvar.
-			static cvar_t cvar_reg_helper;
+			// KTP: In extension mode, configs may have already set values for cvars
+			// before we register them (e.g., "amx_password_field" in amxx.cfg).
+			// When CVAR_GET_POINTER returns NULL but config has set the value,
+			// the engine has created a "pending" entry that becomes "already defined"
+			// when we call CVAR_REGISTER.
+			//
+			// The safest approach: use CVAR_REGISTER but with a copy of the name
+			// that we allocate ourselves, since the engine may try to use the name
+			// pointer after we return.
 
-			// "string" will be set after. "value" and "next" are automatically set.
-			cvar_reg_helper.name   = info->name.chars();
-			cvar_reg_helper.string = "";
-			cvar_reg_helper.flags  = flags;
+			// Allocate the cvar registration struct on the heap to persist
+			cvar_t* cvar_reg = new cvar_t();
+			cvar_reg->name   = strdup(name);  // Engine needs persistent name
+			cvar_reg->string = strdup(value); // Engine needs persistent string
+			cvar_reg->flags  = flags;
+			cvar_reg->value  = 0.0f;
+			cvar_reg->next   = nullptr;
 
 			// Adds cvar to global list.
-			CVAR_REGISTER(&cvar_reg_helper);
+			CVAR_REGISTER(cvar_reg);
 
 			// Registering can fail if name is already a registered command.
 			var = CVAR_GET_POINTER(name);
@@ -229,6 +242,9 @@ CvarInfo* CvarManager::CreateCvar(const char* name, const char* value, const cha
 			// If so, we can't go further.
 			if (!var)
 			{
+				free((void*)cvar_reg->name);
+				free((void*)cvar_reg->string);
+				delete cvar_reg;
 				delete info;
 				return nullptr;
 			}
@@ -240,14 +256,21 @@ CvarInfo* CvarManager::CreateCvar(const char* name, const char* value, const cha
 
 			// Keeps track count of cvars registered by AMXX.
 			++m_AmxmodxCvars;
+
+			// Note: We intentionally leak cvar_reg here because the engine
+			// may still reference it. This is a small memory cost but avoids crashes.
 		}
 
 		// Add a new entry in the caches.
 		m_Cvars.append(info);
 		m_Cache.insert(name, info);
 
-		// Make sure that whether an existing or new cvar is set to the given value.
-		CVAR_DIRECTSET(var, value);
+		// For cvars that existed before registration, we can safely set the value
+		if (cvarExistedBeforeRegister)
+		{
+			// Cvar existed as proper cvar before - safe to set via CVAR_SET_STRING
+			CVAR_SET_STRING(name, value);
+		}
 	}
 	else if (info->pluginId == -1)
 	{
@@ -503,23 +526,23 @@ void CvarManager::OnConsoleCommand()
 
 	int argcount = CMD_ARGC();
 
-	// amxx cvars [partial plugin name] [index from listing]
+	// amx cvars [partial plugin name] [index from listing]
 	// E.g.:
-	//   amxx cvars test   <- list all cvars from plugin name starting by "test"
-	//   amxx cvars 2      <- show informations about cvar in position 2 from "amxx cvars" list
-	//   amxx cvars test 2 <- show informations about cvar in position 2 from "amxx cvars test" list
+	//   amx cvars test   <- list all cvars from plugin name starting by "test"
+	//   amx cvars 2      <- show informations about cvar in position 2 from "amx cvars" list
+	//   amx cvars test 2 <- show informations about cvar in position 2 from "amx cvars test" list
 
 	if (argcount > 2)
 	{
 		const char* argument = CMD_ARGV(2);
 
-		indexToSearch = atoi(argument); // amxx cvars 2
+		indexToSearch = atoi(argument); // amx cvars 2
 
 		if (!indexToSearch)
 		{
-			partialName = argument; // amxx cvars test
+			partialName = argument; // amx cvars test
 
-			if (argcount > 3)       // amxx cvars test 2
+			if (argcount > 3)       // amx cvars test 2
 			{
 				indexToSearch = atoi(CMD_ARGV(3));
 			}

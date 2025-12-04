@@ -100,7 +100,7 @@ void CTaskMngr::CTask::executeIfRequired(float fCurrentTime, float fTimeLimit, f
 {
 	bool execute = false;
 	bool done = false;
-	
+
 	if (m_bAfterStart)
 	{
 		if (fCurrentTime - fTimeLeft + 1.0f >= m_fBase)
@@ -118,10 +118,15 @@ void CTaskMngr::CTask::executeIfRequired(float fCurrentTime, float fTimeLimit, f
 
 	if (execute)
 	{
+		// KTP DEBUG: Log task execution
+		AMXXLOG_Log("[KTP DEBUG Task] executeIfRequired: Executing task id=%d func=%d loop=%d repeat=%d",
+			m_iId, m_iFunc, m_bLoop ? 1 : 0, m_iRepeat);
+
 		//only bother calling if we have something to call
 		if (!(m_bLoop && !m_iRepeat))
 		{
 			m_bInExecute = true;
+			AMXXLOG_Log("[KTP DEBUG Task] Before executeForwards: func=%d id=%d paramLen=%d", m_iFunc, m_iId, m_iParamLen);
 			if (m_iParamLen)	// call with parameters
 			{
 				cell arr = prepareCellArray(m_pParams, m_iParamLen);
@@ -129,11 +134,15 @@ void CTaskMngr::CTask::executeIfRequired(float fCurrentTime, float fTimeLimit, f
 			} else {
 				executeForwards(m_iFunc, m_iId);
 			}
+			AMXXLOG_Log("[KTP DEBUG Task] After executeForwards: func=%d id=%d", m_iFunc, m_iId);
 			m_bInExecute = false;
 		}
-	
+
 		if (isFree())
+		{
+			AMXXLOG_Log("[KTP DEBUG Task] Task was freed during execution, returning");
 			return;
+		}
 
 		// set new exec time OR remove the task if needed
 		if (m_bLoop)
@@ -146,9 +155,12 @@ void CTaskMngr::CTask::executeIfRequired(float fCurrentTime, float fTimeLimit, f
 
 		if (done)
 		{
+			AMXXLOG_Log("[KTP DEBUG Task] Task done, calling clear() for id=%d func=%d", m_iId, m_iFunc);
 			clear();
+			AMXXLOG_Log("[KTP DEBUG Task] clear() completed");
 		} else {
 			m_fNextExecTime += m_fBase;
+			AMXXLOG_Log("[KTP DEBUG Task] Task rescheduled, next exec time=%.2f", m_fNextExecTime);
 		}
 	}
 }

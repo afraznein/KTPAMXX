@@ -19,7 +19,6 @@ x64/
 build/
 [Bb]in/
 [Oo]bj/
-build/
 obj-*/
 
 # Visual Studio 2015 cache/options directory
@@ -47,7 +46,6 @@ obj-*/
 *.vssscc
 .builds
 *.pidb
-*.log
 *.scc
 
 # Visual C++ cache files
@@ -99,3 +97,21 @@ support/get-pip.py
 metamod-am/
 support/ambuild/
 support/amxmodx/
+
+# KTP AMX build artifacts and local files
+KTPAMXX/
+KTP_AMX Files/
+
+# Build output directories
+obj-linux/
+obj-windows/
+
+# Local build scripts (not part of main distribution)
+build_linux_wsl.ps1
+build_overrides.props
+build_windows.bat
+collect_builds.bat
+setup_wsl_build.ps1
+
+# Accidental nul file (Windows artifact)
+nul

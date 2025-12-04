@@ -1,12 +1,13 @@
 #!/bin/bash
-# KTPAMXX Linux Build Script
+# KTP AMX Linux Build Script
 # Run this on your Ubuntu server
 
 set -e  # Exit on error
 
 echo "========================================"
-echo "KTPAMXX Linux Build Script"
+echo "KTP AMX Linux Build Script"
 echo "========================================"
+echo "Working directory: $(pwd)"
 
 # Check for required tools
 echo "Checking for required tools..."
@@ -35,6 +36,18 @@ fi
 echo "All required tools found!"
 echo ""
 
+# Set up Python virtual environment for AMBuild
+VENV_DIR="$HOME/.ambuild-venv"
+echo "Checking for AMBuild virtual environment..."
+if [ ! -f "$VENV_DIR/bin/activate" ]; then
+    echo "Creating virtual environment at $VENV_DIR..."
+    rm -rf "$VENV_DIR"
+    python3 -m venv "$VENV_DIR"
+fi
+
+# Activate virtual environment
+source "$VENV_DIR/bin/activate"
+
 # Install AMBuild if not present
 echo "Checking for AMBuild..."
 if ! python3 -c "import ambuild2" 2>/dev/null; then
@@ -46,7 +59,7 @@ if ! python3 -c "import ambuild2" 2>/dev/null; then
     fi
 
     cd support/ambuild
-    python3 -m pip install --user .
+    pip install .
     cd ../..
     echo "AMBuild installed!"
 else
@@ -56,7 +69,15 @@ echo ""
 
 # Set environment variables
 export METAMOD="$(pwd)/../metamod-am"
-export HLSDK="$(pwd)/../hlsdk"
+
+# Check for HLSDK in common locations
+if [ -d "$(pwd)/../hlsdk" ]; then
+    export HLSDK="$(pwd)/../hlsdk"
+elif [ -d "$(pwd)/../KTPhlsdk" ]; then
+    export HLSDK="$(pwd)/../KTPhlsdk"
+else
+    export HLSDK="$(pwd)/../hlsdk"  # Will fail with helpful error message below
+fi
 
 echo "Build environment:"
 echo "  METAMOD: $METAMOD"
@@ -76,30 +97,32 @@ if [ ! -d "$HLSDK" ]; then
     exit 1
 fi
 
-# Clean previous build
+# Clean previous build folder
 echo "Cleaning previous build..."
-rm -rf obj-linux
+rm -rf obj-linux 2>/dev/null || true
 
 # Configure build
+# --no-plugins: Skip plugin compilation (plugins are platform-independent, compile on Windows instead)
 echo "Configuring build..."
-python3 configure.py --enable-optimize --no-mysql
+python3 configure.py --enable-optimize --no-mysql --no-plugins
 
 # Build
-echo "Building KTPAMXX..."
+echo "Building KTP AMX..."
 cd obj-linux
 python3 $(which ambuild)
 cd ..
 
 # Check if build succeeded
-if [ -f "obj-linux/amxmodx/amxmodx_mm_i386.so" ]; then
+BINARY_PATH="obj-linux/packages/base/addons/ktpamx/dlls/ktpamx_i386.so"
+if [ -f "$BINARY_PATH" ]; then
     echo ""
     echo "========================================"
     echo "BUILD SUCCESS!"
     echo "========================================"
-    echo "Binary: obj-linux/amxmodx/amxmodx_mm_i386.so"
-    ls -lh obj-linux/amxmodx/amxmodx_mm_i386.so
+    echo "Binary: $BINARY_PATH"
+    ls -lh "$BINARY_PATH"
     echo ""
-    echo "You can now deploy this to your server's addons/amxmodx/dlls/ directory"
+    echo "You can now deploy this to your server's addons/ktpamx/dlls/ directory"
 else
     echo ""
     echo "========================================"

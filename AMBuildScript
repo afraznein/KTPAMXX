@@ -34,7 +34,7 @@ class AMXXConfig(object):
     import re
     with open(os.path.join(builder.sourcePath, 'product.version'), 'r') as fp:
       productContents = fp.read()
-    m = re.match('(\d+)\.(\d+)\.(\d+).*', productContents)
+    m = re.match(r'(\d+)\.(\d+)\.(\d+).*', productContents)
     if m == None:
       self.productVersion = '1.0.0'
     else:
@@ -391,19 +391,23 @@ class AMXXConfig(object):
     return self.AddVersioning(binary)
 
   def MetaPlugin(self, context, name):
+    # KTP: Renamed from amxmodx_mm to ktpamx for the main binary
+    if name == 'amxmodx':
+      name = 'ktpamx'
     if builder.target_platform == 'mac' or builder.target_platform == 'windows':
-      name = name + '_mm'
+      name = name + '_mm' if name != 'ktpamx' else name
     elif builder.target_platform == 'linux':
-      name = name + '_mm_i386'
+      name = name + '_i386'
     binary = context.compiler.Library(name)
     self.ConfigureForModule(context, binary.compiler)
     return self.AddVersioning(binary)
 
   def MetaModule(self, context, name):
+    # KTP: Keep modules with _ktp suffix instead of _amxx
     if builder.target_platform == 'mac' or builder.target_platform == 'windows':
-      name = name + '_amxx'
+      name = name + '_ktp'
     elif builder.target_platform == 'linux':
-      name = name + '_amxx_i386'
+      name = name + '_ktp_i386'
     binary = context.compiler.Library(name)
     self.ConfigureForModule(context, binary.compiler)
     return self.AddVersioning(binary)
@@ -505,10 +509,8 @@ if builder.target_platform == 'windows':
   builder.RunScript('modules/cstrike/csx/WinCSX/AMBuilder', { 'AMXX': AMXX })
 
 if builder.backend == 'amb2':
-  builder.RunBuildScripts([
-      'plugins/AMBuilder',
-      'support/PackageScript',
-    ],
-    { 'AMXX': AMXX }
-  )
+  scripts = ['support/PackageScript']
+  if not getattr(builder.options, 'disable_plugins', False):
+    scripts.insert(0, 'plugins/AMBuilder')
+  builder.RunBuildScripts(scripts, { 'AMXX': AMXX })
 

@@ -48,7 +48,7 @@ int LookupFile(AMX_DBG *amxdbg, ucell address)
 
 bool BinLog::Open()
 {
-	const char *data = get_localinfo("amxmodx_datadir", "addons/amxmodx/data");
+	const char *data = get_localinfo("amxmodx_datadir", "addons/ktpamx/data");
 	char path[PLATFORM_MAX_PATH];
 	build_pathname_r(path, sizeof(path), "%s/binlogs", data);
 
