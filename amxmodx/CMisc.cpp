@@ -119,52 +119,27 @@ bool CPlayer::Connect(const char* connectname, const char* ipaddress)
 	return false;
 }
 
-// KTP: IsAlive moved from inline to allow debug logging
 bool CPlayer::IsAlive()
 {
-	// KTP DEBUG: Check pEdict validity
 	if (!pEdict)
-	{
-		AMXXLOG_Log("[KTP DEBUG IsAlive] pEdict is NULL for player %d", index);
 		return false;
-	}
-
-	AMXXLOG_Log("[KTP DEBUG IsAlive] Checking player %d (pEdict=%p deadflag=%d health=%f)...",
-		index, (void*)pEdict, (int)pEdict->v.deadflag, (float)pEdict->v.health);
 
 	return ((pEdict->v.deadflag == DEAD_NO) && (pEdict->v.health > 0));
 }
 
-// KTP: IsBot moved from inline to allow debug logging
 bool CPlayer::IsBot()
 {
-	// KTP DEBUG: Check pEdict validity
 	if (!pEdict)
-	{
-		AMXXLOG_Log("[KTP DEBUG IsBot] pEdict is NULL for player %d", index);
 		return false;
-	}
-
-	AMXXLOG_Log("[KTP DEBUG IsBot] Checking FL_FAKECLIENT for player %d (pEdict=%p flags=0x%x)...",
-		index, (void*)pEdict, (unsigned int)pEdict->v.flags);
 
 	if ((pEdict->v.flags & FL_FAKECLIENT) == FL_FAKECLIENT)
-	{
-		AMXXLOG_Log("[KTP DEBUG IsBot] Player %d is FL_FAKECLIENT", index);
 		return true;
-	}
 
-	AMXXLOG_Log("[KTP DEBUG IsBot] Calling GETPLAYERAUTHID for player %d...", index);
 	const char *auth = GETPLAYERAUTHID(pEdict);
-	AMXXLOG_Log("[KTP DEBUG IsBot] GETPLAYERAUTHID returned '%s' for player %d", auth ? auth : "(null)", index);
 
 	if (auth && (strcmp(auth, "BOT") == 0))
-	{
-		AMXXLOG_Log("[KTP DEBUG IsBot] Player %d has auth 'BOT', returning true", index);
 		return true;
-	}
 
-	AMXXLOG_Log("[KTP DEBUG IsBot] Player %d is NOT a bot, returning false", index);
 	return false;
 }
 

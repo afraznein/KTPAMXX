@@ -98,11 +98,11 @@
     </Link>
     <PreBuildEvent>
       <Command>cd ..
-md -p JIT 2&gt;NUL
-%NASM_PATH%nasm.exe -f win32 helpers-x86.asm -o JIT/helpers-x86.obj 
-%NASM_PATH%nasm.exe -f win32 natives-x86.asm -o JIT/natives-x86.obj 
-%NASM_PATH%nasm.exe -f win32 amxexecn.asm -o JIT/amxexecn.obj 
-%NASM_PATH%nasm.exe -O0 -f win32 amxjitsn.asm -o JIT/amxjitsn.obj</Command>
+if not exist JIT mkdir JIT
+if not exist JIT\helpers-x86.obj if not "%NASM_PATH%"=="" %NASM_PATH%nasm.exe -f win32 helpers-x86.asm -o JIT/helpers-x86.obj
+if not exist JIT\natives-x86.obj if not "%NASM_PATH%"=="" %NASM_PATH%nasm.exe -f win32 natives-x86.asm -o JIT/natives-x86.obj
+if not exist JIT\amxexecn.obj if not "%NASM_PATH%"=="" %NASM_PATH%nasm.exe -f win32 amxexecn.asm -o JIT/amxexecn.obj
+if not exist JIT\amxjitsn.obj if not "%NASM_PATH%"=="" %NASM_PATH%nasm.exe -O0 -f win32 amxjitsn.asm -o JIT/amxjitsn.obj</Command>
     </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='JITRelease|Win32'">
@@ -158,11 +158,11 @@ md -p JIT 2&gt;NUL
     </Link>
     <PreBuildEvent>
       <Command>cd ..
-md -p JIT 2&gt;NUL
-%NASM_PATH%nasm.exe -f win32 helpers-x86.asm -o JIT/helpers-x86.obj 
-%NASM_PATH%nasm.exe -f win32 natives-x86.asm -o JIT/natives-x86.obj 
-%NASM_PATH%nasm.exe -f win32 amxexecn.asm -o JIT/amxexecn.obj 
-%NASM_PATH%nasm.exe -O0 -f win32 amxjitsn.asm -o JIT/amxjitsn.obj</Command>
+if not exist JIT mkdir JIT
+if not exist JIT\helpers-x86.obj if not "%NASM_PATH%"=="" %NASM_PATH%nasm.exe -f win32 helpers-x86.asm -o JIT/helpers-x86.obj
+if not exist JIT\natives-x86.obj if not "%NASM_PATH%"=="" %NASM_PATH%nasm.exe -f win32 natives-x86.asm -o JIT/natives-x86.obj
+if not exist JIT\amxexecn.obj if not "%NASM_PATH%"=="" %NASM_PATH%nasm.exe -f win32 amxexecn.asm -o JIT/amxexecn.obj
+if not exist JIT\amxjitsn.obj if not "%NASM_PATH%"=="" %NASM_PATH%nasm.exe -O0 -f win32 amxjitsn.asm -o JIT/amxjitsn.obj</Command>
     </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>

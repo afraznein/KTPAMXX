@@ -5,6 +5,52 @@ All notable changes to KTP AMX will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2025-12-06
+
+### Added
+
+#### New ReHLDS Hooks for Extension Mode
+- **SV_ClientCommand hookchain** - Enables `register_clcmd`, menu systems, and `client_command` forward in extension mode
+- **SV_InactivateClients hookchain** - Proper map change deactivation with `plugin_end` and `client_disconnect` forwards
+- **SV_Spawn_f hookchain** - Client reinitialization after map change for `client_connect` and `client_putinserver` forwards
+
+#### Map Change Support (Extension Mode)
+- Clients now persist through map changes without disconnection
+- All AMXX forwards (`plugin_init`, `plugin_cfg`, `client_connect`, `client_putinserver`) fire correctly on new maps
+- Proper `plugin_end` and `client_disconnect` forwards during map transition
+
+#### Client Command Processing (Extension Mode)
+- Chat commands (`/start`, `.start`, etc.) now work in extension mode
+- Menu selections (`menuselect 1-9`) properly handled
+- `register_clcmd` and `register_menucmd` fully functional
+
+### Fixed
+
+- **SV_Spawn_f hook registration** - Function existed but was never registered, causing map change reconnect issues
+- **Vtable alignment** - Fixed mismatch between KTPAMXX and KTPReHLDS headers (added 20+ missing virtual methods to IRehldsHookchains)
+- **Debug logging cleanup** - Removed all debug `AMXXLOG_Log` statements from production code
+
+### Changed
+
+- **rehlds_api.h** - Updated to match KTPReHLDS vtable layout with all hookchain methods
+- **mod_rehlds_api.cpp** - Updated for new API structure
+- Removed deprecated debug logging from CForward.cpp, CMisc.cpp, CTask.cpp, amxmodx.cpp, cvars.cpp, meta_api.cpp
+
+### Technical Details
+
+#### New Hook Registrations (Extension Mode)
+- `SV_ClientCommand` - Client command processing for chat commands and menus
+- `SV_InactivateClients` - Map change deactivation sequence
+- `SV_Spawn_f` - Client spawn command after map change reconnect
+
+#### Map Change Sequence
+The extension mode now properly handles the map change sequence:
+1. `SV_InactivateClients()` → Fire disconnect forwards, clear player state
+2. `SV_ActivateServer()` → Fire `plugin_init`, `plugin_cfg`
+3. `SV_Spawn_f()` → Reinitialize reconnecting clients, fire `client_connect`, `client_putinserver`
+
+---
+
 ## [2.0.0] - 2024-12-04
 
 ### Added
@@ -105,8 +151,10 @@ See [AMX Mod X releases](https://github.com/alliedmodders/amxmodx/releases) for 
 
 | Version | Date | Description |
 |---------|------|-------------|
+| 2.1.0 | 2025-12-06 | Map change support, client commands, menu systems in extension mode |
 | 2.0.0 | 2024-12-04 | Major release: ReHLDS extension mode, KTP branding, client_cvar_changed |
 | 1.10.0 | - | Base fork from AMX Mod X |
 
+[2.1.0]: https://github.com/afraznein/KTPAMXX/releases/tag/v2.1.0
 [2.0.0]: https://github.com/afraznein/KTPAMXX/releases/tag/v2.0.0
 [1.10.0]: https://github.com/alliedmodders/amxmodx/releases/tag/1.10.0

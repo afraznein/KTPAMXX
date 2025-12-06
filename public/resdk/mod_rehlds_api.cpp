@@ -33,10 +33,10 @@ bool RehldsApi_Init()
 		return false;
 	}
 
-	RehldsFuncs      = RehldsApi->GetFuncs();
-	RehldsData       = RehldsApi->GetServerData();
-	RehldsHookchains = RehldsApi->GetHookchains();
-	RehldsSvs        = RehldsApi->GetServerStatic();
+	RehldsFuncs          = RehldsApi->GetFuncs();
+	RehldsData           = RehldsApi->GetServerData();
+	RehldsHookchains     = RehldsApi->GetHookchains();
+	RehldsSvs            = RehldsApi->GetServerStatic();
 
 	return true;
 }

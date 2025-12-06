@@ -51,7 +51,9 @@ plugin_info_t Plugin_info =
 	PT_ANYTIME,					// (when) unloadable
 };
 
-meta_globals_t *gpMetaGlobals;
+// KTP: Dummy meta_globals for extension mode - RETURN_META macros need this
+static meta_globals_t g_DummyMetaGlobals;
+meta_globals_t *gpMetaGlobals = &g_DummyMetaGlobals;  // Default to dummy, Metamod will override
 gamedll_funcs_t *gpGamedllFuncs;
 mutil_funcs_t *gpMetaUtilFuncs;
 enginefuncs_t g_engfuncs;
@@ -642,20 +644,25 @@ plugin_init	forward	function from plugins
 */
 void C_ServerActivate(edict_t *pEdictList, int edictCount, int clientMax)
 {
-	int id;
-
-	for (int i = 0; g_user_msg[i].name;	++i)
+	// KTP: Only use GET_USER_MSG_ID in Metamod mode - it requires gpMetaUtilFuncs
+	// In extension mode, message IDs are looked up via REG_USER_MSG in SV_ActivateServer_RH
+	if (g_bRunningWithMetamod)
 	{
-		if ((*g_user_msg[i].id == 0) && (id = GET_USER_MSG_ID(PLID, g_user_msg[i].name, NULL)) != 0)
-		{
-			*g_user_msg[i].id =	id;
+		int id;
 
-			if (!g_user_msg[i].cstrike || g_bmod_cstrike)
+		for (int i = 0; g_user_msg[i].name;	++i)
+		{
+			if ((*g_user_msg[i].id == 0) && (id = GET_USER_MSG_ID(PLID, g_user_msg[i].name, NULL)) != 0)
 			{
-				if (g_user_msg[i].endmsg)
-					modMsgsEnd[id] = g_user_msg[i].func;
-				else
-					modMsgs[id] = g_user_msg[i].func;
+				*g_user_msg[i].id =	id;
+
+				if (!g_user_msg[i].cstrike || g_bmod_cstrike)
+				{
+					if (g_user_msg[i].endmsg)
+						modMsgsEnd[id] = g_user_msg[i].func;
+					else
+						modMsgs[id] = g_user_msg[i].func;
+				}
 			}
 		}
 	}
@@ -1061,8 +1068,8 @@ void SV_Spawn_f_RH(IRehldsHook_SV_Spawn_f *chain)
 	if (pEntity->v.flags & FL_FAKECLIENT)
 		return;
 
-	// If player was never connected (ClientConnected_RH disabled), initialize now
-	// Connect() sets initialized=true, so check that flag
+	// If player was never connected (e.g., map change reconnect where ClientConnected doesn't fire),
+	// initialize now. Connect() sets initialized=true, so check that flag.
 	if (!pPlayer->initialized)
 	{
 		const char *pszName = cl->GetName();
@@ -1110,33 +1117,13 @@ void SV_Frame_RH(IRehldsHook_SV_Frame *chain)
 	if (g_task_time <= gpGlobals->time)
 	{
 		g_task_time = gpGlobals->time + 0.1f;
-		// KTP DEBUG: Track task execution
-		static int task_frame = 0;
-		task_frame++;
-		if (task_frame % 100 == 1) {
-			AMXXLOG_Log("[KTPAMX DEBUG] SV_Frame: Before startFrame (frame %d, time %.2f)", task_frame, gpGlobals->time);
-		}
 		g_tasksMngr.startFrame();
-		if (task_frame % 100 == 1) {
-			AMXXLOG_Log("[KTPAMX DEBUG] SV_Frame: After startFrame, before OnMapConfigTimer");
-		}
 		CoreCfg.OnMapConfigTimer();
-		if (task_frame % 100 == 1) {
-			AMXXLOG_Log("[KTPAMX DEBUG] SV_Frame: After OnMapConfigTimer");
-		}
 	}
 
 	// Process pending client_putinserver forwards
 	if (g_putinserver.length() > 0)
 	{
-		// KTP DEBUG: Log that we're processing the list
-		static int frame_counter = 0;
-		frame_counter++;
-		if (frame_counter % 50 == 1)  // Log every 50 frames when list has players
-		{
-			AMXXLOG_Log("[KTPAMX DEBUG] SV_Frame: Processing g_putinserver list, size=%zu", g_putinserver.length());
-		}
-
 		size_t i = 0;
 		while (i < g_putinserver.length())
 		{
@@ -1145,7 +1132,6 @@ void SV_Frame_RH(IRehldsHook_SV_Frame *chain)
 			// Validate player index
 			if (playerIndex < 1 || playerIndex > gpGlobals->maxClients)
 			{
-				AMXXLOG_Log("[KTPAMX DEBUG] SV_Frame: Entry %zu has invalid index %d, removing", i, playerIndex);
 				g_putinserver.remove(i);
 				continue;
 			}
@@ -1156,45 +1142,23 @@ void SV_Frame_RH(IRehldsHook_SV_Frame *chain)
 			// Check if player is still valid
 			if (!pPlayer || !pEdict || !pPlayer->initialized)
 			{
-				AMXXLOG_Log("[KTPAMX DEBUG] SV_Frame: Entry %zu (idx=%d) pPlayer=%p pEdict=%p initialized=%d, removing",
-					i, playerIndex, (void*)pPlayer, (void*)pEdict, pPlayer ? (pPlayer->initialized ? 1 : 0) : -1);
 				g_putinserver.remove(i);
 				continue;
 			}
 
-			// KTP DEBUG: Log player state for debugging putinserver
+			// Check if player is fully spawned (has FL_CLIENT flag set by engine)
+			// and has a valid classname (not empty)
 			bool hasClientFlag = (pEdict->v.flags & FL_CLIENT) != 0;
 			bool hasClassname = pEdict->v.classname && STRING(pEdict->v.classname)[0] != '\0';
 
-			if (frame_counter % 50 == 1)  // Log every 50 frames to avoid spam
-			{
-				AMXXLOG_Log("[KTPAMX DEBUG] Pending putinserver[%zu]: idx=%d flags=0x%x FL_CLIENT=%d classname='%s' ingame=%d initialized=%d",
-					i, playerIndex,
-					(int)pEdict->v.flags,
-					hasClientFlag ? 1 : 0,
-					pEdict->v.classname ? STRING(pEdict->v.classname) : "(null)",
-					pPlayer->ingame ? 1 : 0,
-					pPlayer->initialized ? 1 : 0);
-			}
-
-			// Check if player is fully spawned (has FL_CLIENT flag set by engine)
-			// and has a valid classname (not empty)
 			if (hasClientFlag && hasClassname)
 			{
 				// Player is spawned, fire the forward if not already ingame
 				if (!pPlayer->ingame)
 				{
-					AMXXLOG_Log("[KTPAMX] Firing client_putinserver for player %d (flags=0x%x classname='%s' pEdict=%p g_bmod_dod=%d)",
-						playerIndex, (int)pEdict->v.flags, STRING(pEdict->v.classname), (void*)pEdict, g_bmod_dod ? 1 : 0);
 					pPlayer->PutInServer();
 					++g_players_num;
-					AMXXLOG_Log("[KTPAMX DEBUG] Before executeForwards: FF_ClientPutInServer=%d g_players_num=%d", FF_ClientPutInServer, g_players_num);
-					cell fwdResult = executeForwards(FF_ClientPutInServer, static_cast<cell>(playerIndex));
-					AMXXLOG_Log("[KTPAMX DEBUG] After executeForwards: result=%d", fwdResult);
-				}
-				else
-				{
-					AMXXLOG_Log("[KTPAMX DEBUG] Player %d already ingame, skipping forward", playerIndex);
+					executeForwards(FF_ClientPutInServer, static_cast<cell>(playerIndex));
 				}
 				g_putinserver.remove(i);
 				continue;
@@ -1244,46 +1208,28 @@ bool SV_CheckConsistencyResponse_RH(IRehldsHook_SV_CheckConsistencyResponse *cha
 // KTP: ClientConnected hook for client_connect and client_connectex forwards in extension mode
 void ClientConnected_RH(IRehldsHook_ClientConnected *chain, IGameClient *cl)
 {
-	AMXXLOG_Log("[KTPAMX DEBUG] ClientConnected_RH called, cl=%p", (void*)cl);
-
 	chain->callNext(cl);
 
 	if (!cl)
-	{
-		AMXXLOG_Log("[KTPAMX DEBUG] ClientConnected_RH: cl is NULL, returning");
 		return;
-	}
 
 	edict_t *pEntity = cl->GetEdict();
 	if (!pEntity)
-	{
-		AMXXLOG_Log("[KTPAMX DEBUG] ClientConnected_RH: pEntity is NULL, returning");
 		return;
-	}
 
 	// Validate player index
 	int index = ENTINDEX(pEntity);
-	AMXXLOG_Log("[KTPAMX DEBUG] ClientConnected_RH: index=%d, maxClients=%d", index, gpGlobals->maxClients);
 
 	if (index < 1 || index > gpGlobals->maxClients)
-	{
-		AMXXLOG_Log("[KTPAMX DEBUG] ClientConnected_RH: index out of range, returning");
 		return;
-	}
 
 	CPlayer *pPlayer = GET_PLAYER_POINTER_I(index);
 	if (!pPlayer)
-	{
-		AMXXLOG_Log("[KTPAMX DEBUG] ClientConnected_RH: pPlayer is NULL, returning");
 		return;
-	}
 
 	// Skip bots using edict flags (safer than pPlayer->IsBot() on uninitialized data)
 	if (pEntity->v.flags & FL_FAKECLIENT)
-	{
-		AMXXLOG_Log("[KTPAMX DEBUG] ClientConnected_RH: is bot (FL_FAKECLIENT), returning");
 		return;
-	}
 
 	const char *pszName = cl->GetName();
 
@@ -1305,7 +1251,6 @@ void ClientConnected_RH(IRehldsHook_ClientConnected *chain, IGameClient *cl)
 	// to initialize players with Init(), so we need to set the edict here
 	pPlayer->pEdict = pEntity;
 	pPlayer->index = index;
-	AMXXLOG_Log("[KTPAMX DEBUG] ClientConnected_RH: Set pPlayer->pEdict=%p, pPlayer->index=%d", (void*)pEntity, index);
 
 	// Initialize player first so forwards have valid player data
 	pPlayer->Connect(pszName ? pszName : "", pszAddress);
@@ -1324,9 +1269,6 @@ void ClientConnected_RH(IRehldsHook_ClientConnected *chain, IGameClient *cl)
 
 	// Add to pending putinserver list for processing in SV_Frame_RH
 	g_putinserver.append(index);
-
-	AMXXLOG_Log("[KTPAMX DEBUG] ClientConnected_RH: Added player index %d '%s' to g_putinserver, list size now %zu",
-		index, pszName ? pszName : "(null)", g_putinserver.length());
 }
 
 // KTP: Steam_NotifyClientConnect hook for client_authorized forward in extension mode
@@ -1430,73 +1372,61 @@ void ExecuteServerStringCmd_RH(IRehldsHook_ExecuteServerStringCmd *chain, const 
 
 void C_ClientPutInServer_Post(edict_t *pEntity)
 {
-	AMXXLOG_Log("[KTP DEBUG C_ClientPutInServer_Post] ENTRY pEntity=%p", (void*)pEntity);
 	CPlayer *pPlayer = GET_PLAYER_POINTER(pEntity);
-	AMXXLOG_Log("[KTP DEBUG C_ClientPutInServer_Post] pPlayer=%p index=%d", (void*)pPlayer, pPlayer ? pPlayer->index : -1);
-	AMXXLOG_Log("[KTP DEBUG C_ClientPutInServer_Post] Calling IsBot()...");
-	bool isBot = pPlayer->IsBot();
-	AMXXLOG_Log("[KTP DEBUG C_ClientPutInServer_Post] IsBot() returned %d", isBot ? 1 : 0);
-	if (!isBot)
+
+	if (!pPlayer->IsBot())
 	{
-		AMXXLOG_Log("[KTP DEBUG C_ClientPutInServer_Post] Calling PutInServer()...");
 		pPlayer->PutInServer();
-		AMXXLOG_Log("[KTP DEBUG C_ClientPutInServer_Post] PutInServer() returned, incrementing g_players_num");
 		++g_players_num;
-		AMXXLOG_Log("[KTP DEBUG C_ClientPutInServer_Post] Calling executeForwards(FF_ClientPutInServer=%d, %d)...", FF_ClientPutInServer, pPlayer->index);
-		executeForwards(FF_ClientPutInServer, static_cast<cell>(pPlayer->index));
-		AMXXLOG_Log("[KTP DEBUG C_ClientPutInServer_Post] executeForwards returned");
+		// KTP: In extension mode, client_putinserver forward is handled by SV_Spawn_f hook
+		// to avoid duplicate calls. Only fire the forward in Metamod mode.
+		if (g_bRunningWithMetamod)
+		{
+			executeForwards(FF_ClientPutInServer, static_cast<cell>(pPlayer->index));
+		}
 	}
 
-	AMXXLOG_Log("[KTP DEBUG C_ClientPutInServer_Post] EXIT");
 	RETURN_META(MRES_IGNORED);
 }
 
 void C_ClientUserInfoChanged_Post(edict_t *pEntity, char *infobuffer)
 {
-	AMXXLOG_Log("[KTP DEBUG C_ClientUserInfoChanged_Post] ENTRY pEntity=%p", (void*)pEntity);
 	CPlayer *pPlayer = GET_PLAYER_POINTER(pEntity);
-	AMXXLOG_Log("[KTP DEBUG C_ClientUserInfoChanged_Post] pPlayer=%p index=%d ingame=%d initialized=%d",
-		(void*)pPlayer, pPlayer ? pPlayer->index : -1, pPlayer ? pPlayer->ingame : -1, pPlayer ? pPlayer->initialized : -1);
+
 	executeForwards(FF_ClientInfoChanged, static_cast<cell>(pPlayer->index));
 	const char* name = INFOKEY_VALUE(infobuffer, "name");
-	AMXXLOG_Log("[KTP DEBUG C_ClientUserInfoChanged_Post] name='%s'", name ? name : "(null)");
 
 	// Emulate bot connection and putinserver
 	if (pPlayer->ingame)
 	{
-		AMXXLOG_Log("[KTP DEBUG C_ClientUserInfoChanged_Post] Player already ingame, updating name");
-		pPlayer->name =name;			//	Make sure player have name up to date
-	} else {
-		AMXXLOG_Log("[KTP DEBUG C_ClientUserInfoChanged_Post] Player NOT ingame, calling IsBot()...");
-		bool isBot = pPlayer->IsBot();
-		AMXXLOG_Log("[KTP DEBUG C_ClientUserInfoChanged_Post] IsBot() returned %d", isBot ? 1 : 0);
-		if (isBot) {
-			pPlayer->Connect(name, "127.0.0.1"/*CVAR_GET_STRING("net_address")*/);
+		pPlayer->name = name;  // Make sure player have name up to date
+	}
+	else if (pPlayer->IsBot())
+	{
+		pPlayer->Connect(name, "127.0.0.1"/*CVAR_GET_STRING("net_address")*/);
 
-			executeForwards(FF_ClientConnect, static_cast<cell>(pPlayer->index));
+		executeForwards(FF_ClientConnect, static_cast<cell>(pPlayer->index));
 
-			pPlayer->Authorize();
-			const char* authid = GETPLAYERAUTHID(pEntity);
-			if (g_auth_funcs.size())
+		pPlayer->Authorize();
+		const char* authid = GETPLAYERAUTHID(pEntity);
+		if (g_auth_funcs.size())
+		{
+			List<AUTHORIZEFUNC>::iterator iter, end=g_auth_funcs.end();
+			AUTHORIZEFUNC fn;
+			for (iter=g_auth_funcs.begin(); iter!=end; iter++)
 			{
-				List<AUTHORIZEFUNC>::iterator iter, end=g_auth_funcs.end();
-				AUTHORIZEFUNC fn;
-				for (iter=g_auth_funcs.begin(); iter!=end; iter++)
-				{
-					fn = (*iter);
-					fn(pPlayer->index, authid);
-				}
+				fn = (*iter);
+				fn(pPlayer->index, authid);
 			}
-			executeForwards(FF_ClientAuthorized, static_cast<cell>(pPlayer->index), authid);
-
-			pPlayer->PutInServer();
-			++g_players_num;
-
-			executeForwards(FF_ClientPutInServer, static_cast<cell>(pPlayer->index));
 		}
+		executeForwards(FF_ClientAuthorized, static_cast<cell>(pPlayer->index), authid);
+
+		pPlayer->PutInServer();
+		++g_players_num;
+
+		executeForwards(FF_ClientPutInServer, static_cast<cell>(pPlayer->index));
 	}
 
-	AMXXLOG_Log("[KTP DEBUG C_ClientUserInfoChanged_Post] EXIT");
 	RETURN_META(MRES_IGNORED);
 }
 
@@ -2308,6 +2238,40 @@ static void KTPAMX_ReloadPlugins();
 static void KTPAMX_ServerDeactivate();
 static void KTPAMX_ServerDeactivatePost();
 static void SV_ActivateServer_RH(IRehldsHook_SV_ActivateServer *chain, int runPhysics);
+static void SV_ClientCommand_RH(IRehldsHook_SV_ClientCommand *chain, edict_t *pEdict);
+static void SV_InactivateClients_RH(IRehldsHook_SV_InactivateClients *chain);
+
+// KTP: Message ID capture system for extension mode
+// We hook pfnRegUserMsg to capture message IDs as they're registered by the game DLL
+// This allows us to look up IDs without calling REG_USER_MSG (which creates new messages)
+
+
+static int PF_RegUserMsg_RH(IRehldsHook_PF_RegUserMsg_I *chain, const char *pszName, int iSize)
+{
+	// Call original function first to get the ID
+	int id = chain->callNext(pszName, iSize);
+
+	// Capture the ID for messages we care about
+	for (int i = 0; g_user_msg[i].name; ++i)
+	{
+		if (strcmp(g_user_msg[i].name, pszName) == 0)
+		{
+			*g_user_msg[i].id = id;
+
+			// Set up message handlers if applicable
+			if (!g_user_msg[i].cstrike || g_bmod_cstrike)
+			{
+				if (g_user_msg[i].endmsg)
+					modMsgsEnd[id] = g_user_msg[i].func;
+				else
+					modMsgs[id] = g_user_msg[i].func;
+			}
+			break;
+		}
+	}
+
+	return id;
+}
 
 C_DLLEXPORT void WINAPI GiveFnptrsToDll(enginefuncs_t* pengfuncsFromEngine, globalvars_t *pGlobals)
 {
@@ -2315,15 +2279,23 @@ C_DLLEXPORT void WINAPI GiveFnptrsToDll(enginefuncs_t* pengfuncsFromEngine, glob
 	gpGlobals = pGlobals;
 
 	// KTP: Try to detect if we're loading as a ReHLDS extension (no Metamod)
-	// If ReHLDS API is available, setup hooks for extension mode initialization
-	// Note: g_bRunningWithMetamod will be set to true if Meta_Attach gets called later
 	if (!g_bRunningWithMetamod && !g_bRehldsExtensionInit)
 	{
-		// Try to init ReHLDS API and setup hooks for extension mode
 		if (RehldsApi_Init())
 		{
-			// Register the SV_ActivateServer hook to initialize KTP AMX when server starts
 			RehldsHookchains->SV_ActivateServer()->registerHook(SV_ActivateServer_RH);
+
+			// KTP: Hook pfnRegUserMsg to capture message IDs as they're registered
+			// This is critical - we need to know message IDs without calling REG_USER_MSG
+			// (which creates new messages if they don't exist)
+			// KTP: Register hook for PF_RegUserMsg_I to capture message IDs
+			RehldsHookchains->PF_RegUserMsg_I()->registerHook(PF_RegUserMsg_RH);
+			RehldsHookchains->SV_ClientCommand()->registerHook(SV_ClientCommand_RH);
+
+			// KTP: Hook SV_InactivateClients to run deactivation BEFORE clients are disconnected
+			// This fires at the START of any map change sequence (rcon, game DLL, etc.)
+			RehldsHookchains->SV_InactivateClients()->registerHook(SV_InactivateClients_RH);
+
 			print_srvconsole("[KTP AMX] ReHLDS extension mode detected, will initialize on server activate.\n");
 		}
 	}
@@ -2474,18 +2446,22 @@ static char g_szPreviousMap[64] = "";
 static bool g_bMapChangeInProgress = false;
 
 // KTP: Server deactivate for extension mode - called before map change
+// NOTE: During map change, clients stay connected (inactive state) - we only clean up AMXX state
+// We do NOT call pPlayer->Disconnect() as that would kick players from the server
 static void KTPAMX_ServerDeactivate()
 {
 	if (!g_activated)
 		return;
 
-	// Disconnect all players and trigger forwards
+	// Fire disconnect forwards for all connected players, but don't actually disconnect them
+	// The engine will mark them as inactive, and they'll reconnect when the new map loads
 	for (int i = 1; i <= gpGlobals->maxClients; ++i)
 	{
 		CPlayer *pPlayer = GET_PLAYER_POINTER_I(i);
 
 		if (pPlayer->initialized)
 		{
+			// Fire the forwards so plugins can clean up per-player state
 			// deprecated
 			executeForwards(FF_ClientDisconnect, static_cast<cell>(pPlayer->index));
 
@@ -2495,12 +2471,15 @@ static void KTPAMX_ServerDeactivate()
 			}
 		}
 
+		// Clear AMXX's internal player state WITHOUT calling Disconnect() (which drops the client)
 		if (pPlayer->ingame)
 		{
 			auto wasDisconnecting = pPlayer->disconnecting;
 
-			pPlayer->Disconnect();
-			--g_players_num;
+			// Just clear AMXX's internal state, don't kick the player
+			pPlayer->initialized = false;
+			pPlayer->ingame = false;
+			pPlayer->authorized = false;
 
 			if (!wasDisconnecting && g_isDropClientHookAvailable)
 			{
@@ -2561,12 +2540,29 @@ static void KTPAMX_ServerDeactivatePost()
 // ReHLDS hook for SV_ActivateServer - called when server activates
 static void SV_ActivateServer_RH(IRehldsHook_SV_ActivateServer *chain, int runPhysics)
 {
-	// Call the original first
-	chain->callNext(runPhysics);
-
 	// Only handle extension mode
 	if (g_bRunningWithMetamod)
+	{
+		chain->callNext(runPhysics);
 		return;
+	}
+
+	// KTP: Call chain->callNext() FIRST to let ReHLDS merge sv_gpNewUserMsgs into sv_gpUserMsgs.
+	//
+	// The game DLL registers user messages during GameDLLInit/ServerActivate, which go into
+	// sv_gpNewUserMsgs. REG_USER_MSG lookups only check sv_gpUserMsgs, so if we init BEFORE
+	// the merge, our lookups create DUPLICATE message IDs instead of finding existing ones.
+	// This causes "UserMsg: Not Present on Client XX" errors.
+	//
+	// On initial server start: No clients are connected, so SV_ActivateServer_internal's
+	// client loop (which sends user messages) does nothing. Clients connecting AFTER
+	// activation will receive the complete message list via SV_New_f.
+	//
+	// On map change: Existing clients get SV_BuildReconnect which triggers a full reconnect,
+	// so they also receive the complete message list.
+
+	// Call chain first - this activates the server and merges message lists
+	chain->callNext(runPhysics);
 
 	// If we haven't initialized yet, do extension init now
 	if (!g_bRehldsExtensionInit)
@@ -2576,15 +2572,11 @@ static void SV_ActivateServer_RH(IRehldsHook_SV_ActivateServer *chain, int runPh
 		return;
 	}
 
-	// Check if this is a map change
+	// Check if this is a map change (deactivation was already done in SV_InactivateClients_RH)
 	const char *currentMap = STRING(gpGlobals->mapname);
-	if (g_szPreviousMap[0] != '\0' && strcmp(g_szPreviousMap, currentMap) != 0)
-	{
-		// Map is changing - trigger deactivation first
-		g_bMapChangeInProgress = true;
-		KTPAMX_ServerDeactivate();
-		KTPAMX_ServerDeactivatePost();
 
+	if (g_bMapChangeInProgress)
+	{
 		// Re-initialize for the new map
 		KTPAMX_ReloadPlugins();
 		g_bMapChangeInProgress = false;
@@ -2593,85 +2585,92 @@ static void SV_ActivateServer_RH(IRehldsHook_SV_ActivateServer *chain, int runPh
 	ke::SafeSprintf(g_szPreviousMap, sizeof(g_szPreviousMap), "%s", currentMap);
 }
 
-// KTP: Reload plugins on map change - extension mode only
+// KTP: Hook for SV_InactivateClients - runs deactivation at start of map change
+// This mimics what Metamod does in C_ServerDeactivate, which is called by SV_ServerShutdown
+// We hook here because in extension mode, the engine calls game DLL's ServerDeactivate, not ours
+static void SV_InactivateClients_RH(IRehldsHook_SV_InactivateClients *chain)
+{
+	// Only handle extension mode
+	if (g_bRunningWithMetamod)
+	{
+		chain->callNext();
+		return;
+	}
+
+	// Only run deactivation if we're initialized and activated
+	if (g_bRehldsExtensionInit && g_activated)
+	{
+		// Mark that map change is in progress - SV_ActivateServer_RH will do re-init
+		g_bMapChangeInProgress = true;
+
+		// Do full deactivation like C_ServerDeactivate does
+		// Fire disconnect forwards for all connected players
+		for (int i = 1; i <= gpGlobals->maxClients; ++i)
+		{
+			CPlayer *pPlayer = GET_PLAYER_POINTER_I(i);
+
+			if (pPlayer->initialized)
+			{
+				// deprecated
+				executeForwards(FF_ClientDisconnect, static_cast<cell>(pPlayer->index));
+
+				if (g_isDropClientHookAvailable && !pPlayer->disconnecting)
+				{
+					executeForwards(FF_ClientDisconnected, static_cast<cell>(pPlayer->index), FALSE, prepareCharArray(const_cast<char*>(""), 0), 0);
+				}
+			}
+
+			if (pPlayer->ingame)
+			{
+				auto wasDisconnecting = pPlayer->disconnecting;
+
+				// This just clears AMXX internal state, doesn't kick the player
+				pPlayer->Disconnect();
+				--g_players_num;
+
+				if (!wasDisconnecting && g_isDropClientHookAvailable)
+				{
+					executeForwards(FF_ClientRemove, static_cast<cell>(pPlayer->index), FALSE, const_cast<char*>(""));
+				}
+			}
+		}
+
+		// Disable DropClient hook during map transition
+		if (g_isDropClientHookAvailable && g_isDropClientHookEnabled)
+		{
+			if (RehldsApi)
+			{
+				RehldsHookchains->SV_DropClient()->unregisterHook(SV_DropClient_RH);
+			}
+			else if (DropClientDetour)
+			{
+				DropClientDetour->DisableDetour();
+			}
+			g_isDropClientHookEnabled = false;
+		}
+
+		g_players_num = 0;
+
+		// Fire plugin_end forward
+		executeForwards(FF_PluginEnd);
+	}
+
+	// Continue with client inactivation
+	chain->callNext();
+}
+
+// KTP: Handle map change activation - extension mode only
+// This mimics what C_ServerActivate_Post does in Metamod mode
 static void KTPAMX_ReloadPlugins()
 {
-	// KTP: Re-initialize task manager timers on map change (in case they got cleared)
+	// Clear tasks so they don't fire with stale data
+	g_tasksMngr.clear();
+
+	// Re-initialize task manager timers for new map
 	g_game_timeleft = g_bmod_dod ? 1.0f : 0.0f;
 	g_tasksMngr.registerTimers(&gpGlobals->time, &mp_timelimit->value, &g_game_timeleft);
 
-	// Re-register forwards (they were cleared during deactivate)
-	FF_PluginInit = registerForward("plugin_init", ET_IGNORE, FP_DONE);
-	FF_ClientCommand = registerForward("client_command", ET_STOP, FP_CELL, FP_DONE);
-	FF_ClientConnect = registerForward("client_connect", ET_IGNORE, FP_CELL, FP_DONE);
-	FF_ClientDisconnect = registerForward("client_disconnect", ET_IGNORE, FP_CELL, FP_DONE);
-	FF_ClientDisconnected = registerForward("client_disconnected", ET_IGNORE, FP_CELL, FP_CELL, FP_ARRAY, FP_CELL, FP_DONE);
-	FF_ClientRemove = registerForward("client_remove", ET_IGNORE, FP_CELL, FP_CELL, FP_STRING, FP_DONE);
-	FF_ClientInfoChanged = registerForward("client_infochanged", ET_IGNORE, FP_CELL, FP_DONE);
-	FF_ClientCvarChanged = registerForward("client_cvar_changed", ET_IGNORE, FP_CELL, FP_STRING, FP_STRING, FP_DONE);
-	FF_ClientPutInServer = registerForward("client_putinserver", ET_IGNORE, FP_CELL, FP_DONE);
-	FF_ClientAuthorized = registerForward("client_authorized", ET_IGNORE, FP_CELL, FP_STRING, FP_DONE);
-	FF_PluginCfg = registerForward("plugin_cfg", ET_IGNORE, FP_DONE);
-	FF_PluginPrecache = registerForward("plugin_precache", ET_IGNORE, FP_DONE);
-	FF_PluginLog = registerForward("plugin_log", ET_STOP, FP_DONE);
-	FF_PluginEnd = registerForward("plugin_end", ET_IGNORE, FP_DONE);
-	FF_InconsistentFile = registerForward("inconsistent_file", ET_STOP, FP_CELL, FP_STRING, FP_STRINGEX, FP_DONE);
-	FF_ChangeLevel = registerForward("server_changelevel", ET_STOP, FP_STRING, FP_DONE);
-	FF_ClientConnectEx = registerForward("client_connectex", ET_STOP, FP_CELL, FP_STRING, FP_STRING, FP_ARRAY, FP_DONE);
-
-	// Load plugins
-	char map_pluginsfile_path[256];
-	char prefixed_map_pluginsfile[256];
-	char configs_dir[256];
-
-	get_localinfo_r("amxx_configsdir", "addons/ktpamx/configs", configs_dir, sizeof(configs_dir)-1);
-
-	const char *plugins_file = get_localinfo("amxx_plugins", "addons/ktpamx/configs/plugins.ini");
-
-	g_plugins.CALMFromFile(plugins_file);
-	LoadExtraPluginsToPCALM(configs_dir);
-
-	char temporaryMap[64], *tmap_ptr;
-	ke::SafeSprintf(temporaryMap, sizeof(temporaryMap), "%s", STRING(gpGlobals->mapname));
-
-	prefixed_map_pluginsfile[0] = '\0';
-	if ((tmap_ptr = strchr(temporaryMap, '_')) != NULL)
-	{
-		*tmap_ptr = '\0';
-		ke::SafeSprintf(prefixed_map_pluginsfile,
-			sizeof(prefixed_map_pluginsfile),
-			"%s/maps/plugins-%s.ini",
-			configs_dir,
-			temporaryMap);
-		g_plugins.CALMFromFile(prefixed_map_pluginsfile);
-	}
-
-	ke::SafeSprintf(map_pluginsfile_path,
-		sizeof(map_pluginsfile_path),
-		"%s/maps/plugins-%s.ini",
-		configs_dir,
-		STRING(gpGlobals->mapname));
-	g_plugins.CALMFromFile(map_pluginsfile_path);
-
-	g_plugins.loadPluginsFromFile(plugins_file);
-	LoadExtraPluginsFromDir(configs_dir);
-	g_plugins.loadPluginsFromFile(map_pluginsfile_path, false);
-	if (prefixed_map_pluginsfile[0] != '\0')
-	{
-		g_plugins.loadPluginsFromFile(prefixed_map_pluginsfile, false);
-	}
-
-	g_plugins.Finalize();
-	g_plugins.InvalidateCache();
-
-	// Reset time and flags
-	g_game_timeleft = g_bmod_dod ? 1.0f : 0.0f;
-	g_task_time = gpGlobals->time + 99999.0f;
-	g_auth_time = gpGlobals->time + 99999.0f;
-	g_players_num = 0;
-	memset(g_players[0].flags, -1, sizeof(g_players[0].flags));
-
-	// KTP: Re-initialize player slots on map change
+	// Re-initialize all player slots (like C_ServerActivate_Post does)
 	for (int i = 1; i <= gpGlobals->maxClients; ++i)
 	{
 		CPlayer *pPlayer = GET_PLAYER_POINTER_I(i);
@@ -2679,12 +2678,32 @@ static void KTPAMX_ReloadPlugins()
 		pPlayer->Init(pEdict, i);
 	}
 
-	g_initialized = true;
-	g_activated = true;
-
-	// Execute plugin_init and plugin_cfg
+	// Execute plugin_init and plugin_cfg for the new map
+	// Plugins are still loaded, we just fire the forwards so they can reinitialize
 	executeForwards(FF_PluginInit);
 	executeForwards(FF_PluginCfg);
+
+	// Correct time in Counter-Strike and other mods (except DOD)
+	if (!g_bmod_dod)
+		g_game_timeleft = 0;
+
+	// Reset task and auth time to enable execution
+	g_task_time = gpGlobals->time;
+	g_auth_time = gpGlobals->time;
+
+	// Re-enable DropClient hook for the new map
+	if (g_isDropClientHookAvailable && !g_isDropClientHookEnabled)
+	{
+		if (RehldsApi)
+		{
+			RehldsHookchains->SV_DropClient()->registerHook(SV_DropClient_RH);
+		}
+		else if (DropClientDetour)
+		{
+			DropClientDetour->EnableDetour();
+		}
+		g_isDropClientHookEnabled = true;
+	}
 }
 
 // Initialize KTP AMX as a ReHLDS extension (no Metamod)
@@ -2777,7 +2796,6 @@ static void KTPAMX_InitAsRehldsExtension()
 
 	// Load modules - in extension mode, modules that require Metamod hooks won't fully work,
 	// but pure AMXX modules and modules using Re* API hookchains (like ReAPI) will work
-	// We pass PT_ANYTIME since we don't have Metamod's load time concept
 	loadModules(get_localinfo("amxx_modules", "addons/ktpamx/configs/modules.ini"), PT_ANYTIME);
 
 	FlagMan.SetFile("cmdaccess.ini");
@@ -2805,9 +2823,26 @@ static void KTPAMX_InitAsRehldsExtension()
 	// KTP: Register SV_Frame hook for per-frame processing (client_putinserver forwards, etc)
 	RehldsHookchains->SV_Frame()->registerHook(SV_Frame_RH);
 
+	// KTP: Register SV_Spawn_f hook for client_putinserver forward on map change reconnect
+	// During map change, clients don't go through ClientConnected, so SV_Spawn_f handles initialization
+	RehldsHookchains->SV_Spawn_f()->registerHook(SV_Spawn_f_RH);
+
 	g_CvarManager.CreateCvarHook();
 
 	GET_IFACE<IFileSystem>("filesystem_stdio", g_FileSystem, FILESYSTEM_INTERFACE_VERSION);
+
+	// KTP: Enable query_client_cvar in extension mode if engine supports it
+	// This is normally set in GetNewDLLFunctions which Metamod calls, but in extension mode
+	// we need to check and set it ourselves
+	if (g_engfuncs.pfnQueryClientCvarValue2)
+	{
+		g_NewDLL_Available = true;
+		AMXXLOG_Log("[KTP AMX] Extension mode: pfnQueryClientCvarValue2 available, enabling query_client_cvar");
+	}
+	else
+	{
+		AMXXLOG_Log("[KTP AMX] Extension mode: pfnQueryClientCvarValue2 NOT available, query_client_cvar disabled");
+	}
 
 	// KTP: Load plugins (equivalent to ServerActivate in Metamod mode)
 	char map_pluginsfile_path[256];
@@ -2932,17 +2967,36 @@ static void KTPAMX_InitAsRehldsExtension()
 	}
 	AMXXLOG_Log("[KTP AMX] Initialized %d player slots", gpGlobals->maxClients);
 
-	// KTP: User message hooks are NOT available in extension mode
-	//
-	// In Metamod mode, C_RegUserMsg_Post hooks pfnRegUserMsg to capture message IDs
-	// as they're registered by the game DLL. In extension mode, by the time we initialize,
-	// the messages are already registered and there's no way to look them up without
-	// calling pfnRegUserMsg - which would create NEW message IDs that the client
-	// doesn't know about, causing "UserMsg: Not Present on Client" errors.
-	//
-	// Message-based features (CurWeapon tracking, Damage, DeathMsg, etc.) are not
-	// available when running as a ReHLDS extension without Metamod.
-	AMXXLOG_Log("[KTP AMX] User messages: SKIPPED (not available in extension mode)");
+	// KTP: Look up message IDs using REG_USER_MSG - since the game DLL has already registered
+	// these messages, REG_USER_MSG will return the existing IDs (not create new ones)
+	AMXXLOG_Log("[KTP AMX] Extension mode: Looking up message IDs via REG_USER_MSG");
+	for (int i = 0; g_user_msg[i].name; ++i)
+	{
+		// Skip CS-only messages if not running CS
+		if (g_user_msg[i].cstrike && !g_bmod_cstrike)
+			continue;
+
+		// REG_USER_MSG returns existing ID if message already registered, or creates new one
+		// Since game DLL registered these during GameDLLInit, we'll get existing IDs
+		int id = REG_USER_MSG(g_user_msg[i].name, -1);
+		if (id > 0)
+		{
+			*g_user_msg[i].id = id;
+
+			// Set up message handlers
+			if (g_user_msg[i].func)
+			{
+				if (g_user_msg[i].endmsg)
+					modMsgsEnd[id] = g_user_msg[i].func;
+				else
+					modMsgs[id] = g_user_msg[i].func;
+			}
+		}
+		else
+		{
+			AMXXLOG_Log("[KTP AMX] Warning: Message '%s' not found (id=%d)", g_user_msg[i].name, id);
+		}
+	}
 
 	// Initialize type conversion
 	TypeConversion.init();
@@ -2976,4 +3030,175 @@ static void KTPAMX_InitAsRehldsExtension()
 
 	print_srvconsole("[KTP AMX] Loaded %d plugin(s).\n", g_plugins.getPluginsNum());
 	AMXXLOG_Log("KTP AMX initialized as ReHLDS extension (no Metamod)");
+}
+
+// KTP: ReHLDS hookchain handler for SV_ClientCommand
+// This is the extension mode equivalent of C_ClientCommand
+// Instead of RETURN_META(MRES_SUPERCEDE), we simply return without calling chain->callNext
+static void SV_ClientCommand_RH(IRehldsHook_SV_ClientCommand *chain, edict_t *pEdict)
+{
+	CPlayer *pPlayer = GET_PLAYER_POINTER(pEdict);
+
+	bool supercede = false;
+	cell ret = 0;
+
+	const char* cmd = CMD_ARGV(0);
+	const char* arg = CMD_ARGV(1);
+
+	// Handle "amx" command if on dedicated server
+	if (IS_DEDICATED_SERVER())
+	{
+		if (cmd && stricmp(cmd, "amx") == 0)
+		{
+			// Print version
+			static char buf[1024];
+			size_t len = 0;
+
+			sprintf(buf, "%s %s\n", Plugin_info.name, Plugin_info.version);
+			CLIENT_PRINT(pEdict, print_console, buf);
+			len = sprintf(buf, "Author: Tony 'Nein_' (https://github.com/afraznein)\n");
+			CLIENT_PRINT(pEdict, print_console, buf);
+			len = sprintf(buf, "Based on AMX Mod X by:\n         David \"BAILOPAN\" Anderson, Pavol \"PM OnoTo\" Marko, Felix \"SniperBeamer\" Geyer\n");
+			len += sprintf(&buf[len], "         Jonny \"Got His Gun\" Bergstrom, Lukasz \"SidLuke\" Wlasinski\n");
+			CLIENT_PRINT(pEdict, print_console, buf);
+			len = sprintf(buf, "         Christian \"Basic-Master\" Hammacher, Borja \"faluco\" Ferrer\n");
+			len += sprintf(&buf[len], "         Scott \"DS\" Ehlert\n");
+			len += sprintf(&buf[len], "Compiled: %s\nURL: https://github.com/afraznein/KTPAMXX\n", __DATE__ ", " __TIME__);
+			CLIENT_PRINT(pEdict, print_console, buf);
+#ifdef JIT
+			sprintf(buf, "Core mode: JIT\n");
+#else
+#ifdef ASM32
+			sprintf(buf, "Core mode: ASM\n");
+#else
+			sprintf(buf, "Core mode: Normal\n");
+#endif
+#endif
+			CLIENT_PRINT(pEdict, print_console, buf);
+			return; // Supercede - don't call chain->callNext
+		}
+	}
+
+	// Execute client_command forward
+	if (executeForwards(FF_ClientCommand, static_cast<cell>(pPlayer->index)) > 0)
+		return; // Supercede
+
+	// Check for registered client commands
+	CmdMngr::iterator aa = g_commands.clcmdprefixbegin(cmd);
+
+	if (!aa)
+		aa = g_commands.clcmdbegin();
+
+	while (aa)
+	{
+		if ((*aa).matchCommandLine(cmd, arg) && (*aa).getPlugin()->isExecutable((*aa).getFunction()))
+		{
+			ret = executeForwards((*aa).getFunction(), static_cast<cell>(pPlayer->index),
+				static_cast<cell>((*aa).getFlags()), static_cast<cell>((*aa).getId()));
+			if (ret & 2) supercede = true;
+			if (ret & 1) return; // Supercede immediately
+		}
+		++aa;
+	}
+
+	// Check menu commands
+	if (!strcmp(cmd, "menuselect"))
+	{
+		int pressed_key = atoi(arg) - 1;
+		int bit_key = (1 << pressed_key);
+
+		if (pPlayer->keys & bit_key)
+		{
+			if (gpGlobals->time > pPlayer->menuexpire)
+			{
+				if (Menu *pMenu = get_menu_by_id(pPlayer->newmenu))
+				{
+					pMenu->Close(pPlayer->index);
+					return; // Supercede
+				}
+				else if (pPlayer->menu > 0 && !pPlayer->vgui)
+				{
+					pPlayer->menu = 0;
+					pPlayer->keys = 0;
+					return; // Supercede
+				}
+			}
+
+			int menuid = pPlayer->menu;
+			pPlayer->menu = 0;
+
+			// First, do new menus
+			int func_was_executed = -1;
+			if (pPlayer->newmenu != -1)
+			{
+				int menu = pPlayer->newmenu;
+				pPlayer->newmenu = -1;
+				if (Menu *pMenu = get_menu_by_id(menu))
+				{
+					int item = pMenu->PagekeyToItem(pPlayer->page, pressed_key + 1);
+					if (item == MENU_BACK)
+					{
+						if (pMenu->pageCallback >= 0)
+							executeForwards(pMenu->pageCallback, static_cast<cell>(pPlayer->index), static_cast<cell>(MENU_BACK), static_cast<cell>(menu));
+
+						pMenu->Display(pPlayer->index, pPlayer->page - 1);
+					}
+					else if (item == MENU_MORE)
+					{
+						if (pMenu->pageCallback >= 0)
+							executeForwards(pMenu->pageCallback, static_cast<cell>(pPlayer->index), static_cast<cell>(MENU_MORE), static_cast<cell>(menu));
+
+						pMenu->Display(pPlayer->index, pPlayer->page + 1);
+					}
+					else
+					{
+						ret = executeForwards(pMenu->func, static_cast<cell>(pPlayer->index), static_cast<cell>(menu), static_cast<cell>(item));
+						if (ret & 2)
+						{
+							supercede = true;
+						}
+						else if (ret & 1)
+						{
+							return; // Supercede
+						}
+					}
+					func_was_executed = pMenu->func;
+				}
+			}
+
+			// Now, do old menus
+			MenuMngr::iterator a = g_menucmds.begin();
+
+			while (a)
+			{
+				g_menucmds.SetWatchIter(a);
+				if ((*a).matchCommand(menuid, bit_key)
+					&& (*a).getPlugin()->isExecutable((*a).getFunction())
+					&& (func_was_executed == -1
+						|| !g_forwards.isSameSPForward(func_was_executed, (*a).getFunction()))
+					)
+				{
+					ret = executeForwards((*a).getFunction(), static_cast<cell>(pPlayer->index),
+						static_cast<cell>(pressed_key), 0);
+
+					if (ret & 2) supercede = true;
+					if (ret & 1) return; // Supercede
+				}
+				if (g_menucmds.GetWatchIter() != a)
+				{
+					a = g_menucmds.GetWatchIter();
+				}
+				else
+				{
+					++a;
+				}
+			}
+		}
+	}
+
+	// If not superceding, continue the hookchain (call original pfnClientCommand)
+	if (!supercede)
+	{
+		chain->callNext(pEdict);
+	}
 }

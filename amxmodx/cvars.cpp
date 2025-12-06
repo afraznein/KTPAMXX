@@ -648,7 +648,18 @@ static cell AMX_NATIVE_CALL query_client_cvar(AMX *amx, cell *params)
 
 	ClientCvarQuery_Info *queryObject = new ClientCvarQuery_Info;
 	queryObject->resultFwd = iFunc;
-	queryObject->requestId = MAKE_REQUESTID(PLID);
+
+	// KTP: In extension mode, gpMetaUtilFuncs is NULL so MAKE_REQUESTID crashes.
+	// Use a simple incrementing counter instead - it just needs to be unique per query.
+	if (g_bRunningWithMetamod)
+	{
+		queryObject->requestId = MAKE_REQUESTID(PLID);
+	}
+	else
+	{
+		static int s_extensionRequestId = 0x10000;  // Start high to avoid conflicts
+		queryObject->requestId = ++s_extensionRequestId;
+	}
 
 	if (numParams == 5 && params[4] != 0)
 	{

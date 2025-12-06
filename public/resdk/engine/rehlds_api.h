@@ -211,6 +211,94 @@ typedef IHookChainRegistry<bool, netadr_t &, const uint8_t *, int> IRehldsHookRe
 typedef IVoidHookChain<> IRehldsHook_SV_Frame;
 typedef IVoidHookChainRegistry<> IRehldsHookRegistry_SV_Frame;
 
+//SV_UpdatePausedHUD hook (KTP Modification - allows HUD updates during pause)
+typedef IVoidHookChain<> IRehldsHook_SV_UpdatePausedHUD;
+typedef IVoidHookChainRegistry<> IRehldsHookRegistry_SV_UpdatePausedHUD;
+
+//SV_ShouldSendConsistencyList hook
+typedef IHookChain<bool, IGameClient *, bool> IRehldsHook_SV_ShouldSendConsistencyList;
+typedef IHookChainRegistry<bool, IGameClient *, bool> IRehldsHookRegistry_SV_ShouldSendConsistencyList;
+
+//GetEntityInit hook
+typedef IHookChain<ENTITYINIT, char *> IRehldsHook_GetEntityInit;
+typedef IHookChainRegistry<ENTITYINIT, char *> IRehldsHookRegistry_GetEntityInit;
+
+//SV_EmitPings hook
+typedef IHookChain<void, IGameClient *, sizebuf_t *> IRehldsHook_SV_EmitPings;
+typedef IHookChainRegistry<void, IGameClient *, sizebuf_t *> IRehldsHookRegistry_SV_EmitPings;
+
+//ED_Alloc hook
+typedef IHookChain<edict_t *> IRehldsHook_ED_Alloc;
+typedef IHookChainRegistry<edict_t *> IRehldsHookRegistry_ED_Alloc;
+
+//ED_Free hook
+typedef IVoidHookChain<edict_t *> IRehldsHook_ED_Free;
+typedef IVoidHookChainRegistry<edict_t *> IRehldsHookRegistry_ED_Free;
+
+//Con_Printf hook
+typedef IHookChain<void, const char *> IRehldsHook_Con_Printf;
+typedef IHookChainRegistry<void, const char *> IRehldsHookRegistry_Con_Printf;
+
+//SV_CheckUserInfo hook
+typedef IHookChain<int, netadr_t *, char *, qboolean, int, char *> IRehldsHook_SV_CheckUserInfo;
+typedef IHookChainRegistry<int, netadr_t *, char *, qboolean, int, char *> IRehldsHookRegistry_SV_CheckUserInfo;
+
+//PF_precache_generic_I hook
+typedef IHookChain<int, const char *> IRehldsHook_PF_precache_generic_I;
+typedef IHookChainRegistry<int, const char *> IRehldsHookRegistry_PF_precache_generic_I;
+
+//PF_precache_model_I hook
+typedef IHookChain<int, const char *> IRehldsHook_PF_precache_model_I;
+typedef IHookChainRegistry<int, const char *> IRehldsHookRegistry_PF_precache_model_I;
+
+//PF_precache_sound_I hook
+typedef IHookChain<int, const char *> IRehldsHook_PF_precache_sound_I;
+typedef IHookChainRegistry<int, const char *> IRehldsHookRegistry_PF_precache_sound_I;
+
+//EV_Precache hook
+typedef IHookChain<unsigned short, int, const char *> IRehldsHook_EV_Precache;
+typedef IHookChainRegistry<unsigned short, int, const char *> IRehldsHookRegistry_EV_Precache;
+
+//SV_AddResource hook
+typedef IVoidHookChain<resourcetype_t, const char *, int, unsigned char, int> IRehldsHook_SV_AddResource;
+typedef IVoidHookChainRegistry<resourcetype_t, const char *, int, unsigned char, int> IRehldsHookRegistry_SV_AddResource;
+
+//SV_ClientPrintf hook
+typedef IVoidHookChain<const char *> IRehldsHook_SV_ClientPrintf;
+typedef IVoidHookChainRegistry<const char *> IRehldsHookRegistry_SV_ClientPrintf;
+
+//SV_AllowPhysent hook
+typedef IHookChain<bool, edict_t*, edict_t*> IRehldsHook_SV_AllowPhysent;
+typedef IHookChainRegistry<bool, edict_t*, edict_t*> IRehldsHookRegistry_SV_AllowPhysent;
+
+//SV_SendResources hook
+typedef IVoidHookChain<sizebuf_t *> IRehldsHook_SV_SendResources;
+typedef IVoidHookChainRegistry<sizebuf_t *> IRehldsHookRegistry_SV_SendResources;
+
+//PF_changelevel_I hook (KTP - for server_changelevel forward)
+typedef IVoidHookChain<const char *, const char *> IRehldsHook_PF_changelevel_I;
+typedef IVoidHookChainRegistry<const char *, const char *> IRehldsHookRegistry_PF_changelevel_I;
+
+//PF_setmodel_I hook (KTP - for entity model tracking)
+typedef IVoidHookChain<edict_t *, const char *> IRehldsHook_PF_setmodel_I;
+typedef IVoidHookChainRegistry<edict_t *, const char *> IRehldsHookRegistry_PF_setmodel_I;
+
+//SV_ClientUserInfoChanged hook (KTP - for client_infochanged forward)
+typedef IVoidHookChain<IGameClient *> IRehldsHook_SV_ClientUserInfoChanged;
+typedef IVoidHookChainRegistry<IGameClient *> IRehldsHookRegistry_SV_ClientUserInfoChanged;
+
+//PF_RegUserMsg_I hook (KTP - for capturing message IDs in extension mode)
+typedef IHookChain<int, const char *, int> IRehldsHook_PF_RegUserMsg_I;
+typedef IHookChainRegistry<int, const char *, int> IRehldsHookRegistry_PF_RegUserMsg_I;
+
+//SV_ClientCommand hook (KTP - for client_command forward in extension mode)
+typedef IVoidHookChain<edict_t *> IRehldsHook_SV_ClientCommand;
+typedef IVoidHookChainRegistry<edict_t *> IRehldsHookRegistry_SV_ClientCommand;
+
+//SV_InactivateClients hook (KTP - for plugin_end forward before map change)
+typedef IVoidHookChain<> IRehldsHook_SV_InactivateClients;
+typedef IVoidHookChainRegistry<> IRehldsHookRegistry_SV_InactivateClients;
+
 class IRehldsHookchains {
 public:
 	virtual ~IRehldsHookchains() { }
@@ -256,6 +344,29 @@ public:
 	virtual IRehldsHookRegistry_CreateFakeClient* CreateFakeClient() = 0;
 	virtual IRehldsHookRegistry_SV_CheckConnectionLessRateLimits* SV_CheckConnectionLessRateLimits() = 0;
 	virtual IRehldsHookRegistry_SV_Frame* SV_Frame() = 0;
+	// KTP: The following hooks must match KTPReHLDS vtable order exactly!
+	virtual IRehldsHookRegistry_SV_UpdatePausedHUD* SV_UpdatePausedHUD() = 0;  // KTP
+	virtual IRehldsHookRegistry_SV_ShouldSendConsistencyList* SV_ShouldSendConsistencyList() = 0;
+	virtual IRehldsHookRegistry_GetEntityInit* GetEntityInit() = 0;
+	virtual IRehldsHookRegistry_SV_EmitPings* SV_EmitPings() = 0;
+	virtual IRehldsHookRegistry_ED_Alloc* ED_Alloc() = 0;
+	virtual IRehldsHookRegistry_ED_Free* ED_Free() = 0;
+	virtual IRehldsHookRegistry_Con_Printf* Con_Printf() = 0;
+	virtual IRehldsHookRegistry_SV_CheckUserInfo* SV_CheckUserInfo() = 0;
+	virtual IRehldsHookRegistry_PF_precache_generic_I* PF_precache_generic_I() = 0;
+	virtual IRehldsHookRegistry_PF_precache_model_I* PF_precache_model_I() = 0;
+	virtual IRehldsHookRegistry_PF_precache_sound_I* PF_precache_sound_I() = 0;
+	virtual IRehldsHookRegistry_EV_Precache* EV_Precache() = 0;
+	virtual IRehldsHookRegistry_SV_AddResource* SV_AddResource() = 0;
+	virtual IRehldsHookRegistry_SV_ClientPrintf* SV_ClientPrintf() = 0;
+	virtual IRehldsHookRegistry_SV_AllowPhysent* SV_AllowPhysent() = 0;
+	virtual IRehldsHookRegistry_SV_SendResources* SV_SendResources() = 0;
+	virtual IRehldsHookRegistry_PF_changelevel_I* PF_changelevel_I() = 0;          // KTP
+	virtual IRehldsHookRegistry_PF_setmodel_I* PF_setmodel_I() = 0;                // KTP
+	virtual IRehldsHookRegistry_SV_ClientUserInfoChanged* SV_ClientUserInfoChanged() = 0;  // KTP
+	virtual IRehldsHookRegistry_PF_RegUserMsg_I* PF_RegUserMsg_I() = 0;  // KTP
+	virtual IRehldsHookRegistry_SV_ClientCommand* SV_ClientCommand() = 0;  // KTP
+	virtual IRehldsHookRegistry_SV_InactivateClients* SV_InactivateClients() = 0;  // KTP
 };
 
 struct RehldsFuncs_t {

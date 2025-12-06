@@ -1,8 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(dir /b /s:*)",
-      "Bash(dir:*)"
+      "Bash(git -C \"N:/Nein_/KTP Git Projects/KTPAMXX\" status --short)",
+      "Bash(git -C \"N:/Nein_/KTP Git Projects/KTPAMXX\" diff --stat HEAD)"
     ],
     "deny": [],
     "ask": []

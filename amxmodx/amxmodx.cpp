@@ -833,58 +833,33 @@ static cell AMX_NATIVE_CALL is_user_connecting(AMX *amx, cell *params) /* 1 para
 static cell AMX_NATIVE_CALL is_user_bot(AMX *amx, cell *params) /* 1 param */
 {
 	int index = params[1];
-	AMXXLOG_Log("[KTP DEBUG is_user_bot] ENTRY index=%d", index);
 
 	if (index < 1 || index > gpGlobals->maxClients)
-	{
-		AMXXLOG_Log("[KTP DEBUG is_user_bot] index out of range, returning 0");
 		return 0;
-	}
 
-	AMXXLOG_Log("[KTP DEBUG is_user_bot] Calling IsBot() for player %d", index);
-	bool result = GET_PLAYER_POINTER_I(index)->IsBot();
-	AMXXLOG_Log("[KTP DEBUG is_user_bot] IsBot() returned %d, EXIT", result ? 1 : 0);
-	return result ? 1 : 0;
+	return GET_PLAYER_POINTER_I(index)->IsBot() ? 1 : 0;
 }
 
 static cell AMX_NATIVE_CALL is_user_hltv(AMX *amx, cell *params) /* 1 param */
 {
 	int index = params[1];
-	AMXXLOG_Log("[KTP DEBUG is_user_hltv] ENTRY index=%d", index);
 
 	if (index < 1 || index > gpGlobals->maxClients)
-	{
-		AMXXLOG_Log("[KTP DEBUG is_user_hltv] index out of range, returning 0");
 		return 0;
-	}
 
 	CPlayer *pPlayer = GET_PLAYER_POINTER_I(index);
-	AMXXLOG_Log("[KTP DEBUG is_user_hltv] pPlayer=%p initialized=%d", (void*)pPlayer, pPlayer ? pPlayer->initialized : -1);
 
 	if (!pPlayer->initialized)
-	{
-		AMXXLOG_Log("[KTP DEBUG is_user_hltv] not initialized, returning 0");
 		return 0;
-	}
 
-	AMXXLOG_Log("[KTP DEBUG is_user_hltv] Checking FL_PROXY pEdict=%p", (void*)pPlayer->pEdict);
 	if (pPlayer->pEdict->v.flags & FL_PROXY)
-	{
-		AMXXLOG_Log("[KTP DEBUG is_user_hltv] FL_PROXY set, returning 1");
 		return 1;
-	}
 
-	AMXXLOG_Log("[KTP DEBUG is_user_hltv] Calling GETPLAYERAUTHID...");
 	const char *authid = GETPLAYERAUTHID(pPlayer->pEdict);
-	AMXXLOG_Log("[KTP DEBUG is_user_hltv] GETPLAYERAUTHID returned '%s'", authid ? authid : "(null)");
 
 	if (authid && stricmp(authid, "HLTV") == 0)
-	{
-		AMXXLOG_Log("[KTP DEBUG is_user_hltv] authid is HLTV, returning 1");
 		return 1;
-	}
 
-	AMXXLOG_Log("[KTP DEBUG is_user_hltv] EXIT returning 0");
 	return 0;
 }
 
@@ -2412,21 +2387,11 @@ static cell AMX_NATIVE_CALL get_players(AMX *amx, cell *params) /* 4 param */
 		CPlayer* pPlayer = GET_PLAYER_POINTER_I(i);
 		if (pPlayer->ingame || ((flags & 256) && pPlayer->initialized))
 		{
-			// KTP DEBUG: Check player state before accessing
-			AMXXLOG_Log("[KTP DEBUG get_players] Checking player %d: ingame=%d initialized=%d pEdict=%p",
-				i, pPlayer->ingame ? 1 : 0, pPlayer->initialized ? 1 : 0, (void*)pPlayer->pEdict);
-
 			if (!pPlayer->pEdict)
-			{
-				AMXXLOG_Log("[KTP DEBUG get_players] Player %d has NULL pEdict, skipping", i);
 				continue;
-			}
 
-			AMXXLOG_Log("[KTP DEBUG get_players] Player %d: calling IsAlive()...", i);
 			bool isAlive = pPlayer->IsAlive();
-			AMXXLOG_Log("[KTP DEBUG get_players] Player %d: IsAlive()=%d, calling IsBot()...", i, isAlive ? 1 : 0);
 			bool isBot = pPlayer->IsBot();
-			AMXXLOG_Log("[KTP DEBUG get_players] Player %d: IsBot()=%d", i, isBot ? 1 : 0);
 
 			if (isAlive ? (flags & 2) : (flags & 1))
 				continue;
@@ -2722,25 +2687,16 @@ static cell AMX_NATIVE_CALL get_user_msgname(AMX *amx, cell *params) /* get_user
 
 static cell AMX_NATIVE_CALL set_task(AMX *amx, cell *params) /* 2 param */
 {
-	AMXXLOG_Log("[KTP DEBUG set_task] ENTRY");
-
 	CPluginMngr::CPlugin *plugin = g_plugins.findPluginFast(amx);
-	AMXXLOG_Log("[KTP DEBUG set_task] plugin=%p name=%s", (void*)plugin, plugin ? plugin->getName() : "(null)");
 
 	int a, iFunc;
 
 	char* stemp = get_amxstring(amx, params[2], 1, a);
-	AMXXLOG_Log("[KTP DEBUG set_task] function name='%s'", stemp ? stemp : "(null)");
 
 	if (params[5])
-	{
-		AMXXLOG_Log("[KTP DEBUG set_task] Registering forward with FP_ARRAY...");
 		iFunc = registerSPForwardByName(amx, stemp, FP_ARRAY, FP_CELL, FP_DONE);
-	} else {
-		AMXXLOG_Log("[KTP DEBUG set_task] Registering forward with FP_CELL...");
+	else
 		iFunc = registerSPForwardByName(amx, stemp, FP_CELL, FP_DONE);
-	}
-	AMXXLOG_Log("[KTP DEBUG set_task] iFunc=%d", iFunc);
 
 	if (iFunc == -1)
 	{
@@ -2749,17 +2705,13 @@ static cell AMX_NATIVE_CALL set_task(AMX *amx, cell *params) /* 2 param */
 	}
 
 	float base = amx_ctof(params[1]);
-	AMXXLOG_Log("[KTP DEBUG set_task] base time=%f", base);
 
 	if (base < 0.1f)
 		base = 0.1f;
 
 	char* temp = get_amxstring(amx, params[6], 0, a);
-	AMXXLOG_Log("[KTP DEBUG set_task] flags='%s' id=%d repeat=%d", temp ? temp : "(null)", (int)params[3], (int)params[7]);
 
-	AMXXLOG_Log("[KTP DEBUG set_task] Calling g_tasksMngr.registerTask...");
 	g_tasksMngr.registerTask(plugin, iFunc, UTIL_ReadFlags(temp), params[3], base, params[5], get_amxaddr(amx, params[4]), params[7]);
-	AMXXLOG_Log("[KTP DEBUG set_task] EXIT returning 1");
 
 	return 1;
 }

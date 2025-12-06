@@ -8,6 +8,27 @@ Part of the [KTP Competitive Infrastructure](https://github.com/afraznein).
 
 ---
 
+## What's New in v2.1.0
+
+### Full Map Change Support (Extension Mode)
+
+KTP AMX v2.1.0 adds complete map change support in extension mode:
+
+- **Seamless map transitions** - Clients persist through map changes without disconnection
+- **All forwards fire correctly** - `plugin_init`, `plugin_cfg`, `client_connect`, `client_putinserver` work on new maps
+- **Chat commands work** - `/start`, `.start`, and other chat-triggered commands fully functional
+- **Menu systems work** - `register_menucmd`, `show_menu`, and menu selections (`menuselect 1-9`)
+
+### New ReHLDS Hooks
+
+| Hook | Purpose |
+|------|---------|
+| `SV_ClientCommand` | Chat commands, menus, `client_command` forward |
+| `SV_InactivateClients` | Map change deactivation, `plugin_end` forward |
+| `SV_Spawn_f` | Client reconnect after map change |
+
+---
+
 ## What's New in v2.0.0
 
 ### ReHLDS Extension Mode (No Metamod Required)
@@ -102,7 +123,7 @@ public client_cvar_changed(id, const cvar[], const value[]) {
 
 Check server console on startup:
 ```
-KTP AMX v2.0.0 loaded
+KTP AMX v2.1.0 loaded
 Core mode: JIT+ASM32
 Running as: ReHLDS Extension (or: Metamod Plugin)
 ```
@@ -272,13 +293,26 @@ public client_disconnected(id) {
 
 KTP AMX registers these ReHLDS hooks when running in extension mode:
 
+#### Connection & Lifecycle
+- `ClientConnected` / `SV_ConnectClient` - Client connection handling
 - `SV_DropClient` - Client disconnect handling
+- `Steam_NotifyClientConnect` - Client authorization
+
+#### Server Events
 - `SV_ActivateServer` - Map load / server activation
-- `Cvar_DirectSet` - Cvar change monitoring
+- `SV_InactivateClients` - Map change deactivation (fires `plugin_end`, `client_disconnect`)
+- `SV_Frame` - Per-frame processing
+
+#### Client Processing
+- `SV_ClientCommand` - Client command processing (`register_clcmd`, menus, `client_command`)
+- `SV_Spawn_f` - Client spawn command (handles reconnect after map change)
 - `SV_WriteFullClientUpdate` - Client info updates
+
+#### Engine Functions
+- `Cvar_DirectSet` - Cvar change monitoring
 - `ED_Alloc` / `ED_Free` - Entity allocation
 - `SV_StartSound` - Sound emission
-- `ClientConnected` / `SV_ConnectClient` - Connection handling
+- `PF_RegUserMsg_I` - Message ID capture for HUD drawing
 
 ---
 
