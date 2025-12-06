@@ -40,6 +40,8 @@ N/A      = Not applicable
 ### Engine
 - **PF_RegUserMsg_I** → HUD messages, `client_print`
 - **pfnClientCvarChanged** → `client_cvar_changed`
+- **PF_changelevel_I** → `server_changelevel` (KTPReHLDS 3.16+, not yet used)
+- **PF_setmodel_I** → entity model tracking (KTPReHLDS 3.16+, not yet used)
 
 ---
 
