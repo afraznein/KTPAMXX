@@ -151,6 +151,11 @@ bool Steam_GSBUpdateUserData_RH(IRehldsHook_Steam_GSBUpdateUserData *chain, uint
 bool SV_CheckConsistencyResponse_RH(IRehldsHook_SV_CheckConsistencyResponse *chain, IGameClient *cl, resource_t *resource, uint32 hash);
 void ExecuteServerStringCmd_RH(IRehldsHook_ExecuteServerStringCmd *chain, const char *cmdStr, cmd_source_t src, IGameClient *cl);
 
+// KTP: IMessageManager hook for register_event in extension mode
+void MessageHook_Handler(IVoidHookChain<IMessage *> *chain, IMessage *msg);
+bool g_MessageHooksInstalled[MAX_REG_MSGS];  // Track which message IDs have hooks
+void InstallMessageHook(int msg_id);
+
 cvar_t init_amxmodx_version = {"amxmodx_version", "", FCVAR_SERVER | FCVAR_SPONLY};
 cvar_t init_amxmodx_modules = {"amxmodx_modules", "", FCVAR_SPONLY};
 cvar_t init_amxmodx_debug = {"amx_debug", "1", FCVAR_SPONLY};
@@ -1168,6 +1173,101 @@ void SV_Frame_RH(IRehldsHook_SV_Frame *chain)
 		}
 	}
 }
+
+
+// KTP: IMessageManager hook for register_event in extension mode
+// This is called for each message type that has registered events
+void MessageHook_Handler(IVoidHookChain<IMessage *> *chain, IMessage *msg)
+{
+	chain->callNext(msg);
+
+	if (!msg)
+		return;
+
+	int msg_type = msg->getId();
+	if (msg_type < 0 || msg_type >= MAX_REG_MSGS)
+		return;
+
+	// Get edict and player info
+	edict_t *ed = msg->getEdict();
+	if (ed)
+	{
+		mPlayerIndex = ENTINDEX(ed);
+		mPlayer = GET_PLAYER_POINTER_I(mPlayerIndex);
+	}
+	else
+	{
+		mPlayerIndex = 0;
+		mPlayer = 0;
+	}
+
+	// Initialize event parser
+	mState = 0;
+	function = modMsgs[msg_type];
+	endfunction = modMsgsEnd[msg_type];
+
+	g_events.parserInit(msg_type, &gpGlobals->time, mPlayer, mPlayerIndex);
+
+	// Parse all parameters from the message
+	int paramCount = msg->getParamCount();
+	for (int i = 0; i < paramCount; i++)
+	{
+		IMessage::ParamType ptype = msg->getParamType(i);
+		switch (ptype)
+		{
+			case IMessage::ParamType::Byte:
+			case IMessage::ParamType::Char:
+			case IMessage::ParamType::Short:
+			case IMessage::ParamType::Long:
+			case IMessage::ParamType::Entity:
+			{
+				int iValue = msg->getParamInt(i);
+				g_events.parseValue(iValue);
+				if (function) (*function)((void *)&iValue);
+				break;
+			}
+			case IMessage::ParamType::Angle:
+			case IMessage::ParamType::Coord:
+			{
+				float flValue = msg->getParamFloat(i);
+				g_events.parseValue(flValue);
+				if (function) (*function)((void *)&flValue);
+				break;
+			}
+			case IMessage::ParamType::String:
+			{
+				const char *sz = msg->getParamString(i);
+				g_events.parseValue(sz);
+				if (function) (*function)((void *)sz);
+				break;
+			}
+		}
+	}
+
+	// Execute events
+	g_events.executeEvents();
+	if (endfunction) (*endfunction)(NULL);
+}
+
+// KTP: Install IMessageManager hook for a specific message ID (extension mode only)
+void InstallMessageHook(int msg_id)
+{
+	if (g_bRunningWithMetamod)
+		return;  // Metamod handles this via engine hooks
+
+	if (!RehldsMessageManager)
+		return;  // MessageManager not available
+
+	if (msg_id < 0 || msg_id >= MAX_REG_MSGS)
+		return;
+
+	if (g_MessageHooksInstalled[msg_id])
+		return;  // Already installed
+
+	RehldsMessageManager->registerHook(msg_id, MessageHook_Handler, HC_PRIORITY_DEFAULT);
+	g_MessageHooksInstalled[msg_id] = true;
+}
+
 
 // KTP: SV_CheckConsistencyResponse hook for inconsistent_file forward in extension mode
 // This is called when the server receives a consistency response from a client
@@ -2240,6 +2340,7 @@ static void KTPAMX_ServerDeactivatePost();
 static void SV_ActivateServer_RH(IRehldsHook_SV_ActivateServer *chain, int runPhysics);
 static void SV_ClientCommand_RH(IRehldsHook_SV_ClientCommand *chain, edict_t *pEdict);
 static void SV_InactivateClients_RH(IRehldsHook_SV_InactivateClients *chain);
+static void AlertMessage_RH(IRehldsHook_AlertMessage *chain, ALERT_TYPE atype, const char *szMsg);
 
 // KTP: Message ID capture system for extension mode
 // We hook pfnRegUserMsg to capture message IDs as they're registered by the game DLL
@@ -2295,6 +2396,9 @@ C_DLLEXPORT void WINAPI GiveFnptrsToDll(enginefuncs_t* pengfuncsFromEngine, glob
 			// KTP: Hook SV_InactivateClients to run deactivation BEFORE clients are disconnected
 			// This fires at the START of any map change sequence (rcon, game DLL, etc.)
 			RehldsHookchains->SV_InactivateClients()->registerHook(SV_InactivateClients_RH);
+
+			// KTP: Hook AlertMessage for register_logevent in extension mode
+			RehldsHookchains->AlertMessage()->registerHook(AlertMessage_RH);
 
 			print_srvconsole("[KTP AMX] ReHLDS extension mode detected, will initialize on server activate.\n");
 		}
@@ -2657,6 +2761,40 @@ static void SV_InactivateClients_RH(IRehldsHook_SV_InactivateClients *chain)
 
 	// Continue with client inactivation
 	chain->callNext();
+}
+
+// KTP: Hook for AlertMessage - handles register_logevent in extension mode
+// In Metamod mode, C_AlertMessage hooks pfnAlertMessage via meta_engfuncs
+// In extension mode, we hook the AlertMessage function directly via ReHLDS hookchain
+static void AlertMessage_RH(IRehldsHook_AlertMessage *chain, ALERT_TYPE atype, const char *szMsg)
+{
+	// Call the original first
+	chain->callNext(atype, szMsg);
+
+	// Only process logged messages (same check as C_AlertMessage)
+	if (atype != at_logged)
+		return;
+
+	cell retVal = 0;
+
+	// Execute logevents and plugin_log forward
+	if (g_logevents.logEventsExist() || g_forwards.getFuncsNum(FF_PluginLog))
+	{
+		g_logevents.setLogString("%s", szMsg);
+		g_logevents.parseLogString();
+
+		if (g_logevents.logEventsExist())
+		{
+			g_logevents.executeLogEvents();
+		}
+
+		retVal = executeForwards(FF_PluginLog);
+	}
+
+	// Note: In extension mode we can't supercede the log message since
+	// the hookchain has already called next. This is a limitation of the
+	// post-hook approach but is acceptable for most use cases.
+	(void)retVal;  // Suppress unused variable warning
 }
 
 // KTP: Handle map change activation - extension mode only

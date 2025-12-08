@@ -1,10 +1,11 @@
 # KTPAMXX Native Audit - Extension Mode Compatibility
 
-> **Version:** 2.1.0 | **Last Updated:** 2025-12-06 | **Status:** Active Development
+> **Version:** 2.2.0 | **Last Updated:** 2025-12-08 | **Status:** Active Development
 
 [![Extension Mode](https://img.shields.io/badge/Extension%20Mode-Supported-brightgreen)](#)
 [![Map Change](https://img.shields.io/badge/Map%20Change-Fixed-brightgreen)](#)
 [![Client Commands](https://img.shields.io/badge/Client%20Commands-Working-brightgreen)](#)
+[![Register Event](https://img.shields.io/badge/Register%20Event-Working-brightgreen)](#)
 
 ---
 
@@ -66,6 +67,8 @@ These hooks must be registered for extension mode to function:
 | `pfnClientCvarChanged` | Cvar change callback | `client_cvar_changed` |
 | `PF_changelevel_I` | Level change (3.16+) | `server_changelevel` (not yet used) |
 | `PF_setmodel_I` | Entity setmodel (3.16+) | Model tracking (not yet used) |
+| `IMessageManager` | Message interception | `register_event` (extension mode) |
+| `AlertMessage` | Log message hook | `register_logevent` (extension mode) |
 
 ---
 
@@ -90,6 +93,26 @@ These hooks must be registered for extension mode to function:
 **Problem:** `client_putinserver` didn't fire after map change
 
 **Solution:** Added `SV_InactivateClients` + `SV_Spawn_f` hooks
+
+### 4. register_event Not Working in Extension Mode ![FIXED](https://img.shields.io/badge/-FIXED-brightgreen)
+
+**Problem:** `register_event` didn't work in extension mode because Metamod's engine message hooks weren't available
+
+**Solution:** Integrated `IMessageManager` from KTPReHLDS API:
+- Added `GetMessageManager()` to ReHLDS API interface
+- Register per-message-ID hooks via `IMessageManager::registerHook()`
+- `MessageHook_Handler` parses message parameters and fires AMXX event callbacks
+- Hooks installed on-demand when `register_event` is called
+
+### 5. register_logevent Not Working in Extension Mode ![FIXED](https://img.shields.io/badge/-FIXED-brightgreen)
+
+**Problem:** `register_logevent` didn't work in extension mode because Metamod's `pfnAlertMessage` hook wasn't available
+
+**Solution:** Added `AlertMessage` hookchain to KTPReHLDS:
+- New hookchain intercepts all `AlertMessage` calls with pre-formatted message
+- `AlertMessage_RH` in KTPAMXX filters for `at_logged` messages
+- Calls `g_logevents.setLogString()`, `parseLogString()`, and `executeLogEvents()`
+- Also fires `plugin_log` forward
 
 ---
 
@@ -147,7 +170,7 @@ By checking `pPlayer->initialized`, we detect if reinitialization is needed.
 | `plugin_cfg` | ![OK](https://img.shields.io/badge/-OK-brightgreen) | After plugin_init | Config loading |
 | `plugin_precache` | ![OK](https://img.shields.io/badge/-OK-brightgreen) | SV_Spawn | Precaching |
 | `plugin_end` | ![OK](https://img.shields.io/badge/-OK-brightgreen) | SV_InactivateClients | Cleanup |
-| `plugin_natives` | ![UNTESTED](https://img.shields.io/badge/-UNTESTED-lightgrey) | Before plugin_init | Native registration |
+| `plugin_natives` | ![OK](https://img.shields.io/badge/-OK-brightgreen) | Before plugin_init | Native registration |
 
 ### Client Forwards
 
@@ -159,14 +182,14 @@ By checking `pPlayer->initialized`, we detect if reinitialization is needed.
 | `client_disconnect` | ![OK](https://img.shields.io/badge/-OK-brightgreen) | SV_DropClient | Disconnect handling |
 | `client_disconnected` | ![OK](https://img.shields.io/badge/-OK-brightgreen) | SV_DropClient | Post-disconnect |
 | `client_command` | ![OK](https://img.shields.io/badge/-OK-brightgreen) | SV_ClientCommand | Command processing |
-| `client_infochanged` | ![UNTESTED](https://img.shields.io/badge/-UNTESTED-lightgrey) | SV_ClientUserInfoChanged | Info updates |
+| `client_infochanged` | ![N/A](https://img.shields.io/badge/-N%2FA-inactive) | SV_ClientUserInfoChanged | Not needed |
 
 ### Custom KTP Forwards
 
 | Forward | Status | Hook Required | Used By |
 |:--------|:------:|:--------------|:--------|
 | `client_cvar_changed` | ![OK](https://img.shields.io/badge/-OK-brightgreen) | pfnClientCvarChanged | KTPCvarChecker |
-| `inconsistent_file` | ![UNTESTED](https://img.shields.io/badge/-UNTESTED-lightgrey) | File consistency | KTPFileChecker |
+| `inconsistent_file` | ![OK](https://img.shields.io/badge/-OK-brightgreen) | SV_CheckConsistencyResponse | KTPFileChecker |
 
 ---
 
@@ -184,8 +207,8 @@ By checking `pPlayer->initialized`, we detect if reinitialization is needed.
 | `register_dictionary` | ![OK](https://img.shields.io/badge/-OK-brightgreen) | Language files |
 | `register_menucmd` | ![OK](https://img.shields.io/badge/-OK-brightgreen) | Menu handlers |
 | `register_menuid` | ![OK](https://img.shields.io/badge/-OK-brightgreen) | Menu IDs |
-| `register_event` | ![UNTESTED](https://img.shields.io/badge/-UNTESTED-lightgrey) | Event handlers |
-| `register_logevent` | ![UNTESTED](https://img.shields.io/badge/-UNTESTED-lightgrey) | Log events |
+| `register_event` | ![OK](https://img.shields.io/badge/-OK-brightgreen) | Event handlers (via IMessageManager) |
+| `register_logevent` | ![OK](https://img.shields.io/badge/-OK-brightgreen) | Log events (via AlertMessage hook) |
 
 ### Player Info Natives
 
@@ -216,8 +239,8 @@ By checking `pPlayer->initialized`, we detect if reinitialization is needed.
 | `get_pcvar_string` | ![OK](https://img.shields.io/badge/-OK-brightgreen) | Direct string |
 | `get_pcvar_num` | ![OK](https://img.shields.io/badge/-OK-brightgreen) | Direct integer |
 | `get_pcvar_float` | ![OK](https://img.shields.io/badge/-OK-brightgreen) | Direct float |
-| `set_cvar_*` | ![UNTESTED](https://img.shields.io/badge/-UNTESTED-lightgrey) | Set operations |
-| `set_pcvar_*` | ![UNTESTED](https://img.shields.io/badge/-UNTESTED-lightgrey) | Direct set |
+| `set_cvar_*` | ![OK](https://img.shields.io/badge/-OK-brightgreen) | Set operations |
+| `set_pcvar_*` | ![OK](https://img.shields.io/badge/-OK-brightgreen) | Direct set |
 
 ### Communication Natives
 
@@ -307,16 +330,33 @@ By checking `pPlayer->initialized`, we detect if reinitialization is needed.
 
 ## Module Dependencies
 
-| Module | Status | Required For |
-|:-------|:------:|:-------------|
-| DODX | ![UNTESTED](https://img.shields.io/badge/-UNTESTED-lightgrey) | DoD stats, weapons |
-| Fun | ![UNTESTED](https://img.shields.io/badge/-UNTESTED-lightgrey) | user_slap, user_kill |
-| Engine | ![UNTESTED](https://img.shields.io/badge/-UNTESTED-lightgrey) | engclient_cmd, changelevel |
-| Fakemeta | ![UNTESTED](https://img.shields.io/badge/-UNTESTED-lightgrey) | pev, set_pev |
-| CStrike | ![UNTESTED](https://img.shields.io/badge/-UNTESTED-lightgrey) | CS-specific natives |
-| SQL/SQLite | ![UNTESTED](https://img.shields.io/badge/-UNTESTED-lightgrey) | Database |
-| cURL | ![UNTESTED](https://img.shields.io/badge/-UNTESTED-lightgrey) | HTTP requests |
-| ReAPI | ![UNTESTED](https://img.shields.io/badge/-UNTESTED-lightgrey) | ReHLDS hooks |
+| Module | Status | Required For | Notes |
+|:-------|:------:|:-------------|:------|
+| amxxcurl | ![OK](https://img.shields.io/badge/-OK-brightgreen) | HTTP requests | Uses frame callbacks in extension mode |
+| ReAPI | ![OK](https://img.shields.io/badge/-OK-brightgreen) | ReHLDS/ReGameDLL hooks | Extension mode supported |
+| DODX | ![BROKEN](https://img.shields.io/badge/-BROKEN-red) | DoD stats, weapons | Crashes on load - extension hooks disabled |
+| SQLite | ![BROKEN](https://img.shields.io/badge/-BROKEN-red) | Database | Crashes on load - Metamod hooks incompatible |
+| MySQL | ![UNTESTED](https://img.shields.io/badge/-UNTESTED-lightgrey) | Database | Needs extension mode testing |
+| Fun | ![UNTESTED](https://img.shields.io/badge/-UNTESTED-lightgrey) | user_slap, user_kill | |
+| Engine | ![UNTESTED](https://img.shields.io/badge/-UNTESTED-lightgrey) | engclient_cmd, changelevel | |
+| Fakemeta | ![UNTESTED](https://img.shields.io/badge/-UNTESTED-lightgrey) | pev, set_pev | |
+| CStrike | ![UNTESTED](https://img.shields.io/badge/-UNTESTED-lightgrey) | CS-specific natives | |
+| Hamsandwich | ![UNTESTED](https://img.shields.io/badge/-UNTESTED-lightgrey) | Function hooking | |
+
+> **Note:** The `client_cvar_changed` forward is a **KTP-native feature** built directly into KTPAMXX, not from the ReAPI module. It hooks the KTPReHLDS `pfnClientCvarChanged` callback.
+
+### Module Extension Mode Status Details
+
+**Working Modules:**
+- **amxxcurl**: Uses `MF_RegModuleFrameFunc()` for async polling instead of Metamod's `StartFrame`
+- **ReAPI**: Has dedicated `extension_mode.cpp` with ReHLDS hookchain support
+
+**Broken Modules (Crash on Load):**
+- **DODX**: Extension mode hooks were added but crash occurs. Hooks are currently disabled via `#if 0`. Basic natives may still not work due to missing message interception.
+- **SQLite**: Has Metamod hooks that are incompatible with extension mode. Crashes during module initialization.
+
+**Needs Investigation:**
+- **MySQL**: Similar to SQLite, likely has Metamod dependencies. Needs testing before production use.
 
 ---
 
@@ -351,6 +391,47 @@ By checking `pPlayer->initialized`, we detect if reinitialization is needed.
 ---
 
 ## Changelog
+
+<details>
+<summary><strong>2025-12-08</strong> - Module Extension Mode Testing</summary>
+
+- **TESTED MODULE COMPATIBILITY** - Verified which modules work in extension mode
+  - **amxxcurl**: ✅ Working - uses `MF_RegModuleFrameFunc()` for async polling
+  - **ReAPI**: ✅ Working - has dedicated `extension_mode.cpp` with ReHLDS hookchain support
+  - **SQLite**: ❌ Crashes - Metamod hooks incompatible with extension mode
+  - **DODX**: ❌ Crashes - Extension hooks disabled, needs further debugging
+  - **MySQL**: ⚠️ Untested - likely same issues as SQLite
+
+- **DISABLED DODX EXTENSION HOOKS** - Temporarily disabled via `#if 0` in `moduleconfig.cpp`
+  - Hooks were crashing during initialization
+  - Basic DODX natives may not work without message interception
+
+- **FIXED BUILD NAMES** - Updated build configs to output `_ktp_i386.so`:
+  - `KTPAmxxCurl/premake5.lua` and `AmxxCurl.make`: `amxxcurl_ktp_i386.so`
+  - `KTPReAPI/reapi/CMakeLists.txt`: `reapi_ktp_i386.so`
+
+</details>
+
+<details>
+<summary><strong>2025-12-07</strong> - register_event and register_logevent Extension Mode Support</summary>
+
+- **ADDED IMessageManager INTEGRATION** - `register_event` now works in extension mode
+  - Added `GetMessageManager()` to ReHLDS API interface (`rehlds_api.h`)
+  - Added `RehldsMessageManager` global pointer (`mod_rehlds_api.cpp`)
+  - Implemented `MessageHook_Handler` for message interception (`meta_api.cpp`)
+  - Hooks installed on-demand via `InstallMessageHook()` when plugins call `register_event`
+  - Cleaned up `IMessageManager.h` header (removed duplicate includes)
+
+- **FIXED getEventId() FOR EXTENSION MODE** - Message ID lookup now works without Metamod
+  - Uses `REG_USER_MSG(name, -1)` which returns existing IDs due to KTPReHLDS dual-list search
+
+- **ADDED AlertMessage HOOKCHAIN** - `register_logevent` now works in extension mode
+  - Added `AlertMessage` hookchain to KTPReHLDS (`sys_dll.cpp`, `rehlds_api.h`, `rehlds_api_impl.h/cpp`)
+  - Hookchain passes pre-formatted message string and ALERT_TYPE
+  - Implemented `AlertMessage_RH` in KTPAMXX to process `at_logged` messages
+  - Fires log events and `plugin_log` forward
+
+</details>
 
 <details>
 <summary><strong>2025-12-06</strong> - Map Change & Client Commands Fix</summary>

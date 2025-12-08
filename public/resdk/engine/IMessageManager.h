@@ -18,12 +18,6 @@
 
 #pragma once
 
-#include "../common/hookchains.h"
-
-#ifndef uint8
-typedef unsigned char uint8;
-#endif
-
 /**
  * @brief Interface for defining message parameters and behavior for a individual message object
  */

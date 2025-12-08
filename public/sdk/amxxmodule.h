@@ -2232,6 +2232,15 @@ typedef void (*MODULEFRAMEFUNC)(void);
 typedef void			(*PFN_REG_MODULE_FRAME_FUNC)	(MODULEFRAMEFUNC);
 typedef void			(*PFN_UNREG_MODULE_FRAME_FUNC)	(MODULEFRAMEFUNC);
 
+// KTP: ReHLDS API access for modules in extension mode
+typedef int				(*PFN_IS_EXTENSION_MODE)		();
+typedef void*			(*PFN_GET_REHLDS_API)			();
+typedef void*			(*PFN_GET_REHLDS_HOOKCHAINS)	();
+typedef void*			(*PFN_GET_REHLDS_FUNCS)			();
+typedef void*			(*PFN_GET_REHLDS_SERVERDATA)	();
+typedef void*			(*PFN_GET_REHLDS_MSGMGR)		();
+typedef void*			(*PFN_GET_GAMEDLL_FUNCS)		();
+
 extern PFN_ADD_NATIVES				g_fn_AddNatives;
 extern PFN_ADD_NEW_NATIVES			g_fn_AddNewNatives;
 extern PFN_BUILD_PATHNAME			g_fn_BuildPathname;
@@ -2317,6 +2326,15 @@ extern PFN_GET_CONFIG_MANAGER		g_fn_GetConfigManager;
 // KTP: Module frame callback functions
 extern PFN_REG_MODULE_FRAME_FUNC	g_fn_RegModuleFrameFunc;
 extern PFN_UNREG_MODULE_FRAME_FUNC	g_fn_UnregModuleFrameFunc;
+
+// KTP: ReHLDS API access for modules in extension mode
+extern PFN_IS_EXTENSION_MODE		g_fn_IsExtensionMode;
+extern PFN_GET_REHLDS_API			g_fn_GetRehldsApi;
+extern PFN_GET_REHLDS_HOOKCHAINS	g_fn_GetRehldsHookchains;
+extern PFN_GET_REHLDS_FUNCS			g_fn_GetRehldsFuncs;
+extern PFN_GET_REHLDS_SERVERDATA	g_fn_GetRehldsServerData;
+extern PFN_GET_REHLDS_MSGMGR		g_fn_GetRehldsMessageManager;
+extern PFN_GET_GAMEDLL_FUNCS		g_fn_GetGameDllFuncs;
 
 #ifdef MAY_NEVER_BE_DEFINED
 // Function prototypes for intellisense and similar systems
@@ -2483,6 +2501,15 @@ void MF_LogError(AMX *amx, int err, const char *fmt, ...);
 // KTP: Module frame callback macros
 #define MF_RegModuleFrameFunc g_fn_RegModuleFrameFunc
 #define MF_UnregModuleFrameFunc g_fn_UnregModuleFrameFunc
+
+// KTP: ReHLDS API access macros for modules
+#define MF_IsExtensionMode g_fn_IsExtensionMode
+#define MF_GetRehldsApi g_fn_GetRehldsApi
+#define MF_GetRehldsHookchains g_fn_GetRehldsHookchains
+#define MF_GetRehldsFuncs g_fn_GetRehldsFuncs
+#define MF_GetRehldsServerData g_fn_GetRehldsServerData
+#define MF_GetRehldsMessageManager g_fn_GetRehldsMessageManager
+#define MF_GetGameDllFuncs g_fn_GetGameDllFuncs
 
 #ifdef MEMORY_TEST
 /*** Memory ***/

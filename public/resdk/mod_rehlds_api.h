@@ -8,5 +8,6 @@ extern const RehldsFuncs_t* RehldsFuncs;
 extern IRehldsServerData* RehldsData;
 extern IRehldsHookchains* RehldsHookchains;
 extern IRehldsServerStatic* RehldsSvs;
+extern IMessageManager* RehldsMessageManager;
 
 extern bool RehldsApi_Init();

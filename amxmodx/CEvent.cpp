@@ -10,6 +10,9 @@
 #include "amxmodx.h"
 #include "CEvent.h"
 
+// KTP: Extension mode message hook function (defined in meta_api.cpp)
+extern void InstallMessageHook(int msg_id);
+
 // *****************************************************
 // class ClEvent
 // *****************************************************
@@ -214,6 +217,9 @@ int EventsMngr::registerEvent(CPluginMngr::CPlugin* plugin, int func, int flags,
 	}
 
 	m_Events[msgid].append(ke::Move(event));
+
+	// KTP: Install message hook for extension mode
+	InstallMessageHook(msgid);
 
 	return handle;
 }
@@ -598,7 +604,18 @@ int EventsMngr::getEventId(const char* msg)
 			return table[pos].id;
 
 	// find the id of the message
-	return pos = GET_USER_MSG_ID(PLID, msg, 0);
+	// KTP: In extension mode, use REG_USER_MSG which returns existing IDs
+	// thanks to our KTPReHLDS dual-list search fix
+	if (g_bRunningWithMetamod)
+	{
+		return GET_USER_MSG_ID(PLID, msg, 0);
+	}
+	else
+	{
+		// In extension mode, REG_USER_MSG with size -1 returns existing ID
+		// without creating a new message (due to KTPReHLDS fix)
+		return REG_USER_MSG(msg, -1);
+	}
 }
 
 int EventsMngr::getCurrentMsgType()

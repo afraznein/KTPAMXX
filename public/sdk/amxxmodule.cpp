@@ -2432,6 +2432,15 @@ PFN_GET_CONFIG_MANAGER		g_fn_GetConfigManager;
 PFN_REG_MODULE_FRAME_FUNC	g_fn_RegModuleFrameFunc;
 PFN_UNREG_MODULE_FRAME_FUNC	g_fn_UnregModuleFrameFunc;
 
+// KTP: ReHLDS API access function pointers for modules in extension mode
+PFN_IS_EXTENSION_MODE		g_fn_IsExtensionMode;
+PFN_GET_REHLDS_API			g_fn_GetRehldsApi;
+PFN_GET_REHLDS_HOOKCHAINS	g_fn_GetRehldsHookchains;
+PFN_GET_REHLDS_FUNCS		g_fn_GetRehldsFuncs;
+PFN_GET_REHLDS_SERVERDATA	g_fn_GetRehldsServerData;
+PFN_GET_REHLDS_MSGMGR		g_fn_GetRehldsMessageManager;
+PFN_GET_GAMEDLL_FUNCS		g_fn_GetGameDllFuncs;
+
 // *** Exports ***
 C_DLLEXPORT int AMXX_Query(int *interfaceVersion, amxx_module_info_s *moduleInfo)
 {
@@ -2584,6 +2593,15 @@ C_DLLEXPORT int AMXX_Attach(PFN_REQ_FNPTR reqFnptrFunc)
 
 	REQFUNC("CellToReal", g_fn_CellToReal, PFN_CELL_TO_REAL);
 	REQFUNC("RealToCell", g_fn_RealToCell, PFN_REAL_TO_CELL);
+
+	// KTP: ReHLDS API access functions (optional - only present in KTP AMX)
+	REQFUNC_OPT("IsExtensionMode", g_fn_IsExtensionMode, PFN_IS_EXTENSION_MODE);
+	REQFUNC_OPT("GetRehldsApi", g_fn_GetRehldsApi, PFN_GET_REHLDS_API);
+	REQFUNC_OPT("GetRehldsHookchains", g_fn_GetRehldsHookchains, PFN_GET_REHLDS_HOOKCHAINS);
+	REQFUNC_OPT("GetRehldsFuncs", g_fn_GetRehldsFuncs, PFN_GET_REHLDS_FUNCS);
+	REQFUNC_OPT("GetRehldsServerData", g_fn_GetRehldsServerData, PFN_GET_REHLDS_SERVERDATA);
+	REQFUNC_OPT("GetRehldsMessageManager", g_fn_GetRehldsMessageManager, PFN_GET_REHLDS_MSGMGR);
+	REQFUNC_OPT("GetGameDllFuncs", g_fn_GetGameDllFuncs, PFN_GET_GAMEDLL_FUNCS);
 
 #ifdef FN_AMXX_ATTACH
 	FN_AMXX_ATTACH();

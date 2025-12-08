@@ -6,6 +6,7 @@ const RehldsFuncs_t* RehldsFuncs;
 IRehldsServerData*   RehldsData;
 IRehldsHookchains*   RehldsHookchains;
 IRehldsServerStatic* RehldsSvs;
+IMessageManager*     RehldsMessageManager;
 
 bool RehldsApi_Init()
 {
@@ -37,6 +38,7 @@ bool RehldsApi_Init()
 	RehldsData           = RehldsApi->GetServerData();
 	RehldsHookchains     = RehldsApi->GetHookchains();
 	RehldsSvs            = RehldsApi->GetServerStatic();
+	RehldsMessageManager = RehldsApi->GetMessageManager();
 
 	return true;
 }

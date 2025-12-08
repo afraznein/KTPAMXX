@@ -1,18 +1,12 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git -C \"N:/Nein_/KTP Git Projects/KTPAMXX\" status --short)",
-      "Bash(git -C \"N:/Nein_/KTP Git Projects/KTPAMXX\" diff --stat HEAD)",
-      "Bash(git -C \"N:/Nein_/KTP Git Projects/KTPReHLDS\" status --short)",
-      "Bash(git -C \"N:/Nein_/KTP Git Projects/KTPReHLDS\" diff --stat HEAD)",
-      "Bash(git -C \"N:/Nein_/KTP Git Projects/KTPReHLDS\" log --oneline -5)",
-      "Bash(git -C \"N:/Nein_/KTP Git Projects/KTPReHLDS/rehlds\" status --short)",
-      "Bash(git -C \"N:/Nein_/KTP Git Projects/KTPReHLDS/rehlds\" diff --stat HEAD)",
-      "Bash(git -C \"N:/Nein_/KTP Git Projects/KTPReHLDS/rehlds\" log --oneline -5)",
-      "Bash(git -C \"N:/Nein_/KTP Git Projects/KTPReHLDS/rehlds\" diff HEAD -- rehlds/public/rehlds/rehlds_api.h)",
-      "Bash(git -C \"N:/Nein_/KTP Git Projects/KTPReHLDS/rehlds\" diff HEAD -- rehlds/engine/sv_main.cpp)",
-      "Bash(git -C \"N:/Nein_/KTP Git Projects/KTPReHLDS/rehlds\" diff HEAD -- rehlds/engine/pr_cmds.cpp)",
-      "Bash(git -C \"N:/Nein_/KTP Git Projects/KTPReHLDS/rehlds\" diff HEAD -- rehlds/rehlds/rehlds_api_impl.h)"
+      "Bash(wsl bash -c \"cd ''/mnt/n/Nein_/KTP Git Projects/KTPReHLDS/rehlds'' && chmod +x build.sh && ./build.sh -j=8\")",
+      "Bash(wsl bash -c \"cd ''/mnt/n/Nein_/KTP Git Projects/KTPAMXX'' && sed ''s/\\r$//'' build_linux.sh > /tmp/build_ktpamxx.sh && chmod +x /tmp/build_ktpamxx.sh && bash /tmp/build_ktpamxx.sh\")",
+      "Bash(wsl bash:*)",
+      "Bash(cmd /c \"cd /d \"\"N:\\Nein_\\KTP Git Projects\\KTPAMXX\\KTP_AMX Files\\windows\\compiler\"\" && amxxpc.exe \"\"N:\\Nein_\\KTP Git Projects\\KTPAMXX\\plugins\\dod\\dodstats.sma\"\" -o\"\"N:\\Nein_\\KTP Git Projects\\KTPAMXX\\plugins\\dod\\dodstats.amxx\"\"\")",
+      "Bash(cmd /c:*)",
+      "Bash(powershell -Command:*)"
     ],
     "deny": [],
     "ask": []

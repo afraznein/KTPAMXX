@@ -8,11 +8,33 @@ Part of the [KTP Competitive Infrastructure](https://github.com/afraznein).
 
 ---
 
+## What's New in v2.2.0
+
+### Extension Mode Event Support
+
+KTP AMX v2.2.0 adds `register_event` and `register_logevent` support in extension mode:
+
+- **`register_event` works** - Via KTPReHLDS IMessageManager integration
+- **`register_logevent` works** - Via AlertMessage hookchain
+- **Module API** - Modules can now access ReHLDS API directly (`MF_GetRehldsApi`, etc.)
+- **Module suffix change** - Default suffix changed from `_amxx` to `_ktp`
+
+### Module Compatibility
+
+| Module | Extension Mode Status |
+|--------|----------------------|
+| amxxcurl | Working |
+| ReAPI | Working |
+| DODX | Broken (hooks disabled) |
+| SQLite | Broken (Metamod incompatible) |
+
+---
+
 ## What's New in v2.1.0
 
 ### Full Map Change Support (Extension Mode)
 
-KTP AMX v2.1.0 adds complete map change support in extension mode:
+KTP AMX v2.1.0 added complete map change support in extension mode:
 
 - **Seamless map transitions** - Clients persist through map changes without disconnection
 - **All forwards fire correctly** - `plugin_init`, `plugin_cfg`, `client_connect`, `client_putinserver` work on new maps
@@ -123,7 +145,7 @@ public client_cvar_changed(id, const cvar[], const value[]) {
 
 Check server console on startup:
 ```
-KTP AMX v2.1.0 loaded
+KTP AMX v2.2.0 loaded
 Core mode: JIT+ASM32
 Running as: ReHLDS Extension (or: Metamod Plugin)
 ```

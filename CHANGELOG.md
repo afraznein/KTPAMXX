@@ -5,6 +5,56 @@ All notable changes to KTP AMX will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2025-12-08
+
+### Added
+
+#### Extension Mode Event Support
+- **`register_event` in extension mode** - Events now work via KTPReHLDS IMessageManager integration
+  - `MessageHook_Handler` parses message parameters and fires AMXX event callbacks
+  - Hooks installed on-demand when plugins call `register_event`
+- **`register_logevent` in extension mode** - Log events work via AlertMessage hookchain
+  - Filters `at_logged` messages and fires log event handlers
+  - Also triggers `plugin_log` forward
+
+#### Module API for Extension Mode
+- `MF_IsExtensionMode()` - Check if running without Metamod
+- `MF_GetRehldsApi()` - Access ReHLDS API from modules
+- `MF_GetRehldsHookchains()` - Access ReHLDS hookchains
+- `MF_GetRehldsFuncs()` - Access ReHLDS functions
+- `MF_GetRehldsServerData()` - Access ReHLDS server data
+- `MF_GetRehldsMessageManager()` - Access IMessageManager
+- `MF_GetGameDllFuncs()` - Access game DLL functions
+
+#### Module Compatibility Testing
+- **amxxcurl**: Confirmed working in extension mode (uses `MF_RegModuleFrameFunc`)
+- **ReAPI**: Confirmed working in extension mode (has dedicated extension support)
+- **DODX**: Extension hooks added but disabled due to crashes (`#if 0`)
+- **SQLite**: Crashes in extension mode (Metamod hooks incompatible)
+
+### Changed
+- Default module suffix changed from `_amxx` to `_ktp`
+- Module loader now recognizes both `_amxx` and `_ktp` suffixes
+
+### Fixed
+- `getEventId()` now works in extension mode using `REG_USER_MSG` lookup
+
+### Technical Details
+
+#### IMessageManager Integration
+KTPReHLDS 3.16+ provides `IMessageManager` for intercepting network messages without Metamod. KTPAMXX now:
+1. Calls `RehldsMessageManager->registerHook(msg_id, handler)` per message type
+2. `MessageHook_Handler` parses `IMessage` parameters (byte, short, long, float, string)
+3. Calls `g_events.parseValue()` and executes registered event handlers
+
+#### AlertMessage Hookchain
+New `AlertMessage` hookchain in KTPReHLDS provides pre-formatted log strings:
+1. Hook fires with `ALERT_TYPE` and formatted message
+2. KTPAMXX filters for `at_logged` type
+3. Passes to `g_logevents` for parsing and execution
+
+---
+
 ## [2.1.0] - 2025-12-06
 
 ### Added
@@ -151,10 +201,12 @@ See [AMX Mod X releases](https://github.com/alliedmodders/amxmodx/releases) for 
 
 | Version | Date | Description |
 |---------|------|-------------|
+| 2.2.0 | 2025-12-08 | register_event/register_logevent extension mode, module API |
 | 2.1.0 | 2025-12-06 | Map change support, client commands, menu systems in extension mode |
 | 2.0.0 | 2024-12-04 | Major release: ReHLDS extension mode, KTP branding, client_cvar_changed |
 | 1.10.0 | - | Base fork from AMX Mod X |
 
+[2.2.0]: https://github.com/afraznein/KTPAMXX/releases/tag/v2.2.0
 [2.1.0]: https://github.com/afraznein/KTPAMXX/releases/tag/v2.1.0
 [2.0.0]: https://github.com/afraznein/KTPAMXX/releases/tag/v2.0.0
 [1.10.0]: https://github.com/alliedmodders/amxmodx/releases/tag/1.10.0

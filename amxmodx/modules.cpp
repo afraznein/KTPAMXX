@@ -32,6 +32,7 @@
 #include "CDataPack.h"
 #include "CGameConfigs.h"
 #include <amtl/os/am-path.h>
+#include "resdk/mod_rehlds_api.h"  // KTP: ReHLDS API access for modules
 
 ke::InlineList<CModule> g_modules;
 ke::InlineList<CScript> g_loadedscripts;
@@ -760,9 +761,15 @@ bool ConvertModuleName(const char *pathString, char *path)
 	{
 		while (*ptr && *ptr != '_')
 			ptr++;
+		// KTP: Check for both _amxx and _ktp suffixes
+		int suffixLen = 0;
 		if (strncmp(ptr, "_amxx", 5) == 0)
+			suffixLen = 5;
+		else if (strncmp(ptr, "_ktp", 4) == 0)
+			suffixLen = 4;
+		if (suffixLen > 0)
 		{
-			char *p = ptr + 5;
+			char *p = ptr + suffixLen;
 			if (strncmp(p, ".dll", 4) == 0 || strncmp(p, ".dylib", 6) == 0)
 			{
 				foundAmxx = true;
@@ -805,7 +812,7 @@ bool ConvertModuleName(const char *pathString, char *path)
 		*ptr = '\0';
 	}
 
-	auto length = ke::path::Format(path, PLATFORM_MAX_PATH, "%s/%s_amxx", orig_path, tmpname);
+	auto length = ke::path::Format(path, PLATFORM_MAX_PATH, "%s/%s_ktp", orig_path, tmpname);
 
 #if defined PLATFORM_LINUX
 # if defined AMD64 || PAWN_CELL_SIZE == 64
@@ -1806,11 +1813,62 @@ globalvars_t* MNF_GetGlobalVars()
 	return gpGlobals;
 }
 
+// KTP: Check if running in extension mode (without Metamod)
+int MNF_IsExtensionMode()
+{
+	return g_bRunningWithMetamod ? 0 : 1;
+}
+
+// KTP: Get ReHLDS API pointer for modules (returns NULL if not available)
+void* MNF_GetRehldsApi()
+{
+	return (void*)RehldsApi;
+}
+
+// KTP: Get ReHLDS hookchains for modules (returns NULL if not available)
+void* MNF_GetRehldsHookchains()
+{
+	return (void*)RehldsHookchains;
+}
+
+// KTP: Get ReHLDS functions for modules (returns NULL if not available)
+void* MNF_GetRehldsFuncs()
+{
+	return (void*)RehldsFuncs;
+}
+
+// KTP: Get ReHLDS server data for modules (returns NULL if not available)
+void* MNF_GetRehldsServerData()
+{
+	return (void*)RehldsData;
+}
+
+// KTP: Get ReHLDS message manager for modules (returns NULL if not available)
+void* MNF_GetRehldsMessageManager()
+{
+	return (void*)RehldsMessageManager;
+}
+
+// KTP: Get game DLL functions for modules (works in both Metamod and extension mode)
+void* MNF_GetGameDllFuncs()
+{
+	return (void*)g_pGameEntityInterface;
+}
+
 void Module_CacheFunctions()
 {
 	// KTP: Engine function access for modules like ReAPI
 	REGISTER_FUNC("GetEngineFuncs", MNF_GetEngineFuncs)
 	REGISTER_FUNC("GetGlobalVars", MNF_GetGlobalVars)
+
+	// KTP: ReHLDS API access for modules in extension mode
+	REGISTER_FUNC("IsExtensionMode", MNF_IsExtensionMode)
+	REGISTER_FUNC("GetRehldsApi", MNF_GetRehldsApi)
+	REGISTER_FUNC("GetRehldsHookchains", MNF_GetRehldsHookchains)
+	REGISTER_FUNC("GetRehldsFuncs", MNF_GetRehldsFuncs)
+	REGISTER_FUNC("GetRehldsServerData", MNF_GetRehldsServerData)
+	REGISTER_FUNC("GetRehldsMessageManager", MNF_GetRehldsMessageManager)
+	REGISTER_FUNC("GetGameDllFuncs", MNF_GetGameDllFuncs)
 
 	REGISTER_FUNC("BuildPathname", build_pathname)
 	REGISTER_FUNC("BuildPathnameR", build_pathname_r)
