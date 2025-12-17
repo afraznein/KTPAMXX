@@ -168,7 +168,8 @@ static cell AMX_NATIVE_CALL get_user_class(AMX *amx, cell *params)
 	CHECK_PLAYER(index);
 	CPlayer* pPlayer = GET_PLAYER_POINTER_I(index);
 
-	if (pPlayer->ingame)
+	// KTP: Check pEdict is valid before accessing
+	if (pPlayer->ingame && pPlayer->pEdict && !pPlayer->pEdict->free)
 		return pPlayer->pEdict->v.playerclass;
 
 	return 0;
@@ -218,8 +219,9 @@ static cell AMX_NATIVE_CALL get_user_pronestate(AMX *amx, cell *params)
 	CHECK_PLAYER(index);
 	CPlayer* pPlayer = GET_PLAYER_POINTER_I(index);
 
-	if (pPlayer->ingame)
-			return pPlayer->pEdict->v.iuser3;
+	// KTP: Check pEdict is valid before accessing
+	if (pPlayer->ingame && pPlayer->pEdict && !pPlayer->pEdict->free)
+		return pPlayer->pEdict->v.iuser3;
 
 	return 0;
 }
@@ -259,7 +261,8 @@ static cell AMX_NATIVE_CALL dod_weapon_type(AMX *amx, cell *params) /* 2 params 
 
 	CPlayer* pPlayer = GET_PLAYER_POINTER_I(index);
 
-	if(pPlayer->ingame)
+	// KTP: Check pEdict is valid before accessing
+	if(pPlayer->ingame && pPlayer->pEdict && !pPlayer->pEdict->free)
 	{
 		int weaponsbit = pPlayer->pEdict->v.weapons & ~(1<<31); // don't count last element
 
@@ -276,7 +279,7 @@ static cell AMX_NATIVE_CALL dod_weapon_type(AMX *amx, cell *params) /* 2 params 
 	return 0;
 }
 
-// forward 
+// forward
 static cell AMX_NATIVE_CALL register_forward(AMX *amx, cell *params)
 { 
 
@@ -385,9 +388,15 @@ static cell AMX_NATIVE_CALL cwpn_dmg(AMX *amx, cell *params)
 	CPlayer* pAtt = GET_PLAYER_POINTER_I(att);
 	CPlayer* pVic = GET_PLAYER_POINTER_I(vic);
 
+	// KTP: Check pEdict is valid before accessing
+	if (!pVic->pEdict || pVic->pEdict->free)
+		return 0;
+	if (!pAtt->pEdict || pAtt->pEdict->free)
+		return 0;
+
 	pVic->pEdict->v.dmg_inflictor = NULL;
 
-	if(!pAtt) 
+	if(!pAtt)
 		pAtt = pVic;
 
 	if(pAtt->index != pVic->index)
@@ -453,41 +462,49 @@ static cell AMX_NATIVE_CALL is_custom(AMX *amx, cell *params)
 
 // player,wid
 static cell AMX_NATIVE_CALL dod_get_user_team(AMX *amx, cell *params)
-{ 
+{
 	int index = params[1];
 	CHECK_PLAYER(index);
 
 	CPlayer* pPlayer = GET_PLAYER_POINTER_I(index);
+	// KTP: Check pEdict is valid before accessing
+	if (!pPlayer->pEdict || pPlayer->pEdict->free)
+		return 0;
 	return pPlayer->pEdict->v.team;
 
 }
 
 // player,wid
+// KTP: This function is disabled in extension mode - core AMXX's get_user_team is used instead
+// The native registration for this function is commented out in the natives table below
 static cell AMX_NATIVE_CALL get_user_team(AMX *amx, cell *params)
-{ 
+{
 	int index = params[1];
 	CHECK_PLAYER(index);
 
 	CPlayer* pPlayer = GET_PLAYER_POINTER_I(index);
-	int iTeam = pPlayer->pEdict->v.team; 
+	// KTP: Check pEdict is valid before accessing
+	if (!pPlayer->pEdict || pPlayer->pEdict->free)
+		return 0;
+	int iTeam = pPlayer->pEdict->v.team;
 
 	if ( params[3] )
-	{ 
-		const char *szTeam = ""; 
+	{
+		const char *szTeam = "";
 		switch(iTeam)
 		{
-		case 1: 
-			szTeam = "Allies"; 
-			break; 
+		case 1:
+			szTeam = "Allies";
+			break;
 
-		case 2: 
-			szTeam = "Axis"; 
-			break; 
-		} 
+		case 2:
+			szTeam = "Axis";
+			break;
+		}
 
-		MF_SetAmxString(amx,params[2],szTeam,params[3]); 
-	} 
-	return iTeam; 
+		MF_SetAmxString(amx,params[2],szTeam,params[3]);
+	}
+	return iTeam;
 }
 
 static cell AMX_NATIVE_CALL dod_set_model(AMX *amx, cell *params) // player,model
@@ -633,7 +650,8 @@ AMX_NATIVE_INFO base_Natives[] =
 
 	//****************************************
 
-	{ "get_user_team", get_user_team },
+	// KTP: Disabled - use core AMXX get_user_team to avoid crash in extension mode
+	// { "get_user_team", get_user_team },
 	{ "get_weaponname", get_weapon_name },
 	{ "get_user_weapon", get_user_weapon },
 	{ "dod_get_user_team", dod_get_user_team },

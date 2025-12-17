@@ -66,39 +66,44 @@ weapon_t weaponData[] =
 int get_weaponid(CPlayer* pPlayer)
 {
 	int weapon = pPlayer->current;
+
+	// KTP: Safety check - pEdict must be valid for most weapon checks
+	if (!pPlayer->pEdict || pPlayer->pEdict->free)
+		return weapon;
+
 	const char *sz;
-	switch(weapon) 
+	switch(weapon)
 	{
-	case  1: 
-		if(g_map.detect_allies_country) weapon = 37; 
+	case  1:
+		if(g_map.detect_allies_country) weapon = 37;
 		break;
 
-	case  5: 
-		if(pPlayer->pEdict->v.button&IN_ATTACK2) weapon = 38; 
+	case  5:
+		if(pPlayer->pEdict->v.button&IN_ATTACK2) weapon = 38;
 		break;
 
-	case 10: 
-		if(pPlayer->pEdict->v.button&IN_ATTACK2) weapon = 34; 
+	case 10:
+		if(pPlayer->pEdict->v.button&IN_ATTACK2) weapon = 34;
 		break;
 
-	case 20: 
+	case 20:
 		if(g_map.detect_allies_paras) weapon = 33;
 		break;
 
-	case 23: 
+	case 23:
         sz = STRING(pPlayer->pEdict->v.weaponmodel);
-        if(sz[13] == 's')
-			weapon = 32; 	
+        if(sz && sz[13] == 's')
+			weapon = 32;
 		break;
 
-	case 24: 
-		if(pPlayer->pEdict->v.button&IN_ATTACK2) weapon = 41; 
+	case 24:
+		if(pPlayer->pEdict->v.button&IN_ATTACK2) weapon = 41;
 		break;
 
 	case 25:
         sz = STRING(pPlayer->pEdict->v.weaponmodel);
-        if(sz[16] == 's')
-			 weapon = 35; 
+        if(sz && sz[16] == 's')
+			 weapon = 35;
 		else if(pPlayer->pEdict->v.button&IN_ATTACK2)
 			 weapon = 39;
 		break;
@@ -128,7 +133,11 @@ traceVault traceData[] =
 
 bool ignoreBots (edict_t *pEnt, edict_t *pOther)
 {
-	if(!rankBots && (pEnt->v.flags & FL_FAKECLIENT || (pOther && pOther->v.flags & FL_FAKECLIENT)))
+	// KTP: Safety check - pEnt must be valid before accessing flags
+	if (!pEnt || pEnt->free)
+		return true;  // Treat invalid edicts as "ignore"
+
+	if(!rankBots && (pEnt->v.flags & FL_FAKECLIENT || (pOther && !pOther->free && pOther->v.flags & FL_FAKECLIENT)))
 		return true;
 
 	return false;
@@ -136,10 +145,12 @@ bool ignoreBots (edict_t *pEnt, edict_t *pOther)
 
 bool isModuleActive()
 {
-	if(!(int)CVAR_GET_FLOAT("dodstats_pause"))
-		return true;
+	// KTP: Use cached cvar pointer instead of CVAR_GET_FLOAT string lookup
+	// CVAR_GET_FLOAT crashes in extension mode PreThink hooks
+	if (dodstats_pause && (int)dodstats_pause->value)
+		return false;
 
-	return false;
+	return true;
 }
 
 edict_t *FindEntityByString(edict_t *pentStart, const char *szKeyword, const char *szValue)

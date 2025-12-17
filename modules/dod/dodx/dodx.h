@@ -19,7 +19,21 @@
 #include "CMisc.h"
 #include "CRank.h"
 
-#define GET_PLAYER_POINTER(e)   (&players[ENTINDEX(e)])
+// KTP: First edict pointer for safe entity index calculation
+// This avoids calling engine functions in extension mode hooks
+extern edict_t* g_pFirstEdict;
+
+// KTP: Safe ENTINDEX that uses pointer arithmetic instead of engine function
+// This is safe to call during ReHLDS hooks when pfnIndexOfEdict may crash
+inline int ENTINDEX_SAFE(const edict_t *pEdict)
+{
+	if (!pEdict || !g_pFirstEdict)
+		return 0;
+	return static_cast<int>(pEdict - g_pFirstEdict);
+}
+
+// KTP: Use ENTINDEX_SAFE for GET_PLAYER_POINTER to avoid crashes in extension mode
+#define GET_PLAYER_POINTER(e)   (&players[ENTINDEX_SAFE(e)])
 #define GET_PLAYER_POINTER_I(i) (&players[i])
 
 #ifndef GETPLAYERAUTHID
@@ -166,13 +180,14 @@ edict_t *FindEntityInSphere(edict_t *pentStart, edict_t *origin, float radius);
 		} \
 	}
 
+// KTP: Use players[] array directly to avoid AMXX function calls that may crash in extension mode
 #define CHECK_PLAYER(x) \
 	if (x < 1 || x > gpGlobals->maxClients) { \
 		MF_LogError(amx, AMX_ERR_NATIVE, "Player out of range (%d)", x); \
 		return 0; \
 	} else { \
-		if (!MF_IsPlayerIngame(x) || FNullEnt(MF_GetPlayerEdict(x))) { \
-			MF_LogError(amx, AMX_ERR_NATIVE, "Invalid player %d", x); \
+		CPlayer* _pCheck = &players[x]; \
+		if (!_pCheck->ingame || !_pCheck->pEdict || _pCheck->pEdict->free || FNullEnt(_pCheck->pEdict)) { \
 			return 0; \
 		} \
 	}

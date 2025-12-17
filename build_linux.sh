@@ -68,7 +68,15 @@ fi
 echo ""
 
 # Set environment variables
-export METAMOD="$(pwd)/../metamod-am"
+# Check for metamod (optional for extension mode builds)
+if [ -d "$(pwd)/../metamod-am" ]; then
+    export METAMOD="$(pwd)/../metamod-am"
+elif [ -d "$(pwd)/../metamod" ]; then
+    export METAMOD="$(pwd)/../metamod"
+else
+    # No metamod found - will build extension mode only
+    export METAMOD=""
+fi
 
 # Check for HLSDK in common locations
 if [ -d "$(pwd)/../hlsdk" ]; then
@@ -80,15 +88,18 @@ else
 fi
 
 echo "Build environment:"
-echo "  METAMOD: $METAMOD"
+if [ -n "$METAMOD" ]; then
+    echo "  METAMOD: $METAMOD"
+else
+    echo "  METAMOD: (not found - extension mode only)"
+fi
 echo "  HLSDK: $HLSDK"
 echo ""
 
 # Check dependencies exist
-if [ ! -d "$METAMOD" ]; then
-    echo "ERROR: Metamod not found at $METAMOD"
-    echo "Please ensure metamod-am is in the parent directory"
-    exit 1
+# Metamod is optional for extension mode builds
+if [ -z "$METAMOD" ]; then
+    echo "NOTE: Metamod not found. Building in extension mode only."
 fi
 
 if [ ! -d "$HLSDK" ]; then
@@ -122,7 +133,65 @@ if [ -f "$BINARY_PATH" ]; then
     echo "Binary: $BINARY_PATH"
     ls -lh "$BINARY_PATH"
     echo ""
-    echo "You can now deploy this to your server's addons/ktpamx/dlls/ directory"
+
+    # Deploy to staging folder for easy VPS upload
+    # This is a Windows path accessed via WSL
+    DEPLOY_DIR="/mnt/n/Nein_/KTP DoD Server"
+    if [ -d "$DEPLOY_DIR" ]; then
+        echo "Deploying to staging folder..."
+
+        # Deploy main AMXX binary
+        mkdir -p "$DEPLOY_DIR/dod/addons/ktpamx/dlls"
+        cp "$BINARY_PATH" "$DEPLOY_DIR/dod/addons/ktpamx/dlls/"
+        echo "  -> Copied ktpamx_i386.so"
+
+        # Deploy DODX module if built
+        DODX_PATH="obj-linux/packages/dod/addons/ktpamx/modules/dodx_ktp_i386.so"
+        if [ -f "$DODX_PATH" ]; then
+            mkdir -p "$DEPLOY_DIR/dod/addons/ktpamx/modules"
+            cp "$DODX_PATH" "$DEPLOY_DIR/dod/addons/ktpamx/modules/"
+            echo "  -> Copied dodx_ktp_i386.so"
+        fi
+
+        # Deploy Fun module if built
+        FUN_PATH="obj-linux/packages/base/addons/ktpamx/modules/fun_ktp_i386.so"
+        if [ -f "$FUN_PATH" ]; then
+            mkdir -p "$DEPLOY_DIR/dod/addons/ktpamx/modules"
+            cp "$FUN_PATH" "$DEPLOY_DIR/dod/addons/ktpamx/modules/"
+            echo "  -> Copied fun_ktp_i386.so"
+        fi
+
+        # Deploy Engine module if built
+        ENGINE_PATH="obj-linux/packages/base/addons/ktpamx/modules/engine_ktp_i386.so"
+        if [ -f "$ENGINE_PATH" ]; then
+            mkdir -p "$DEPLOY_DIR/dod/addons/ktpamx/modules"
+            cp "$ENGINE_PATH" "$DEPLOY_DIR/dod/addons/ktpamx/modules/"
+            echo "  -> Copied engine_ktp_i386.so"
+        fi
+
+        # Deploy FakeMeta module if built
+        FAKEMETA_PATH="obj-linux/packages/base/addons/ktpamx/modules/fakemeta_ktp_i386.so"
+        if [ -f "$FAKEMETA_PATH" ]; then
+            mkdir -p "$DEPLOY_DIR/dod/addons/ktpamx/modules"
+            cp "$FAKEMETA_PATH" "$DEPLOY_DIR/dod/addons/ktpamx/modules/"
+            echo "  -> Copied fakemeta_ktp_i386.so"
+        fi
+
+        # Deploy stats_logging plugin if it exists
+        STATS_LOGGING_PATH="plugins/dod/stats_logging.amxx"
+        if [ -f "$STATS_LOGGING_PATH" ]; then
+            mkdir -p "$DEPLOY_DIR/dod/addons/ktpamx/plugins"
+            cp "$STATS_LOGGING_PATH" "$DEPLOY_DIR/dod/addons/ktpamx/plugins/"
+            echo "  -> Copied stats_logging.amxx"
+        fi
+
+        echo ""
+        echo "Files staged at: $DEPLOY_DIR/dod/addons/ktpamx/"
+        echo "Ready for upload to VPS!"
+    else
+        echo "Staging folder not found: $DEPLOY_DIR"
+        echo "You can manually deploy from: $BINARY_PATH"
+    fi
 else
     echo ""
     echo "========================================"

@@ -2432,6 +2432,10 @@ PFN_GET_CONFIG_MANAGER		g_fn_GetConfigManager;
 PFN_REG_MODULE_FRAME_FUNC	g_fn_RegModuleFrameFunc;
 PFN_UNREG_MODULE_FRAME_FUNC	g_fn_UnregModuleFrameFunc;
 
+// KTP: Engine access function pointers for modules in extension mode
+PFN_GET_ENGINE_FUNCS		g_fn_GetEngineFuncs;
+PFN_GET_GLOBAL_VARS			g_fn_GetGlobalVars;
+
 // KTP: ReHLDS API access function pointers for modules in extension mode
 PFN_IS_EXTENSION_MODE		g_fn_IsExtensionMode;
 PFN_GET_REHLDS_API			g_fn_GetRehldsApi;
@@ -2440,6 +2444,10 @@ PFN_GET_REHLDS_FUNCS		g_fn_GetRehldsFuncs;
 PFN_GET_REHLDS_SERVERDATA	g_fn_GetRehldsServerData;
 PFN_GET_REHLDS_MSGMGR		g_fn_GetRehldsMessageManager;
 PFN_GET_GAMEDLL_FUNCS		g_fn_GetGameDllFuncs;
+PFN_GET_USER_MSG_ID			g_fn_GetUserMsgId;
+PFN_REG_MODULE_MSG_HANDLER		g_fn_RegModuleMsgHandler;
+PFN_UNREG_MODULE_MSG_HANDLER	g_fn_UnregModuleMsgHandler;
+PFN_REG_MODULE_MSG_BEGIN_HANDLER	g_fn_RegModuleMsgBeginHandler;
 
 // *** Exports ***
 C_DLLEXPORT int AMXX_Query(int *interfaceVersion, amxx_module_info_s *moduleInfo)
@@ -2594,6 +2602,10 @@ C_DLLEXPORT int AMXX_Attach(PFN_REQ_FNPTR reqFnptrFunc)
 	REQFUNC("CellToReal", g_fn_CellToReal, PFN_CELL_TO_REAL);
 	REQFUNC("RealToCell", g_fn_RealToCell, PFN_REAL_TO_CELL);
 
+	// KTP: Engine access functions (optional - only present in KTP AMX)
+	REQFUNC_OPT("GetEngineFuncs", g_fn_GetEngineFuncs, PFN_GET_ENGINE_FUNCS);
+	REQFUNC_OPT("GetGlobalVars", g_fn_GetGlobalVars, PFN_GET_GLOBAL_VARS);
+
 	// KTP: ReHLDS API access functions (optional - only present in KTP AMX)
 	REQFUNC_OPT("IsExtensionMode", g_fn_IsExtensionMode, PFN_IS_EXTENSION_MODE);
 	REQFUNC_OPT("GetRehldsApi", g_fn_GetRehldsApi, PFN_GET_REHLDS_API);
@@ -2602,6 +2614,10 @@ C_DLLEXPORT int AMXX_Attach(PFN_REQ_FNPTR reqFnptrFunc)
 	REQFUNC_OPT("GetRehldsServerData", g_fn_GetRehldsServerData, PFN_GET_REHLDS_SERVERDATA);
 	REQFUNC_OPT("GetRehldsMessageManager", g_fn_GetRehldsMessageManager, PFN_GET_REHLDS_MSGMGR);
 	REQFUNC_OPT("GetGameDllFuncs", g_fn_GetGameDllFuncs, PFN_GET_GAMEDLL_FUNCS);
+	REQFUNC_OPT("GetUserMsgId", g_fn_GetUserMsgId, PFN_GET_USER_MSG_ID);
+	REQFUNC_OPT("RegModuleMsgHandler", g_fn_RegModuleMsgHandler, PFN_REG_MODULE_MSG_HANDLER);
+	REQFUNC_OPT("UnregModuleMsgHandler", g_fn_UnregModuleMsgHandler, PFN_UNREG_MODULE_MSG_HANDLER);
+	REQFUNC_OPT("RegModuleMsgBeginHandler", g_fn_RegModuleMsgBeginHandler, PFN_REG_MODULE_MSG_BEGIN_HANDLER);
 
 #ifdef FN_AMXX_ATTACH
 	FN_AMXX_ATTACH();

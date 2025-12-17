@@ -132,8 +132,17 @@ bool CPlayer::IsBot()
 	if (!pEdict)
 		return false;
 
+	// KTP: Check pEdict->free to prevent crash on invalid edicts
+	if (pEdict->free)
+		return false;
+
 	if ((pEdict->v.flags & FL_FAKECLIENT) == FL_FAKECLIENT)
 		return true;
+
+	// KTP: Only call GETPLAYERAUTHID if the player is fully connected and authorized
+	// Calling this too early can cause crashes in extension mode
+	if (!authorized)
+		return false;
 
 	const char *auth = GETPLAYERAUTHID(pEdict);
 

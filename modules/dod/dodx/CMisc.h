@@ -93,6 +93,11 @@ class CPlayer
 		bool do_scoped;
 		bool is_scoped;
 
+		// KTP: Shot tracking for extension mode (button-based detection)
+		int oldbuttons;           // Previous frame's button state
+		float lastShotTime;       // Time of last detected shot (for fire rate limiting)
+		float nextShotTime;       // Earliest time next shot can be detected
+
 		struct ObjectStruct
 		{
 			edict_t* pEdict;
@@ -134,18 +139,25 @@ class CPlayer
 		bool setModel();
 		void setBody(int);
 		void PreThink();
+		void CheckShotFired();  // KTP: Shot detection for extension mode
 		void Scoping(int);
 		void ScopingCheck();
 		void WeaponsCheck(int);
 
 		inline bool IsBot()
 		{
+			// KTP: Check pEdict is valid before accessing
+			if (!pEdict || pEdict->free)
+				return false;
 			const char* auth= (*g_engfuncs.pfnGetPlayerAuthId)(pEdict);
 			return ( auth && !strcmp( auth , "BOT" ) );
 		}
 
 		inline bool IsAlive()
 		{
+			// KTP: Check pEdict is valid before accessing
+			if (!pEdict || pEdict->free)
+				return false;
 			return ((pEdict->v.deadflag==DEAD_NO)&&(pEdict->v.health>0));
 		}
 };

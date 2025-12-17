@@ -8,16 +8,39 @@ Part of the [KTP Competitive Infrastructure](https://github.com/afraznein).
 
 ---
 
-## What's New in v2.2.0
+## What's New in v2.4.0
 
-### Extension Mode Event Support
+### DODX Extension Mode - Complete Rewrite
 
-KTP AMX v2.2.0 adds `register_event` and `register_logevent` support in extension mode:
+KTP AMX v2.4.0 brings a comprehensive rewrite of the DODX module for full extension mode support:
 
-- **`register_event` works** - Via KTPReHLDS IMessageManager integration
-- **`register_logevent` works** - Via AlertMessage hookchain
-- **Module API** - Modules can now access ReHLDS API directly (`MF_GetRehldsApi`, etc.)
-- **Module suffix change** - Default suffix changed from `_amxx` to `_ktp`
+**New ReHLDS Hook Handlers:**
+- `DODX_OnPlayerPreThink` - Stats tracking loop with shot detection
+- `DODX_OnClientConnected`, `DODX_OnSV_Spawn_f`, `DODX_OnSV_DropClient` - Player lifecycle
+- `DODX_OnChangelevel` - Pre-changelevel cleanup prevents stale pointer crashes
+- `DODX_OnTraceLine` - Hit detection and aiming statistics
+
+**Shot Tracking via Button State:**
+- Tracks shots via IN_ATTACK button monitoring with per-weapon fire rate delays
+- MG42: 0.05s | SMGs: 0.1s | Semi-auto rifles: 0.5s (rising edge only)
+
+**Safety Hardening:**
+- `ENTINDEX_SAFE` inline function uses pointer arithmetic instead of engine calls
+- `g_bServerActive` flag prevents processing during map changes
+- All stats natives hardened with gpGlobals/pEdict/free checks
+- `CHECK_PLAYER` macro rewritten to use players[] array directly
+
+### Module SDK Extensions
+
+- **`MF_GetEngineFuncs()`** / **`MF_GetGlobalVars()`** - Engine access for modules
+- **`MF_GetUserMsgId()`** - Message ID lookup in extension mode
+- **`MF_RegModuleMsgHandler()`** - Module message handler registration
+
+### Logging & Cleanup
+
+- **Fixed log rotation** - stats_logging.sma no longer causes log file cycling
+- **Debug cleanup** - Removed all verbose debug messages
+- **Cleaner startup** - Minimal console output
 
 ### Module Compatibility
 
@@ -25,8 +48,21 @@ KTP AMX v2.2.0 adds `register_event` and `register_logevent` support in extensio
 |--------|----------------------|
 | amxxcurl | Working |
 | ReAPI | Working |
-| DODX | Broken (hooks disabled) |
+| DODX | **Working** (full stats + shot tracking + safety hardening) |
 | SQLite | Broken (Metamod incompatible) |
+
+---
+
+## What's New in v2.3.0
+
+- **DODX extension mode complete** - All stats natives, TraceLine hook, hardened safety checks
+- **stats_logging crash fixed** - End-of-round logging works correctly
+
+### What's New in v2.2.0
+
+- **`register_event` works** - Via KTPReHLDS IMessageManager integration
+- **`register_logevent` works** - Via AlertMessage hookchain
+- **Module API** - Modules can now access ReHLDS API directly (`MF_GetRehldsApi`, etc.)
 
 ---
 
@@ -145,7 +181,7 @@ public client_cvar_changed(id, const cvar[], const value[]) {
 
 Check server console on startup:
 ```
-KTP AMX v2.2.0 loaded
+KTP AMX v2.4.0 loaded
 Core mode: JIT+ASM32
 Running as: ReHLDS Extension (or: Metamod Plugin)
 ```

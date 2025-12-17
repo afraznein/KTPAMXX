@@ -16,7 +16,6 @@ int LoadMetamodPlugin(const char *path, void **handle, PLUG_LOADTIME now)
 	// But modules can still work via AMXX_Query/AMXX_Attach for natives
 	if (!g_bRunningWithMetamod)
 	{
-		print_srvconsole("[KTP AMX] Note: Module \"%s\" uses Metamod hooks (unavailable in extension mode)\n", path);
 		// Return success but don't actually load via Metamod
 		// The module's AMXX_Attach was already called, so natives are registered
 		return 1;

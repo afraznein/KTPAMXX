@@ -5,6 +5,163 @@ All notable changes to KTP AMX will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.0] - 2025-12-16
+
+### Added
+
+#### DODX Extension Mode - Complete Rewrite
+The DODX module has been extensively rewritten for full extension mode support:
+
+**New ReHLDS Hook Handlers:**
+- `DODX_OnPlayerPreThink` - Main stats tracking loop (replaces `FN_PlayerPreThink_Post`)
+- `DODX_OnClientConnected` - Player connection handling (replaces `FN_ClientConnect_Post`)
+- `DODX_OnSV_Spawn_f` - Player spawn handling (replaces `FN_ClientPutInServer_Post`)
+- `DODX_OnSV_DropClient` - Player disconnect handling (replaces `FN_ClientDisconnect`)
+- `DODX_OnChangelevel` - Pre-changelevel cleanup to prevent stale pointer crashes
+- `DODX_OnTraceLine` - Hit detection and aiming (replaces `TraceLine_Post`)
+- `IMessageManager` hooks for 16 game message types
+
+**Shot Tracking via Button State:**
+- Tracks weapon shots via IN_ATTACK button monitoring in PreThink
+- Detects rising edge (new shots) and held attack (automatic weapons)
+- Per-weapon fire rate delays for accurate shot counting:
+  - MG42: 0.05s | .30 cal, MG34, Bren: 0.08s
+  - SMGs (Thompson, MP40, MP44, Sten): 0.1s
+  - Semi-auto/bolt rifles: 0.5s (rising edge only)
+  - Pistols: 0.3s (rising edge only)
+- New CPlayer fields: `oldbuttons`, `lastShotTime`, `nextShotTime`
+
+#### ENTINDEX_SAFE Implementation
+- **New inline function** `ENTINDEX_SAFE(edict_t*)` uses pointer arithmetic instead of engine calls
+- **New global** `g_pFirstEdict` cached in `ServerActivate_Post` for safe entity index calculation
+- **Prevents crashes** from calling engine functions during ReHLDS hooks
+- `GET_PLAYER_POINTER` macro updated to use `ENTINDEX_SAFE`
+
+#### Server Active Flag
+- **New global** `g_bServerActive` tracks whether server is in valid state for processing
+- Set to `true` in `ServerActivate_Post`, `false` in `ServerDeactivate` and `OnChangelevel`
+- Prevents message hooks from using stale pointers during map changes
+
+#### Module SDK Extensions
+New functions for modules to access engine resources in extension mode:
+- **`MF_GetEngineFuncs()`** - Returns pointer to engine function table
+- **`MF_GetGlobalVars()`** - Returns pointer to gpGlobals
+- **`MF_GetUserMsgId(name)`** - Look up message ID by name (works in extension mode)
+- **`MF_RegModuleMsgHandler()`** - Register module message handler callbacks
+- **`MF_UnregModuleMsgHandler()`** - Unregister module message handler callbacks
+- **`MF_RegModuleMsgBeginHandler()`** - Register message begin handler
+
+#### DODX Deferred Initialization
+- Cvar registration moved from `OnAmxxAttach` to `OnPluginsLoaded` (engine not ready earlier)
+- Message ID lookup via `MF_GetUserMsgId` instead of engine calls
+- Player initialization via PreThink hook (lazy initialization on first frame)
+
+### Fixed
+
+#### Stats Native Safety Hardening
+All DODX stats natives now have comprehensive safety checks:
+- `gpGlobals` NULL check (can be NULL during map change)
+- Player index range validation
+- `pEdict` and `pEdict->free` checks before access
+- `pPlayer->rank` NULL checks (rank system not used in extension mode)
+
+**Hardened natives:**
+- `get_user_astats`, `get_user_vstats`
+- `get_user_wstats`, `get_user_wlstats`, `get_user_wrstats`
+- `get_user_stats`, `get_user_lstats`, `get_user_rstats`
+- `reset_user_wstats`
+
+#### CHECK_PLAYER Macro Rewrite
+- Now uses `players[]` array directly instead of `MF_IsPlayerIngame`/`MF_GetPlayerEdict`
+- Checks `pEdict->free` before calling `FNullEnt()`
+- Prevents crashes when player edict is freed during disconnect
+
+#### TraceLine Hook Safety
+- Added `g_bServerActive` and `g_pFirstEdict` checks
+- Added `ptr` NULL validation
+- Added `pEdict->free` checks for all edict accesses
+- Uses `ENTINDEX_SAFE` for all index calculations
+
+#### ServerDeactivate Safety
+- Clears `g_bServerActive` and `g_pFirstEdict` at start of function
+- Added `gpGlobals` NULL check
+- Added `maxClients` range validation with fallback
+
+#### Log File Handling
+- Removed `log on` call from stats_logging.sma that caused log rotation
+- Logging should be enabled via `sv_logfile 1` in server.cfg only
+
+### Changed
+
+#### Debug Logging Cleanup
+- Removed all `[DODX DEBUG]` and `[KTPAMX DEBUG]` statements
+- Removed debug counters and tracking variables
+- Cleaned up verbose initialization logging
+
+#### Startup Message Cleanup
+Removed verbose messages, kept only essential operational output:
+- Kept: `[KTP AMX] ReHLDS extension mode detected...`
+- Kept: `[DODX] Running in ReHLDS extension mode.`
+- Kept: `KTP AMX initialized as ReHLDS extension (no Metamod)`
+- Kept: `[KTP AMX] Loaded X plugin(s).`
+
+---
+
+## [2.3.0] - 2025-12-14
+
+### Added
+
+#### DODX Extension Mode Fully Functional
+- **PF_TraceLine hook** - Hit detection and aiming statistics now work in extension mode
+  - POST hook only - reads trace results without affecting gameplay
+  - Safe for wallpen (doesn't interfere with wallbang detection)
+- **All 4 DODX hooks now active** in extension mode:
+  - `SV_PlayerRunPreThink` - Stats tracking loop
+  - `PF_changelevel_I` - Pre-changelevel cleanup
+  - `PF_TraceLine` - Hit detection/aiming
+  - `IMessageManager` - 16 message hooks for game stats
+
+### Fixed
+
+#### stats_logging.sma Disconnect Crash
+- **Root cause**: `get_user_wstats` called during `client_disconnected` crashed because the player's edict was already marked as free
+- **Solution**: Hardened `CHECK_PLAYER` macro in `dodx.h` to check `edict->free` before calling `FNullEnt()`
+- **Result**: stats_logging.sma now works correctly for end-of-round logging
+
+#### stats_logging.sma Verified Working
+- **Tested and confirmed**: Plugin logs `weaponstats`, `weaponstats2`, `time`, and `latency` on disconnect
+- **Log output**: Correctly written to HLDS log files for stats parsers
+- **Startup fix**: Added `set_task(1.0, "enable_logging")` to force `log on` after server startup
+
+#### DODX Safety Hardening
+- **ENTINDEX_SAFE conversion** - All raw `ENTINDEX()` calls converted to `ENTINDEX_SAFE()` using pointer arithmetic
+- **pEdict access hardening** - All pEdict accesses now have `if (!pEdict || pEdict->free)` guards
+- **Prevents crashes** from stale or invalid edict pointers during map changes and player disconnects
+
+### Technical Details
+
+#### CHECK_PLAYER Macro Fix (dodx.h)
+Before:
+```cpp
+if (!MF_IsPlayerIngame(x) || FNullEnt(MF_GetPlayerEdict(x)))
+```
+After:
+```cpp
+edict_t* _pEdict = MF_GetPlayerEdict(x);
+if (!MF_IsPlayerIngame(x) || !_pEdict || _pEdict->free || FNullEnt(_pEdict))
+```
+
+#### ENTINDEX_SAFE Implementation (dodx.h)
+```cpp
+inline int ENTINDEX_SAFE(const edict_t *pEdict) {
+    if (!pEdict || !g_pFirstEdict)
+        return 0;
+    return static_cast<int>(pEdict - g_pFirstEdict);
+}
+```
+
+---
+
 ## [2.2.0] - 2025-12-08
 
 ### Added
@@ -201,11 +358,15 @@ See [AMX Mod X releases](https://github.com/alliedmodders/amxmodx/releases) for 
 
 | Version | Date | Description |
 |---------|------|-------------|
+| 2.4.0 | 2025-12-16 | DODX shot tracking, module SDK extensions, log file fix, debug cleanup |
+| 2.3.0 | 2025-12-14 | DODX extension mode complete, TraceLine hook, stats_logging crash fix |
 | 2.2.0 | 2025-12-08 | register_event/register_logevent extension mode, module API |
 | 2.1.0 | 2025-12-06 | Map change support, client commands, menu systems in extension mode |
 | 2.0.0 | 2024-12-04 | Major release: ReHLDS extension mode, KTP branding, client_cvar_changed |
 | 1.10.0 | - | Base fork from AMX Mod X |
 
+[2.4.0]: https://github.com/afraznein/KTPAMXX/releases/tag/v2.4.0
+[2.3.0]: https://github.com/afraznein/KTPAMXX/releases/tag/v2.3.0
 [2.2.0]: https://github.com/afraznein/KTPAMXX/releases/tag/v2.2.0
 [2.1.0]: https://github.com/afraznein/KTPAMXX/releases/tag/v2.1.0
 [2.0.0]: https://github.com/afraznein/KTPAMXX/releases/tag/v2.0.0

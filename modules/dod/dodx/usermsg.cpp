@@ -17,19 +17,31 @@
 
 void Client_ResetHUD_End(void* mValue)
 {
+	if (!mPlayer)
+		return;
 	mPlayer->clearStats = gpGlobals->time + 0.25f;
 }
 
 void Client_RoundState(void* mValue)
 {
 	if ( mPlayer ) return;
+
+	// KTP: Safety check - gpGlobals must be valid
+	if (!gpGlobals)
+		return;
+
 	int result = *(int*)mValue;
 	if ( result == 1 )
 	{
-		for (int i=1;i<=gpGlobals->maxClients;i++)
+		// KTP: Use cached maxClients value for safety
+		int maxClients = gpGlobals->maxClients;
+		if (maxClients < 1 || maxClients > 32)
+			return;  // Sanity check
+
+		for (int i=1;i<=maxClients;i++)
 		{
 			CPlayer *pPlayer = GET_PLAYER_POINTER_I(i);
-			if (pPlayer->ingame) 
+			if (pPlayer && pPlayer->ingame)
 			{
 				pPlayer->clearRound = gpGlobals->time + 0.25f;
 			}
@@ -64,13 +76,26 @@ void Client_ObjScore(void* mValue)
 {
 	static CPlayer *pPlayer;
 	static int score;
+	static int playerIdx;
 
 	switch(mState++)
 	{
 	case 0:
-		pPlayer = GET_PLAYER_POINTER_I(*(int*)mValue);
+		// KTP: Safety check - gpGlobals must be valid
+		if (!gpGlobals)
+		{
+			pPlayer = NULL;
+			break;
+		}
+		playerIdx = *(int*)mValue;
+		if (playerIdx < 1 || playerIdx > gpGlobals->maxClients)
+			pPlayer = NULL;
+		else
+			pPlayer = GET_PLAYER_POINTER_I(playerIdx);
 		break;
 	case 1:
+		if (!pPlayer)
+			break;
 		score = *(int*)mValue;
 		if ( (pPlayer->lastScore = score - (int)(pPlayer->savedScore)) && isModuleActive() )
 		{
@@ -89,22 +114,27 @@ void Client_CurWeapon(void* mValue)
 
 	switch (mState++)
 	{
-		case 0: 
+		case 0:
 			iState = *(int*)mValue;
 			break;
 
 		case 1:
-			if (!iState) 
-				break; 
+			if (!iState)
+				break;
 
 			iId = *(int*)mValue;
 			break;
 
 		case 2:
-			if(!iState || !isModuleActive())
+			if(!iState || !isModuleActive() || !mPlayer)
+				break;
+
+			// KTP: Safety check - mPlayer->pEdict must be valid
+			if (!mPlayer->pEdict || mPlayer->pEdict->free)
 				break;
 
 			int iClip = *(int*)mValue;
+
 			mPlayer->old = mPlayer->current;
 			mPlayer->current = iId;
 
@@ -114,17 +144,16 @@ void Client_CurWeapon(void* mValue)
 				mPlayer->current = iId;
 			}
 
-			if(iClip > -1) 
+			if(iClip > -1)
 			{
 				if(mPlayer->current == 17)
 				{
 					if(iClip+2 == mPlayer->weapons[iId].clip)
-					mPlayer->saveShot(iId);
+						mPlayer->saveShot(iId);
 				}
-
-				else 
+				else
 				{
-					if ( iClip+1 == mPlayer->weapons[iId].clip)
+					if (iClip+1 == mPlayer->weapons[iId].clip)
 						mPlayer->saveShot(iId);
 				}
 			}
@@ -137,7 +166,7 @@ void Client_CurWeapon(void* mValue)
 
 void Client_CurWeapon_End(void*)
 {
-	if(mCurWpnEnd == 1 && mPlayer->index && mPlayer->current && mPlayer->old && (mPlayer->current != mPlayer->old))
+	if(mCurWpnEnd == 1 && mPlayer && mPlayer->index && mPlayer->current && mPlayer->old && (mPlayer->current != mPlayer->old))
 		MF_ExecuteForward(iFCurWpnForward, mPlayer->index, mPlayer->current, mPlayer->old);
 
 	mCurWpnEnd = 0;
@@ -155,31 +184,59 @@ void Client_Health_End(void* mValue)
 	if (!mPlayer)
 		return;
 
+	// KTP: Check pEdict is valid before accessing
+	if (!mPlayer->pEdict || mPlayer->pEdict->free)
+		return;
+
 	edict_t *enemy = mPlayer->pEdict->v.dmg_inflictor;
 	int damage = (int)mPlayer->pEdict->v.dmg_take;
 
-	if (!damage || !enemy)
+	// KTP: Check enemy is valid (not null and not a freed edict)
+	if (!damage || !enemy || enemy->free)
 		return;
-	
+
 	int weapon = 0;
 	int aim = 0;
-		
-	mPlayer->pEdict->v.dmg_take = 0.0; 
-	
+
+	mPlayer->pEdict->v.dmg_take = 0.0;
+
 	CPlayer* pAttacker = NULL;
 
-	if(enemy->v.flags & (FL_CLIENT | FL_FAKECLIENT))
+	// KTP: Extra safety check for enemy edict validity before accessing flags
+	if((enemy->v.flags & (FL_CLIENT | FL_FAKECLIENT)))
 	{
-		pAttacker = GET_PLAYER_POINTER(enemy);
-		weapon = pAttacker->current;
+		// KTP: Validate enemy player index is in range
+		int enemyIdx = ENTINDEX_SAFE(enemy);
+		if (enemyIdx < 1 || enemyIdx > gpGlobals->maxClients)
+		{
+			pAttacker = mPlayer;  // Fall back to self-damage
+		}
+		else
+		{
+			pAttacker = GET_PLAYER_POINTER_I(enemyIdx);
 
-		if ( weaponData[weapon].needcheck )
-			weapon = get_weaponid(pAttacker);
+			// KTP: Check attacker is valid and ingame
+			if (!pAttacker->ingame || !pAttacker->pEdict || pAttacker->pEdict->free)
+			{
+				pAttacker = mPlayer;
+			}
+			else
+			{
+				weapon = pAttacker->current;
 
-		aim = pAttacker->aiming;
+				// KTP: Bounds check for weapon array
+				if (weapon >= 0 && weapon < DODMAX_WEAPONS)
+				{
+					if ( weaponData[weapon].needcheck )
+						weapon = get_weaponid(pAttacker);
 
-		if ( weaponData[weapon].melee )
-			pAttacker->saveShot(weapon);
+					aim = pAttacker->aiming;
+
+					if ( weaponData[weapon].melee )
+						pAttacker->saveShot(weapon);
+				}
+			}
+		}
 	}
 	else 
 	{
@@ -194,10 +251,12 @@ void Client_Health_End(void* mValue)
 	}
 
 	if ( pAttacker->index != mPlayer->index )
-	{ 
+	{
 		pAttacker->saveHit( mPlayer , weapon , damage, aim );
 
-		if ( mPlayer->pEdict->v.team == pAttacker->pEdict->v.team )
+		// KTP: Check pEdict is valid before accessing for team comparison
+		if ( pAttacker->pEdict && !pAttacker->pEdict->free &&
+		     mPlayer->pEdict->v.team == pAttacker->pEdict->v.team )
 			TA = 1;
 	}
 
@@ -271,7 +330,11 @@ void Client_SetFOV_End(void* mValue)
 
 void Client_Object(void* mValue)
 {
-	if(!mPlayer) 
+	if(!mPlayer)
+		return;
+
+	// KTP: Check pEdict is valid before accessing
+	if (!mPlayer->pEdict || mPlayer->pEdict->free)
 		return;
 
 	// First need to find out what was picked up
@@ -314,7 +377,7 @@ void Client_Object(void* mValue)
 
 void Client_Object_End(void* mValue)
 {
-	if(!mPlayer) 
+	if(!mPlayer)
 		return;
 
 	float fposition[3];
@@ -324,13 +387,17 @@ void Client_Object_End(void* mValue)
 		mPlayer->object.do_forward = (mPlayer->object.do_forward) ? false : true;
 		mPlayer->object.carrying = (mPlayer->object.carrying) ? false : true;
 
-		mPlayer->object.pEdict->v.origin.CopyToArray(fposition);
-		cell position[3]; 
-		position[0] = amx_ftoc(fposition[0]);
-		position[1] = amx_ftoc(fposition[1]);
-		position[2] = amx_ftoc(fposition[2]);
-		cell pos = MF_PrepareCellArray(position, 3);
-		MF_ExecuteForward(iFObjectTouched, mPlayer->index, ENTINDEX(mPlayer->object.pEdict), pos, mPlayer->object.carrying);
+		if (mPlayer->object.pEdict && !FNullEnt(mPlayer->object.pEdict))
+		{
+			mPlayer->object.pEdict->v.origin.CopyToArray(fposition);
+			cell position[3];
+			position[0] = amx_ftoc(fposition[0]);
+			position[1] = amx_ftoc(fposition[1]);
+			position[2] = amx_ftoc(fposition[2]);
+			cell pos = MF_PrepareCellArray(position, 3);
+			// KTP: Use ENTINDEX_SAFE to avoid crash in extension mode
+			MF_ExecuteForward(iFObjectTouched, mPlayer->index, ENTINDEX_SAFE(mPlayer->object.pEdict), pos, mPlayer->object.carrying);
+		}
 
 		if(!mPlayer->object.carrying)
 			mPlayer->object.pEdict = NULL;
@@ -343,8 +410,22 @@ void Client_PStatus(void* mValue)
 	switch(mState++)
 	{
 		case 0:
-			MF_ExecuteForward(iFSpawnForward, *(int*)mValue);
-		break;
+		{
+			// KTP: Safety check - gpGlobals must be valid
+			if (!gpGlobals)
+				break;
+
+			int playerIdx = *(int*)mValue;
+
+			// KTP: Safety check - validate maxClients before using
+			int maxClients = gpGlobals->maxClients;
+			if (maxClients < 1 || maxClients > 32)
+				break;
+
+			if (playerIdx >= 1 && playerIdx <= maxClients)
+				MF_ExecuteForward(iFSpawnForward, playerIdx);
+			break;
+		}
 	}
 }
 

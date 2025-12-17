@@ -955,7 +955,11 @@ static cell AMX_NATIVE_CALL get_user_userid(AMX *amx, cell *params) /* 1 param *
 
 	CPlayer* pPlayer = GET_PLAYER_POINTER_I(index);
 
-	return pPlayer->initialized ? GETPLAYERUSERID(pPlayer->pEdict) : -1;
+	// KTP: Check edict validity before calling engine function
+	if (!pPlayer->initialized || !pPlayer->pEdict || pPlayer->pEdict->free)
+		return -1;
+
+	return GETPLAYERUSERID(pPlayer->pEdict);
 }
 
 static cell AMX_NATIVE_CALL get_user_authid(AMX *amx, cell *params) /* 3 param */
@@ -963,8 +967,13 @@ static cell AMX_NATIVE_CALL get_user_authid(AMX *amx, cell *params) /* 3 param *
 	int index = params[1];
 	const char* authid = 0;
 
+	// KTP: Check edict validity before calling engine function
 	if (index > 0 && index <= gpGlobals->maxClients)
-		authid = GETPLAYERAUTHID(g_players[index].pEdict);
+	{
+		CPlayer* pPlayer = GET_PLAYER_POINTER_I(index);
+		if (pPlayer->pEdict && !pPlayer->pEdict->free)
+			authid = GETPLAYERAUTHID(pPlayer->pEdict);
+	}
 
 	return set_amxstring(amx, params[2], authid ? authid : "", params[3]);
 }
@@ -1306,6 +1315,10 @@ static cell AMX_NATIVE_CALL get_user_team(AMX *amx, cell *params) /* 3 param */
 		// SidLuke, DoD fix
 		if (g_bmod_dod)
 		{
+			// KTP: Check pEdict is valid before accessing
+			if (!pPlayer->pEdict || pPlayer->pEdict->free)
+				return -1;
+
 			int iTeam = pPlayer->pEdict->v.team;
 
 			if (params[3])
@@ -2385,9 +2398,14 @@ static cell AMX_NATIVE_CALL get_players(AMX *amx, cell *params) /* 4 param */
 	for (int i = 1; i <= gpGlobals->maxClients; ++i)
 	{
 		CPlayer* pPlayer = GET_PLAYER_POINTER_I(i);
+
 		if (pPlayer->ingame || ((flags & 256) && pPlayer->initialized))
 		{
 			if (!pPlayer->pEdict)
+				continue;
+
+			// KTP: Check pEdict->free before accessing
+			if (pPlayer->pEdict->free)
 				continue;
 
 			bool isAlive = pPlayer->IsAlive();
@@ -2579,7 +2597,8 @@ static cell AMX_NATIVE_CALL get_user_info(AMX *amx, cell *params) /* 4 param */
 
 	CPlayer* pPlayer = GET_PLAYER_POINTER_I(index);
 
-	if (!pPlayer->pEdict)
+	// KTP: Check edict validity before calling engine function
+	if (!pPlayer->pEdict || pPlayer->pEdict->free)
 	{
 		LogError(amx, AMX_ERR_NATIVE, "Player %d is not connected", index);
 		return 0;
@@ -2589,7 +2608,6 @@ static cell AMX_NATIVE_CALL get_user_info(AMX *amx, cell *params) /* 4 param */
 	char* sptemp = get_amxstring(amx, params[2], 0, ilen);
 
 	return set_amxstring(amx, params[3], ENTITY_KEYVALUE(pPlayer->pEdict, sptemp), params[4]);
-	return 1;
 }
 
 static cell AMX_NATIVE_CALL set_user_info(AMX *amx, cell *params) /* 3 param */

@@ -1855,6 +1855,159 @@ void* MNF_GetGameDllFuncs()
 	return (void*)g_pGameEntityInterface;
 }
 
+// KTP: Get user message ID by name for modules (works in extension mode)
+// This allows modules to look up message IDs without calling pfnRegUserMsg directly
+int MNF_GetUserMsgId(const char *name)
+{
+	if (!name || !*name)
+		return 0;
+
+	// Use REG_USER_MSG in extension mode (returns existing IDs due to KTPReHLDS fix)
+	// Use GET_USER_MSG_ID in Metamod mode
+	if (!g_bRunningWithMetamod)
+	{
+		return REG_USER_MSG(name, -1);
+	}
+	else
+	{
+		return GET_USER_MSG_ID(PLID, name, NULL);
+	}
+}
+
+// KTP: Module message handler registration
+// This allows modules like DODX to register message handlers that work in extension mode
+// The core will call these handlers from its MessageHook_Handler
+// Signature matches funEventCall: void (*)(void*) - called once per message parameter
+typedef void (*ModuleMsgHandler)(void* mValue);
+
+// Begin handler signature: void handler(int msg_id, int dest, int player_index, edict_t* ed)
+// Called once at the start of message processing to let module set up its state
+typedef void (*ModuleMsgBeginHandler)(int msg_id, int dest, int player_index, edict_t* ed);
+
+// Per-message arrays for module handlers (up to 4 handlers per message)
+#define MAX_MODULE_MSG_HANDLERS 4
+static ModuleMsgBeginHandler g_ModuleMsgBeginHandlers[MAX_REG_MSGS][MAX_MODULE_MSG_HANDLERS];
+static ModuleMsgHandler g_ModuleMsgHandlers[MAX_REG_MSGS][MAX_MODULE_MSG_HANDLERS];
+static ModuleMsgHandler g_ModuleMsgEndHandlers[MAX_REG_MSGS][MAX_MODULE_MSG_HANDLERS];
+
+// Forward declaration from meta_api.cpp
+void InstallMessageHook(int msg_id);
+
+// Register a module message handler (called during message processing)
+// end_handler: false = during message params (called per param), true = at message end
+// Returns true on success
+bool MNF_RegModuleMsgHandler(int msg_id, ModuleMsgHandler handler, bool end_handler)
+{
+	if (msg_id < 0 || msg_id >= MAX_REG_MSGS || !handler)
+		return false;
+
+	ModuleMsgHandler* handlers = end_handler ? g_ModuleMsgEndHandlers[msg_id] : g_ModuleMsgHandlers[msg_id];
+
+	// Find empty slot
+	for (int i = 0; i < MAX_MODULE_MSG_HANDLERS; i++)
+	{
+		if (handlers[i] == nullptr)
+		{
+			handlers[i] = handler;
+
+			// In extension mode, install the IMessageManager hook for this message
+			if (!g_bRunningWithMetamod)
+			{
+				InstallMessageHook(msg_id);
+			}
+
+			return true;
+		}
+	}
+
+	return false;  // No empty slot
+}
+
+// Unregister a module message handler
+bool MNF_UnregModuleMsgHandler(int msg_id, ModuleMsgHandler handler, bool end_handler)
+{
+	if (msg_id < 0 || msg_id >= MAX_REG_MSGS || !handler)
+		return false;
+
+	ModuleMsgHandler* handlers = end_handler ? g_ModuleMsgEndHandlers[msg_id] : g_ModuleMsgHandlers[msg_id];
+
+	for (int i = 0; i < MAX_MODULE_MSG_HANDLERS; i++)
+	{
+		if (handlers[i] == handler)
+		{
+			handlers[i] = nullptr;
+			return true;
+		}
+	}
+
+	return false;
+}
+
+// Call registered module handlers for a message parameter (called from MessageHook_Handler in meta_api.cpp)
+void CallModuleMsgHandlers(int msg_id, void* mValue)
+{
+	if (msg_id < 0 || msg_id >= MAX_REG_MSGS)
+		return;
+
+	for (int i = 0; i < MAX_MODULE_MSG_HANDLERS; i++)
+	{
+		if (g_ModuleMsgHandlers[msg_id][i])
+			g_ModuleMsgHandlers[msg_id][i](mValue);
+	}
+}
+
+// Call registered module end handlers (called after all params processed)
+void CallModuleMsgEndHandlers(int msg_id)
+{
+	if (msg_id < 0 || msg_id >= MAX_REG_MSGS)
+		return;
+
+	for (int i = 0; i < MAX_MODULE_MSG_HANDLERS; i++)
+	{
+		if (g_ModuleMsgEndHandlers[msg_id][i])
+			g_ModuleMsgEndHandlers[msg_id][i](NULL);
+	}
+}
+
+// Register a module message begin handler (called once at start of message)
+// This allows module to set up its mPlayer/mState before param handlers are called
+bool MNF_RegModuleMsgBeginHandler(int msg_id, ModuleMsgBeginHandler handler)
+{
+	if (msg_id < 0 || msg_id >= MAX_REG_MSGS || !handler)
+		return false;
+
+	for (int i = 0; i < MAX_MODULE_MSG_HANDLERS; i++)
+	{
+		if (g_ModuleMsgBeginHandlers[msg_id][i] == nullptr)
+		{
+			g_ModuleMsgBeginHandlers[msg_id][i] = handler;
+
+			// In extension mode, install the IMessageManager hook for this message
+			if (!g_bRunningWithMetamod)
+			{
+				InstallMessageHook(msg_id);
+			}
+
+			return true;
+		}
+	}
+
+	return false;
+}
+
+// Call registered module begin handlers (called before params are parsed)
+void CallModuleMsgBeginHandlers(int msg_id, int dest, int player_index, edict_t* ed)
+{
+	if (msg_id < 0 || msg_id >= MAX_REG_MSGS)
+		return;
+
+	for (int i = 0; i < MAX_MODULE_MSG_HANDLERS; i++)
+	{
+		if (g_ModuleMsgBeginHandlers[msg_id][i])
+			g_ModuleMsgBeginHandlers[msg_id][i](msg_id, dest, player_index, ed);
+	}
+}
+
 void Module_CacheFunctions()
 {
 	// KTP: Engine function access for modules like ReAPI
@@ -1869,6 +2022,10 @@ void Module_CacheFunctions()
 	REGISTER_FUNC("GetRehldsServerData", MNF_GetRehldsServerData)
 	REGISTER_FUNC("GetRehldsMessageManager", MNF_GetRehldsMessageManager)
 	REGISTER_FUNC("GetGameDllFuncs", MNF_GetGameDllFuncs)
+	REGISTER_FUNC("GetUserMsgId", MNF_GetUserMsgId)
+	REGISTER_FUNC("RegModuleMsgHandler", MNF_RegModuleMsgHandler)
+	REGISTER_FUNC("UnregModuleMsgHandler", MNF_UnregModuleMsgHandler)
+	REGISTER_FUNC("RegModuleMsgBeginHandler", MNF_RegModuleMsgBeginHandler)
 
 	REGISTER_FUNC("BuildPathname", build_pathname)
 	REGISTER_FUNC("BuildPathnameR", build_pathname_r)

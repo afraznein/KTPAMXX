@@ -61,7 +61,8 @@ class AMXXConfig(object):
           self.metamod_path = os.path.normpath(try_path)
           break
       if not self.metamod_path:
-        raise Exception('Could not find the source code to Metamod! Try passing --metamod to configure.py.')
+        # Metamod is optional for extension mode builds
+        pass
 
   def detectHlsdk(self):
     hlsdk_path = builder.options.hlsdk_path
@@ -352,7 +353,6 @@ class AMXXConfig(object):
     compiler.cxxincludes += [
       os.path.join(context.currentSourcePath),
       os.path.join(context.currentSourcePath, 'sdk'),
-      os.path.join(self.metamod_path, 'metamod'),
       os.path.join(self.hlsdk_path, 'common'),
       os.path.join(self.hlsdk_path, 'dlls'),
       os.path.join(self.hlsdk_path, 'engine'),
@@ -360,6 +360,9 @@ class AMXXConfig(object):
       os.path.join(self.hlsdk_path, 'public'),
       os.path.join(self.hlsdk_path, 'pm_shared'),
     ]
+    # Metamod include is optional for extension mode builds
+    if self.metamod_path:
+      compiler.cxxincludes.append(os.path.join(self.metamod_path, 'metamod'))
     return compiler
 
   def AddVersioning(self, binary):

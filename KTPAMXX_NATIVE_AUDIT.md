@@ -1,6 +1,6 @@
 # KTPAMXX Native Audit - Extension Mode Compatibility
 
-> **Version:** 2.2.0 | **Last Updated:** 2025-12-08 | **Status:** Active Development
+> **Version:** 2.4.0 | **Last Updated:** 2025-12-16 | **Status:** Active Development
 
 [![Extension Mode](https://img.shields.io/badge/Extension%20Mode-Supported-brightgreen)](#)
 [![Map Change](https://img.shields.io/badge/Map%20Change-Fixed-brightgreen)](#)
@@ -334,7 +334,7 @@ By checking `pPlayer->initialized`, we detect if reinitialization is needed.
 |:-------|:------:|:-------------|:------|
 | amxxcurl | ![OK](https://img.shields.io/badge/-OK-brightgreen) | HTTP requests | Uses frame callbacks in extension mode |
 | ReAPI | ![OK](https://img.shields.io/badge/-OK-brightgreen) | ReHLDS/ReGameDLL hooks | Extension mode supported |
-| DODX | ![BROKEN](https://img.shields.io/badge/-BROKEN-red) | DoD stats, weapons | Crashes on load - extension hooks disabled |
+| DODX | ![OK](https://img.shields.io/badge/-OK-brightgreen) | DoD stats, weapons | Extension mode working - PreThink, changelevel, TraceLine, 16 message hooks |
 | SQLite | ![BROKEN](https://img.shields.io/badge/-BROKEN-red) | Database | Crashes on load - Metamod hooks incompatible |
 | MySQL | ![UNTESTED](https://img.shields.io/badge/-UNTESTED-lightgrey) | Database | Needs extension mode testing |
 | Fun | ![UNTESTED](https://img.shields.io/badge/-UNTESTED-lightgrey) | user_slap, user_kill | |
@@ -351,12 +351,78 @@ By checking `pPlayer->initialized`, we detect if reinitialization is needed.
 - **amxxcurl**: Uses `MF_RegModuleFrameFunc()` for async polling instead of Metamod's `StartFrame`
 - **ReAPI**: Has dedicated `extension_mode.cpp` with ReHLDS hookchain support
 
+**Fully Working Modules:**
+- **DODX**: Extension mode fully functional. See [DODX Extension Mode Hooks](#dodx-extension-mode-hooks) for details.
+  - All player stats natives work (`get_user_wstats`, `get_user_rstats`, etc.)
+  - Shot tracking via button state detection (IN_ATTACK monitoring in PreThink)
+  - TraceLine hook enables hit detection and aiming statistics
+  - All pEdict accesses hardened with null/free checks
+  - All ENTINDEX calls use ENTINDEX_SAFE
+  - Disabled DODX's `get_user_team` native (was overriding core AMXX and crashing)
+  - ClientConnected hook not needed (bot detection uses FL_FAKECLIENT, IP never used)
+
 **Broken Modules (Crash on Load):**
-- **DODX**: Extension mode hooks were added but crash occurs. Hooks are currently disabled via `#if 0`. Basic natives may still not work due to missing message interception.
 - **SQLite**: Has Metamod hooks that are incompatible with extension mode. Crashes during module initialization.
 
 **Needs Investigation:**
 - **MySQL**: Similar to SQLite, likely has Metamod dependencies. Needs testing before production use.
+
+---
+
+## DODX Extension Mode Hooks
+
+The DODX module requires ReHLDS hooks to function in extension mode. Hooks have been carefully analyzed and enabled as needed.
+
+### Active Hooks
+
+| Hook | Status | Purpose | Notes |
+|:-----|:------:|:--------|:------|
+| SV_PlayerRunPreThink | ![OK](https://img.shields.io/badge/-OK-brightgreen) | Stats tracking loop | Also handles lazy player initialization |
+| PF_changelevel_I | ![OK](https://img.shields.io/badge/-OK-brightgreen) | Pre-changelevel cleanup | Disables message processing before map change |
+| PF_TraceLine | ![OK](https://img.shields.io/badge/-OK-brightgreen) | Hit detection/aiming | POST hook only - reads results, safe for wallpen |
+| IMessageManager | ![OK](https://img.shields.io/badge/-OK-brightgreen) | Message interception | 16 message hooks for game stats |
+
+### Disabled/Not Needed Hooks
+
+| Hook | Status | Purpose | Reason |
+|:-----|:------:|:--------|:-------|
+| RegUserMsg | ![N/A](https://img.shields.io/badge/-N%2FA-inactive) | Message ID capture | Using `MF_GetUserMsgId()` lookup instead |
+| SetClientKeyValue | ![DISABLED](https://img.shields.io/badge/-DISABLED-red) | Player model override | Not wanted - custom player models disabled |
+| ClientConnected | ![N/A](https://img.shields.io/badge/-N%2FA-inactive) | Player initialization | IP stored but never used by DODX |
+| SV_Spawn_f | ![N/A](https://img.shields.io/badge/-N%2FA-inactive) | PutInServer equivalent | Player init done in PreThink instead |
+| SV_DropClient | ![N/A](https://img.shields.io/badge/-N%2FA-inactive) | Player disconnect | Core AMXX handles disconnect |
+
+### IMessageManager Hooks (16 total)
+
+Stats tracking intercepts these game messages:
+
+| Message | Purpose |
+|:--------|:--------|
+| CurWeapon | Current weapon tracking |
+| ObjScore | Objective score updates |
+| RoundState | Round state changes |
+| Health | Damage/death detection |
+| ResetHUD | Stats reset on spawn |
+| TeamScore | Team score tracking |
+| AmmoX / AmmoShort | Ammo tracking |
+| SetFOV | Scope detection |
+| Object | Objective pickup/drop |
+| PStatus | Player spawn detection |
+| ScoreShort / PTeam | Score/team tracking |
+
+### Known Issues Fixed
+
+1. **DODX `get_user_team` Override Crash** - DODX registered its own `get_user_team` native which overrode core AMXX's implementation. The DODX version crashed in extension mode. Fixed by disabling registration in `NBase.cpp`.
+
+2. **ClientConnected Hook Not Needed** - Analysis revealed the CPlayer::bot flag is determined via FL_FAKECLIENT check (not from the hook) and CPlayer::ip is stored but never read anywhere in DODX. Hook disabled - no functional impact on stats.
+
+3. **Map Change Crash** - Fixed by adding `PF_changelevel_I` hook that sets `g_bServerActive = false` and clears `g_pFirstEdict` before changelevel occurs, preventing message handlers from using stale pointers.
+
+4. **stats_logging.sma Disconnect Crash** - `get_user_wstats` called during `client_disconnected` crashed because edict was already freed. Fixed by hardening `CHECK_PLAYER` macro in `dodx.h` to check `edict->free` before calling `FNullEnt()`.
+
+5. **ENTINDEX_SAFE Conversion** - All raw `ENTINDEX()` calls converted to `ENTINDEX_SAFE()` which uses pointer arithmetic instead of engine function calls. Prevents crashes from invalid edict pointers.
+
+6. **pEdict Access Hardening** - All pEdict accesses throughout DODX now have proper `if (!pEdict || pEdict->free)` guards to prevent crashes from stale or invalid pointers.
 
 ---
 
@@ -386,11 +452,123 @@ By checking `pPlayer->initialized`, we detect if reinitialization is needed.
 |:-------|:------------|:------:|
 | dod/stats.sma | Statistics | ![UNTESTED](https://img.shields.io/badge/-UNTESTED-lightgrey) |
 | dod/plmenu.sma | DoD player menu | ![UNTESTED](https://img.shields.io/badge/-UNTESTED-lightgrey) |
-| dod/stats_logging.sma | Stats logging | ![UNTESTED](https://img.shields.io/badge/-UNTESTED-lightgrey) |
+| dod/stats_logging.sma | Stats logging | ![OK](https://img.shields.io/badge/-OK-brightgreen) |
 
 ---
 
 ## Changelog
+
+<details>
+<summary><strong>2025-12-16</strong> - DODX Extension Mode Complete Rewrite</summary>
+
+- **DODX EXTENSION MODE HOOKS** - Complete set of ReHLDS hook handlers
+  - `DODX_OnPlayerPreThink` - Main stats tracking loop (replaces FN_PlayerPreThink_Post)
+  - `DODX_OnClientConnected` - Player connection (replaces FN_ClientConnect_Post)
+  - `DODX_OnSV_Spawn_f` - Player spawn (replaces FN_ClientPutInServer_Post)
+  - `DODX_OnSV_DropClient` - Player disconnect (replaces FN_ClientDisconnect)
+  - `DODX_OnChangelevel` - Pre-changelevel cleanup
+  - `DODX_OnTraceLine` - Hit detection and aiming
+  - IMessageManager hooks for 16 game message types
+
+- **ENTINDEX_SAFE IMPLEMENTATION** - Safe entity index calculation
+  - New inline function uses pointer arithmetic instead of engine calls
+  - New `g_pFirstEdict` global cached in ServerActivate_Post
+  - `GET_PLAYER_POINTER` macro updated to use ENTINDEX_SAFE
+  - Prevents crashes from calling engine functions during ReHLDS hooks
+
+- **g_bServerActive FLAG** - Map change protection
+  - Tracks whether server is in valid state for processing
+  - Set true in ServerActivate_Post, false in ServerDeactivate and OnChangelevel
+  - Prevents message hooks from using stale pointers during map changes
+
+- **STATS NATIVES SAFETY HARDENING** - All stats natives now have:
+  - `gpGlobals` NULL check (can be NULL during map change)
+  - Player index range validation
+  - `pEdict` and `pEdict->free` checks before access
+  - `pPlayer->rank` NULL checks (rank not used in extension mode)
+  - Hardened: get_user_astats, get_user_vstats, get_user_wstats, get_user_wlstats,
+    get_user_wrstats, get_user_stats, get_user_lstats, get_user_rstats, reset_user_wstats
+
+- **CHECK_PLAYER MACRO REWRITE** - Safer player validation
+  - Uses `players[]` array directly instead of MF_IsPlayerIngame/MF_GetPlayerEdict
+  - Checks `pEdict->free` before calling `FNullEnt()`
+  - Prevents crashes when player edict freed during disconnect
+
+- **DODX SHOT TRACKING** - Button state shot detection
+  - `CheckShotFired()` monitors IN_ATTACK button in PreThink
+  - Detects rising edge (new shots) and held attack (automatic weapons)
+  - Per-weapon fire rate delays for accurate shot counting
+  - New CPlayer fields: oldbuttons, lastShotTime, nextShotTime
+
+- **MODULE SDK EXTENSIONS** - New functions for extension mode modules
+  - `MF_GetEngineFuncs()` - Returns pointer to engine function table
+  - `MF_GetGlobalVars()` - Returns pointer to gpGlobals
+  - `MF_GetUserMsgId()` - Message ID lookup by name
+  - `MF_RegModuleMsgHandler()` / `MF_UnregModuleMsgHandler()` - Message handler registration
+  - `MF_RegModuleMsgBeginHandler()` - Message begin handler
+
+- **DODX DEFERRED INITIALIZATION** - Extension mode init timing
+  - Cvar registration moved from OnAmxxAttach to OnPluginsLoaded
+  - Message ID lookup via MF_GetUserMsgId instead of engine calls
+  - Player init via PreThink hook (lazy initialization)
+
+- **LOG FILE FIX** - Fixed log rotation in stats_logging.sma
+
+- **DEBUG CLEANUP** - Removed all verbose debug statements
+
+</details>
+
+<details>
+<summary><strong>2025-12-14</strong> - DODX Extension Mode Complete</summary>
+
+- **DODX NOW FULLY FUNCTIONAL** - All hooks enabled and working in extension mode
+  - SV_PlayerRunPreThink - Stats tracking loop with lazy player init
+  - PF_changelevel_I - Pre-changelevel cleanup prevents stale pointer crashes
+  - PF_TraceLine - Hit detection/aiming (POST hook only, safe for wallpen)
+  - IMessageManager - 16 message hooks for comprehensive stats tracking
+
+- **STATS_LOGGING CRASH FIX** - `get_user_wstats` called during `client_disconnected` crashed
+  - Root cause: Edict already freed when disconnect forward fires
+  - Solution: Hardened `CHECK_PLAYER` macro in `dodx.h` to check `edict->free` before `FNullEnt()`
+
+- **STATS_LOGGING VERIFIED WORKING** - Plugin tested and confirmed functional
+  - Logs `weaponstats`, `weaponstats2`, `time`, and `latency` on player disconnect
+  - Output correctly written to HLDS log files for stats parsers
+  - Added `set_task(1.0, "enable_logging")` to force logging on after server startup
+
+- **ENTINDEX_SAFE AUDIT** - Verified all ENTINDEX calls use safe version
+  - All raw `ENTINDEX()` calls converted to `ENTINDEX_SAFE()`
+  - Uses pointer arithmetic (`pEdict - g_pFirstEdict`) instead of engine function
+  - Prevents crashes from invalid edict pointers
+
+- **pEdict ACCESS HARDENING** - All pEdict accesses now have proper guards
+  - Pattern: `if (!pEdict || pEdict->free)` before any edict access
+  - Prevents crashes from stale or invalid pointers during map changes
+
+</details>
+
+<details>
+<summary><strong>2025-12-13</strong> - DODX Crash Fix & Hook Analysis</summary>
+
+- **ROOT CAUSE IDENTIFIED** - `get_user_team` crash was caused by DODX module override
+  - DODX registered its own `get_user_team` native before core AMXX
+  - Module natives are registered first (line 503-513 in modules.cpp), then core AMXX
+  - The DODX version crashed in extension mode due to missing message hooks
+  - **Fix:** Disabled DODX's `get_user_team` registration in `NBase.cpp:656-657`
+
+- **ClientConnected HOOK NOT NEEDED** - Analysis revealed hook provides no value
+  - `CPlayer::bot` flag is never used - `ignoreBots()` checks `FL_FAKECLIENT` flag directly
+  - `CPlayer::ip` field is never read anywhere in DODX
+  - Hook disabled permanently - no functional impact on stats
+
+- **CLEANED UP DEBUG LOGGING** - Removed ~80 debug log messages from DODX moduleconfig.cpp
+  - Only 2 essential messages remain (startup and init complete)
+  - Removed verbose hook registration/message ID logging
+  - Simplified extension hook setup functions
+
+- **UPDATED DOCUMENTATION** - Added DODX Extension Mode Hooks section to track incremental progress
+
+</details>
 
 <details>
 <summary><strong>2025-12-08</strong> - Module Extension Mode Testing</summary>

@@ -44,7 +44,9 @@ void CPlayer::Disconnect()
 	if ( ignoreBots(pEdict) || !isModuleActive() ) // ignore if he is bot and bots rank is disabled or module is paused
 		return;
 
-	rank->updatePosition( &life );
+	// KTP: rank may be NULL in extension mode
+	if (rank)
+		rank->updatePosition( &life );
 
 }
 
@@ -56,6 +58,15 @@ void CPlayer::PutInServer(){
 		return;
 
 	restartStats();
+
+	// KTP: In extension mode, skip rank system lookup since we don't load it
+	// The rank system is optional; HLStatsX logging works without it
+	if (MF_IsExtensionMode && MF_IsExtensionMode())
+	{
+		// Skip rank lookup - leave rank as NULL
+		// ingame stays true, stats tracking will work via messages
+		return;
+	}
 
 	const char* unique;
 	const char* name = STRING(pEdict->v.netname);
@@ -127,7 +138,12 @@ void CPlayer::Init( int pi, edict_t* pe )
 
 	do_scoped = false;
 	is_scoped = false;
-	
+
+	// KTP: Shot tracking for extension mode
+	oldbuttons = 0;
+	lastShotTime = 0.0f;
+	nextShotTime = 0.0f;
+
 	// Model Stuff
 	sModel.is_model_set = false;
 	sModel.body_num = 0;
@@ -298,6 +314,10 @@ void CPlayer::updateScore(int weapon, int score)
 
 void CPlayer::killPlayer()
 {
+	// KTP: Safety check - pEdict must be valid before any access
+	if (!pEdict || pEdict->free)
+		return;
+
 	pEdict->v.dmg_inflictor = NULL;
 	pEdict->v.health = 0;
 	pEdict->v.deadflag = DEAD_RESPAWNABLE;
@@ -348,6 +368,10 @@ void CPlayer::setBody(int bn)
 */
 void CPlayer::PreThink()
 {
+	// KTP: Safety check - pEdict must be valid before any access
+	if (!pEdict || pEdict->free)
+		return;
+
 	if(!ingame || ignoreBots(pEdict))
 		return;
 
@@ -373,6 +397,126 @@ void CPlayer::PreThink()
 	oldstamina = pEdict->v.fuser4;
 
 	wpns_bitfield = pEdict->v.weapons & ~(1<<31);
+
+	// KTP: Check for shot fired (extension mode shot tracking)
+	// Only in extension mode since message-based tracking works in metamod mode
+	CheckShotFired();
+}
+
+// KTP: Shot detection for extension mode via button state tracking
+// Called from PreThink to detect when player fires a weapon
+void CPlayer::CheckShotFired()
+{
+	// Safety checks
+	if (!pEdict || pEdict->free || !gpGlobals)
+		return;
+
+	if (!ingame || !IsAlive())
+		return;
+
+	int buttons = pEdict->v.button;
+	float curtime = gpGlobals->time;
+
+	// Detect rising edge of IN_ATTACK (wasn't pressed before, is pressed now)
+	bool attackPressed = (buttons & IN_ATTACK) && !(oldbuttons & IN_ATTACK);
+	// Also detect held attack for automatic weapons at fire rate intervals
+	bool attackHeld = (buttons & IN_ATTACK) && (curtime >= nextShotTime);
+
+	// Update old button state
+	oldbuttons = buttons;
+
+	if (!attackPressed && !attackHeld)
+		return;
+
+	// Get current weapon - use 'current' field if set, otherwise try to detect from weaponmodel
+	int weapon = current;
+	if (weapon <= 0 || weapon >= DODMAX_WEAPONS)
+	{
+		// Try to detect weapon from pev->weapons bitfield
+		// Find the first non-melee weapon that's equipped
+		int wpnbits = pEdict->v.weapons;
+		for (int i = 1; i < DODMAX_WEAPONS; i++)
+		{
+			if ((wpnbits & (1 << i)) && weaponData[i].type == DODWT_PRIMARY)
+			{
+				weapon = i;
+				break;
+			}
+		}
+		if (weapon <= 0)
+			return;  // No valid weapon found
+	}
+
+	// Skip grenades, melee weapons, and mortar - those are tracked elsewhere
+	if (weaponData[weapon].melee ||
+	    weaponData[weapon].type == DODWT_GRENADE ||
+	    weaponData[weapon].type == DODWT_OTHER)
+	{
+		return;
+	}
+
+	// Determine fire rate based on weapon type
+	// These are approximate values - real DoD weapons vary
+	float fireDelay = 0.1f;  // Default: 10 shots/sec for automatic
+
+	switch (weaponData[weapon].type)
+	{
+	case DODWT_PRIMARY:
+		// Check if it's a bolt-action/semi-auto rifle or automatic
+		// Weapon IDs: 5=garand, 6=kar98, 9=spring, 10=kar... are semi/bolt
+		// 7=thompson, 8=mp44, 11=bar, 12=mp40, 17=mg42, 18=30cal... are automatic
+		switch (weapon)
+		{
+		case 5:  // Garand (semi-auto)
+		case 6:  // Scoped K98 (bolt)
+		case 9:  // Springfield (bolt)
+		case 10: // K98 (bolt)
+		case 20: // M1 Carbine (semi)
+		case 23: // FG42 (semi/auto but treat as semi)
+		case 24: // K43 (semi)
+		case 25: // Enfield (bolt)
+			fireDelay = 0.5f;  // Semi-auto/bolt: slower, only count on press
+			if (!attackPressed) return;  // Only count rising edge for semi-auto
+			break;
+		case 17: // MG42 (fast automatic)
+			fireDelay = 0.05f;
+			break;
+		case 18: // .30 cal (automatic)
+		case 21: // MG34 (automatic)
+		case 27: // Bren (automatic)
+			fireDelay = 0.08f;
+			break;
+		case 7:  // Thompson
+		case 8:  // MP44
+		case 12: // MP40
+		case 22: // Grease Gun
+		case 26: // Sten
+		default:
+			fireDelay = 0.1f;  // SMGs: medium fire rate
+			break;
+		}
+		break;
+	case DODWT_SECONDARY:
+		// Pistols - semi auto
+		fireDelay = 0.3f;
+		if (!attackPressed) return;
+		break;
+	}
+
+	// Only count shot if enough time has passed
+	if (curtime < nextShotTime)
+		return;
+
+	// Fire rate limit passed, count the shot
+	lastShotTime = curtime;
+	nextShotTime = curtime + fireDelay;
+
+	// Save the shot
+	saveShot(weapon);
+
+	// Update current weapon if not set
+	if (current <= 0)
+		current = weapon;
 }
 
 void CPlayer::Scoping(int value)
@@ -427,8 +571,12 @@ void CPlayer::WeaponsCheck(int weapons)
 {
 	if(wpns_bitfield == 0)
 		return;
-	
-	else if(pEdict->v.weapons == 0)
+
+	// KTP: Safety check - pEdict must be valid before any access
+	if (!pEdict || pEdict->free)
+		return;
+
+	if(pEdict->v.weapons == 0)
 		return;
 
 	int old;

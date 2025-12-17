@@ -4,19 +4,22 @@ import os.path
 binary = AMXX.MetaPlugin(builder, 'amxmodx')
 
 binary.compiler.defines += [
-  'JIT',
-  'ASM32',
+  # KTP DEBUG: Temporarily disabled JIT/ASM32 to use C interpreter for debugging
+  #'JIT',
+  #'ASM32',
   'HAVE_STDINT_H',
 ]
 
+# KTP DEBUG: AMX interpreter assembly disabled - using C interpreter
+# Keep natives-x86.asm for register_native functionality
 AMXX.AddAssembly(builder, binary, 'helpers-x86.asm', 'helpers-asm.obj')
 AMXX.AddAssembly(builder, binary, 'natives-x86.asm', 'natives-asm.obj')
-AMXX.AddAssembly(builder, binary, 'amxexecn.asm', 'amxexecn-asm.obj',
-  includes=['amxdefn.asm'])
-AMXX.AddAssembly(builder, binary, 'amxjitsn.asm', 'amxjitsn-asm.obj',
-  includes=['amxdefn.asm'],
-  # Opcode sizes must be maximum width for patching to work.
-  extra_argv=['-O0'])
+#AMXX.AddAssembly(builder, binary, 'amxexecn.asm', 'amxexecn-asm.obj',
+#  includes=['amxdefn.asm'])
+#AMXX.AddAssembly(builder, binary, 'amxjitsn.asm', 'amxjitsn-asm.obj',
+#  includes=['amxdefn.asm'],
+#  # Opcode sizes must be maximum width for patching to work.
+#  extra_argv=['-O0'])
 
 if builder.target_platform == 'mac':
   binary.compiler.postlink += [

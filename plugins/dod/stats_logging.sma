@@ -18,18 +18,29 @@
 new g_pingSum[MAX_PLAYERS + 1]
 new g_pingCount[MAX_PLAYERS + 1]
 
-public plugin_init()
+public plugin_init() {
   register_plugin("Stats Logging",AMXX_VERSION_STR,"AMXX Dev Team")
 
+  // KTP: Don't call "log on" - it causes log rotation
+  // Logging should be enabled via sv_logfile 1 in server.cfg
+  // The "log on" command will close and reopen the log file, breaking file writes
+}
+
 public client_disconnected(id) {
-  if ( is_user_bot( id ) || !is_user_connected(id) || !isDSMActive() ) return PLUGIN_CONTINUE
+  if ( is_user_bot(id) || !is_user_connected(id) || !isDSMActive() )
+    return PLUGIN_CONTINUE
+
   remove_task( id )
+
   new szTeam[16],szName[MAX_NAME_LENGTH],szAuthid[32], iStats[DODX_MAX_STATS], iHits[MAX_BODYHITS], szWeapon[16]
   new iUserid = get_user_userid( id )
+
   get_user_info(id,"team", szTeam, charsmax(szTeam) )
   szTeam[0] -= 32;
+
   get_user_name(id, szName ,charsmax(szName) )
   get_user_authid(id, szAuthid , charsmax(szAuthid) )
+
   for(new i = 1 ; i < DODMAX_WEAPONS; ++i ) {
     if( get_user_wstats( id , i ,iStats , iHits ) )   {
       xmod_get_wpnlogname( i , szWeapon , charsmax(szWeapon) )
@@ -39,11 +50,13 @@ public client_disconnected(id) {
         szName,iUserid,szAuthid,szTeam,szWeapon,iHits[HIT_HEAD],iHits[HIT_CHEST],iHits[HIT_STOMACH],  iHits[HIT_LEFTARM],iHits[HIT_RIGHTARM],iHits[HIT_LEFTLEG],iHits[HIT_RIGHTLEG])
     }
   }
+
   new iTime = get_user_time( id , 1 )
   log_message("^"%s<%d><%s><%s>^" triggered ^"time^" (time ^"%d:%02d^")",
     szName,iUserid,szAuthid,szTeam, (iTime / 60),  (iTime % 60) )
   log_message("^"%s<%d><%s><%s>^" triggered ^"latency^" (ping ^"%d^")",
     szName,iUserid,szAuthid,szTeam, (g_pingSum[id] / ( g_pingCount[id] ? g_pingCount[id] : 1 ) ) )
+
   return PLUGIN_CONTINUE
 }
 

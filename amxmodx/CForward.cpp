@@ -55,10 +55,10 @@ cell CForward::execute(cell *params, ForwardPreparedArray *preparedArrays)
 			// Get debug info
 			AMX *amx = iter->pPlugin->getAMX();
 			Debugger *pDebugger = (Debugger *)amx->userdata[UD_DEBUGGER];
-			
+
 			if (pDebugger)
 				pDebugger->BeginExec();
-			
+
 			// handle strings & arrays & values by reference
 			int i;
 			
@@ -116,7 +116,7 @@ cell CForward::execute(cell *params, ForwardPreparedArray *preparedArrays)
 			{
 				amx_Push(amx, realParams[i]);
 			}
-			
+
 			// exec
 			cell retVal = 0;
 #if defined BINLOG_ENABLED
@@ -124,6 +124,7 @@ cell CForward::execute(cell *params, ForwardPreparedArray *preparedArrays)
 #endif
 
 			int err = amx_ExecPerf(amx, &retVal, iter->func);
+
 			// log runtime error, if any
 			if (err != AMX_ERR_NONE)
 			{

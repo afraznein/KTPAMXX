@@ -33,6 +33,10 @@ static void DODX_OnSetClientKeyValue(IVoidHookChain<int, char *, const char *, c
                                       int clientIndex, char *infobuffer, const char *key, const char *value);
 static int DODX_OnRegUserMsg(IHookChain<int, const char *, int> *chain, const char *pszName, int iSize);
 static void DODX_OnMessageHandler(IVoidHookChain<IMessage *> *chain, IMessage *msg);
+static void DODX_OnClientConnected(IVoidHookChain<IGameClient *> *chain, IGameClient *client);
+static void DODX_OnSV_Spawn_f(IVoidHookChain<> *chain);
+static void DODX_OnSV_DropClient(IVoidHookChain<IGameClient *, bool, const char *> *chain, IGameClient *client, bool crash, const char *reason);
+static void DODX_OnChangelevel(IVoidHookChain<const char *, const char *> *chain, const char *s1, const char *s2);
 
 // KTP: Forward declarations for extension mode setup/cleanup functions
 static bool DODX_SetupExtensionHooks();
@@ -47,6 +51,13 @@ void (*endfunction)(void*);
 CPlayer* mPlayer;
 CPlayer players[33];
 CMapInfo g_map;
+
+// KTP: First edict pointer for ENTINDEX_SAFE
+// Initialized in ServerActivate_Post to enable safe entity index calculation
+edict_t* g_pFirstEdict = nullptr;
+
+// KTP: Server active flag - prevents message processing during map changes
+bool g_bServerActive = false;
 
 bool rankBots;
 int mState;
@@ -163,6 +174,11 @@ int RegUserMsg_Post(const char *pszName, int iSize)
 
 void ServerActivate_Post( edict_t *pEdictList, int edictCount, int clientMax ){
 
+	// KTP: Cache the first edict for ENTINDEX_SAFE
+	// pEdictList is worldspawn (index 0)
+	g_pFirstEdict = pEdictList;
+	g_bServerActive = true;  // KTP: Mark server as active for message processing
+
 	rankBots = (int)dodstats_rankbots->value ? true:false;
 
 	for( int i = 1; i <= gpGlobals->maxClients; ++i )
@@ -189,7 +205,8 @@ void PlayerPreThink_Post(edict_t *pEntity)
 		if(!ignoreBots(pEntity))
 		{
 			pPlayer->clearStats = 0.0f;
-			pPlayer->rank->updatePosition( &pPlayer->life );
+			if (pPlayer->rank)  // KTP: rank may be NULL in extension mode
+				pPlayer->rank->updatePosition( &pPlayer->life );
 			pPlayer->restartStats(false);
 		}
 	}
@@ -210,10 +227,25 @@ void PlayerPreThink_Post(edict_t *pEntity)
 	RETURN_META(MRES_IGNORED);
 }
 
-void ServerDeactivate() 
+void ServerDeactivate()
 {
+	// KTP: CRITICAL - Clear server active flag and g_pFirstEdict FIRST
+	// This prevents message hooks from using stale pointers during map change
+	g_bServerActive = false;
+	g_pFirstEdict = nullptr;
+
+	// KTP: Safety check - gpGlobals must be valid
+	if (!gpGlobals)
+	{
+		RETURN_META(MRES_IGNORED);
+	}
+
+	int maxClients = gpGlobals->maxClients;
+	if (maxClients < 1 || maxClients > 32)
+		maxClients = 32;  // Fallback to safe default
+
 	int i;
-	for( i = 1;i<=gpGlobals->maxClients; ++i)
+	for( i = 1;i<=maxClients; ++i)
 	{
 		CPlayer *pPlayer = GET_PLAYER_POINTER_I(i);
 		if (pPlayer->ingame) pPlayer->Disconnect();
@@ -269,12 +301,16 @@ void ClientUserInfoChanged_Post( edict_t *pEntity, char *infobuffer )
 
 	if ( pPlayer->ingame)
 	{
-		if ( strcmp(oldname,name) ) 
+		if ( strcmp(oldname,name) )
 		{
-			if (!dodstats_rank->value)
-				pPlayer->rank = g_rank.findEntryInRank( name, name );
-			else
-				pPlayer->rank->setName( name );
+			// KTP: rank may be NULL in extension mode
+			if (pPlayer->rank)
+			{
+				if (!dodstats_rank->value)
+					pPlayer->rank = g_rank.findEntryInRank( name, name );
+				else
+					pPlayer->rank->setName( name );
+			}
 		}
 	}
 
@@ -287,15 +323,16 @@ void ClientUserInfoChanged_Post( edict_t *pEntity, char *infobuffer )
 	RETURN_META(MRES_IGNORED);
 }
 
-void MessageBegin_Post(int msg_dest, int msg_type, const float *pOrigin, edict_t *ed) 
+void MessageBegin_Post(int msg_dest, int msg_type, const float *pOrigin, edict_t *ed)
 {
-	if(ed)
+	// KTP: Use ENTINDEX_SAFE for consistency (also check ed->free)
+	if(ed && !ed->free)
 	{
-		mPlayerIndex = ENTINDEX(ed);
+		mPlayerIndex = ENTINDEX_SAFE(ed);
 		mPlayer = GET_PLAYER_POINTER_I(mPlayerIndex);
-	} 
-	
-	else 
+	}
+
+	else
 	{
 		mPlayerIndex = 0;
 		mPlayer = NULL;
@@ -490,6 +527,22 @@ void OnAmxxAttach()
 	MF_AddNatives( stats_Natives );
 	MF_AddNatives( base_Natives );
 
+	// KTP: Check if running in extension mode (without Metamod)
+	if (MF_IsExtensionMode && MF_IsExtensionMode())
+	{
+		g_bExtensionMode = true;
+		MF_PrintSrvConsole("[DODX] Running in ReHLDS extension mode.\n");
+
+		// Setup ReHLDS hooks for extension mode
+		DODX_SetupExtensionHooks();
+
+		// Skip engine-dependent initialization - will be done in OnPluginsLoaded
+		// NOTE: Cvar registration moved to OnPluginsLoaded() because engine
+		// function pointers may not be ready yet in OnAmxxAttach for extension mode
+		return;
+	}
+
+	// Non-extension mode: engine is ready, do normal init
 	const char* path =  get_localinfo("dodstats_score","addons/amxmodx/data/dodstats.amxx");
 
 	if ( path && *path )
@@ -505,27 +558,6 @@ void OnAmxxAttach()
 	}
 
 	g_map.Init();
-
-	// KTP: Check if running in extension mode (without Metamod)
-	if (MF_IsExtensionMode && MF_IsExtensionMode())
-	{
-		g_bExtensionMode = true;
-		MF_PrintSrvConsole("[DODX] Running in ReHLDS extension mode.\n");
-		// KTP: Extension mode hooks temporarily disabled pending further debugging
-		// Basic DODX natives will still work, but advanced message interception may be limited
-		MF_PrintSrvConsole("[DODX] Note: Extension mode hooks are currently disabled.\n");
-#if 0
-		// Setup ReHLDS hooks for extension mode
-		if (DODX_SetupExtensionHooks())
-		{
-			MF_PrintSrvConsole("[DODX] ReHLDS hooks registered successfully.\n");
-		}
-		else
-		{
-			MF_PrintSrvConsole("[DODX] Warning: Some ReHLDS hooks could not be registered.\n");
-		}
-#endif
-	}
 }
 
 void OnAmxxDetach()
@@ -555,11 +587,41 @@ void OnPluginsLoaded()
 	iFObjectTouched = MF_RegisterForward("dod_client_objectpickup",ET_IGNORE,FP_CELL/*id*/,FP_CELL/*object*/,FP_ARRAY/*pos[3]*/,FP_CELL/*value*/,FP_DONE);
 	iFStaminaForward = MF_RegisterForward("dod_client_stamina",ET_IGNORE,FP_CELL/*id*/,FP_CELL/*stamina*/,FP_DONE);
 
-	// KTP: In extension mode, try to detect info_doddetect entities after map load
-	// and register message hooks now that message IDs are known
+	// KTP: In extension mode, do deferred engine-dependent initialization
+	// Engine functions aren't ready during OnAmxxAttach in extension mode
 	if (g_bExtensionMode)
 	{
-		DODX_DetectMapInfo();
+		// KTP: Skip cvar registration in extension mode - CVAR_REGISTER crashes
+		// because module SDK doesn't properly set up engine function pointers
+		// for extension mode. The isModuleActive() function handles NULL pointers
+		// gracefully (returns true = module always active).
+		// Note: dodstats_pause, dodstats_rankbots etc. will remain NULL
+
+		// KTP: Skip rank loading - not needed for HLStatsX logging
+		g_map.Init();
+
+		// KTP: Player init disabled - pfnPEntityOfEntIndex causes hang in OnPluginsLoaded
+		// Players will be initialized on-demand when messages arrive
+		rankBots = dodstats_rankbots ? ((int)dodstats_rankbots->value ? true : false) : false;
+
+		// KTP: Look up message IDs using MF_GetUserMsgId (provided by KTPAMXX)
+		if (MF_GetUserMsgId)
+		{
+			for (int i = 0; g_user_msg[i].name; ++i)
+			{
+				int id = MF_GetUserMsgId(g_user_msg[i].name);
+				if (id > 0)
+				{
+					*g_user_msg[i].id = id;
+					if (g_user_msg[i].endmsg)
+						modMsgsEnd[id] = g_user_msg[i].func;
+					else
+						modMsgs[id] = g_user_msg[i].func;
+				}
+			}
+		}
+
+		// KTP: Register IMessageManager hooks for message interception
 		DODX_RegisterMessageHooks();
 	}
 }
@@ -572,35 +634,58 @@ void OnPluginsLoaded()
 static void DODX_OnTraceLine(IVoidHookChain<const float *, const float *, int, edict_t *, TraceResult *> *chain,
                               const float *v1, const float *v2, int fNoMonsters, edict_t *e, TraceResult *ptr)
 {
-	// Call the original first
+	// Call the original first - this is a POST hook, we read results only
 	chain->callNext(v1, v2, fNoMonsters, e, ptr);
 
-	// Now do the post-hook logic (same as TraceLine_Post)
-	if(ptr->pHit && (ptr->pHit->v.flags & (FL_CLIENT | FL_FAKECLIENT)) && e && (e->v.flags & (FL_CLIENT | FL_FAKECLIENT)))
+	// KTP: Skip processing if server is not active (during map change)
+	if (!g_bServerActive || !g_pFirstEdict || !gpGlobals)
+		return;
+
+	// KTP: Validate ptr before accessing
+	if (!ptr)
+		return;
+
+	// Player aiming detection: when player traces and hits another player
+	// Records iHitgroup for headshot tracking
+	if (ptr->pHit && !ptr->pHit->free && (ptr->pHit->v.flags & (FL_CLIENT | FL_FAKECLIENT)) &&
+	    e && !e->free && (e->v.flags & (FL_CLIENT | FL_FAKECLIENT)))
 	{
-		GET_PLAYER_POINTER(e)->aiming = ptr->iHitgroup;
+		int idx = ENTINDEX_SAFE(e);
+		if (idx >= 1 && idx <= gpGlobals->maxClients)
+		{
+			CPlayer* pPlayer = GET_PLAYER_POINTER_I(idx);
+			if (pPlayer->ingame)
+				pPlayer->aiming = ptr->iHitgroup;
+		}
 		return;
 	}
 
-	if(e && e->v.owner && e->v.owner->v.flags & (FL_CLIENT | FL_FAKECLIENT))
+	// Grenade/rocket tracking: when a projectile owned by a player traces
+	if (e && !e->free && e->v.owner && !e->v.owner->free && (e->v.owner->v.flags & (FL_CLIENT | FL_FAKECLIENT)))
 	{
-		CPlayer *pPlayer = GET_PLAYER_POINTER(e->v.owner);
+		int ownerIdx = ENTINDEX_SAFE(e->v.owner);
+		if (ownerIdx < 1 || ownerIdx > gpGlobals->maxClients)
+			return;
 
-		for(int i = 0; i < MAX_TRACE; i++)
+		CPlayer *pPlayer = GET_PLAYER_POINTER_I(ownerIdx);
+		if (!pPlayer->ingame)
+			return;
+
+		for (int i = 0; i < MAX_TRACE; i++)
 		{
-			if(strcmp(traceData[i].szName, STRING(e->v.classname)) == 0)
+			if (strcmp(traceData[i].szName, STRING(e->v.classname)) == 0)
 			{
 				int grenId = (traceData[i].iId == 13 && g_map.detect_allies_country) ? 36 : traceData[i].iId;
 				int rocketId = traceData[i].iId;
 
-				if(traceData[i].iAction & ACT_NADE_SHOT)
+				if (traceData[i].iAction & ACT_NADE_SHOT)
 				{
-					if(traceData[i].iId == 13 && g_map.detect_allies_country)
+					if (traceData[i].iId == 13 && g_map.detect_allies_country)
 						pPlayer->saveShot(grenId);
 					else
 						pPlayer->saveShot(traceData[i].iId);
 				}
-				else if(traceData[i].iAction & ACT_ROCKET_SHOT)
+				else if (traceData[i].iAction & ACT_ROCKET_SHOT)
 					pPlayer->saveShot(traceData[i].iId);
 
 				cell position[3];
@@ -609,13 +694,13 @@ static void DODX_OnTraceLine(IVoidHookChain<const float *, const float *, int, e
 				position[2] = amx_ftoc(v2[2]);
 				cell pos = MF_PrepareCellArray(position, 3);
 
-				if(traceData[i].iAction & ACT_NADE_PUT)
+				if (traceData[i].iAction & ACT_NADE_PUT)
 				{
-					g_grenades.put(e, traceData[i].fDel, grenId, GET_PLAYER_POINTER(e->v.owner));
-					MF_ExecuteForward(iFGrenadeExplode, GET_PLAYER_POINTER(e->v.owner)->index, pos, grenId);
+					g_grenades.put(e, traceData[i].fDel, grenId, pPlayer);
+					MF_ExecuteForward(iFGrenadeExplode, pPlayer->index, pos, grenId);
 				}
 
-				if(traceData[i].iAction & ACT_ROCKET_PUT)
+				if (traceData[i].iAction & ACT_ROCKET_PUT)
 					MF_ExecuteForward(iFRocketExplode, pPlayer->index, pos, rocketId);
 
 				break;
@@ -651,6 +736,106 @@ static void DODX_OnSetClientKeyValue(IVoidHookChain<int, char *, const char *, c
 	chain->callNext(clientIndex, infobuffer, key, value);
 }
 
+// KTP: PlayerPreThink hook handler - replaces FN_PlayerPreThink_Post
+static void DODX_OnPlayerPreThink(IVoidHookChain<edict_t *, float> *chain, edict_t *pEntity, float time)
+{
+	// Call original first
+	chain->callNext(pEntity, time);
+
+	// Post-hook logic
+	if (!isModuleActive())
+		return;
+
+	if (!pEntity || pEntity->free)
+		return;
+
+	// Verify this is a valid player
+	if (!(pEntity->v.flags & FL_CLIENT))
+		return;
+
+	// KTP: Safety check - gpGlobals must be valid
+	if (!gpGlobals)
+		return;
+
+	// KTP: Extension mode initialization - calculate g_pFirstEdict and set g_bServerActive
+	// In metamod mode, ServerActivate_Post handles this. In extension mode, we do it here on first valid player.
+	if (g_bExtensionMode && !g_pFirstEdict)
+	{
+		// Calculate first edict from this player's edict
+		// We need to figure out this player's index first using engine function
+		int tmpIndex = ENTINDEX(pEntity);
+		if (tmpIndex >= 1 && tmpIndex <= gpGlobals->maxClients)
+		{
+			g_pFirstEdict = pEntity - tmpIndex;
+			g_bServerActive = true;
+
+			// Initialize all player slots now that we have g_pFirstEdict
+			for (int i = 1; i <= gpGlobals->maxClients; ++i)
+				GET_PLAYER_POINTER_I(i)->Init(i, g_pFirstEdict + i);
+		}
+	}
+
+	// KTP: Skip if server is not active (during map change)
+	if (!g_bServerActive)
+		return;
+
+	// KTP: g_pFirstEdict must be set before we can do index calculations
+	if (!g_pFirstEdict)
+		return;
+
+	// KTP: Use ENTINDEX_SAFE which uses pointer arithmetic instead of engine call
+	int index = ENTINDEX_SAFE(pEntity);
+	if (index < 1 || index > gpGlobals->maxClients)
+		return;
+
+	CPlayer *pPlayer = GET_PLAYER_POINTER_I(index);
+
+	// KTP: In extension mode, initialize player on first PreThink call
+	// This replaces ClientPutInServer_Post which doesn't fire in extension mode
+	if (!pPlayer->ingame && g_bExtensionMode)
+	{
+		// Initialize player struct if not done yet
+		if (!pPlayer->pEdict)
+		{
+			pPlayer->Init(index, pEntity);
+		}
+
+		// Mark as ingame and setup stats
+		pPlayer->bot = (pEntity->v.flags & FL_FAKECLIENT) ? true : false;
+		pPlayer->PutInServer();
+	}
+	else if (!pPlayer->ingame)
+	{
+		return;
+	}
+
+	pPlayer->PreThink();
+
+	if(pPlayer->clearStats && pPlayer->clearStats < gpGlobals->time)
+	{
+		if(!ignoreBots(pEntity))
+		{
+			pPlayer->clearStats = 0.0f;
+			if (pPlayer->rank)  // KTP: rank may be NULL in extension mode
+				pPlayer->rank->updatePosition(&pPlayer->life);
+			pPlayer->restartStats(false);
+		}
+	}
+
+	if(pPlayer->clearRound && pPlayer->clearRound < gpGlobals->time)
+	{
+		pPlayer->clearRound = 0.0f;
+		memset(static_cast<void *>(&pPlayer->round), 0, sizeof(pPlayer->round));
+		memset(&pPlayer->weaponsRnd, 0, sizeof(pPlayer->weaponsRnd));
+	}
+
+	if (pPlayer->sendScore && pPlayer->sendScore < gpGlobals->time)
+	{
+		pPlayer->sendScore = 0;
+		MF_ExecuteForward(iFScore, pPlayer->index, pPlayer->lastScore, pPlayer->savedScore);
+	}
+}
+
 // KTP: RegUserMsg hook handler - replaces FN_RegUserMsg_Post
 static int DODX_OnRegUserMsg(IHookChain<int, const char *, int> *chain, const char *pszName, int iSize)
 {
@@ -675,18 +860,155 @@ static int DODX_OnRegUserMsg(IHookChain<int, const char *, int> *chain, const ch
 	return id;
 }
 
+// KTP: ClientConnected hook handler - replaces FN_ClientConnect_Post
+static void DODX_OnClientConnected(IVoidHookChain<IGameClient *> *chain, IGameClient *client)
+{
+	// Call original first
+	chain->callNext(client);
+
+	if (!client)
+		return;
+
+	// KTP: Safety check - gpGlobals must be valid
+	if (!gpGlobals)
+		return;
+
+	// GetId() is 0-based, player index is 1-based
+	int clientIndex = client->GetId() + 1;
+	if (clientIndex < 1 || clientIndex > gpGlobals->maxClients)
+		return;
+
+	CPlayer* pPlayer = GET_PLAYER_POINTER_I(clientIndex);
+
+	// Get edict from IGameClient and ensure player is initialized with edict pointer
+	edict_t* pEdict = client->GetEdict();
+	if (pEdict && !pEdict->free)
+	{
+		// KTP: Calculate g_pFirstEdict using pointer arithmetic
+		// This is the key initialization for extension mode!
+		// Player edicts are at g_pFirstEdict + index, so worldspawn = pEdict - clientIndex
+		if (!g_pFirstEdict)
+		{
+			g_pFirstEdict = pEdict - clientIndex;
+		}
+
+		// Initialize player with edict if not already done
+		if (!pPlayer->pEdict)
+			pPlayer->Init(clientIndex, pEdict);
+	}
+
+	// Determine if bot - check if no net channel (bots don't have network connections)
+	INetChan* netChan = client->GetNetChan();
+	pPlayer->bot = (netChan == nullptr);
+
+	// NOTE: We don't call Connect() here because:
+	// 1. Core AMXX already handles player connection via its own ClientConnected hook
+	// 2. Connect() calls IsBot() which can crash if pEdict isn't fully ready
+	// 3. The IP is already set by core AMXX's player initialization
+	// We only set the bot flag and ensure pEdict is initialized for DODX tracking
+}
+
+// KTP: SV_Spawn_f hook handler - replaces FN_ClientPutInServer_Post
+// This is called when the client sends the "spawn" command to enter the game
+static void DODX_OnSV_Spawn_f(IVoidHookChain<> *chain)
+{
+	// Need to figure out which client is spawning
+	// During SV_Spawn_f, the host_client global points to the spawning client
+	// We can use the current command client from AMXX
+
+	// Call original first
+	chain->callNext();
+
+	// In extension mode, we need another way to get the spawning client
+	// SV_Spawn_f doesn't pass the client directly, it uses host_client internally
+	// For now, we'll rely on messages being sent AFTER the player is marked ingame
+	// The message handler already checks mPlayer->ingame
+
+	// TODO: If we need to mark players ingame earlier, we can hook SV_SendServerinfo
+	// which is called when the client first connects and receives server info
+}
+
+// KTP: PF_changelevel_I hook handler - called BEFORE changelevel happens
+// This is our opportunity to disable message processing before pointers go stale
+static void DODX_OnChangelevel(IVoidHookChain<const char *, const char *> *chain, const char *s1, const char *s2)
+{
+	// KTP: CRITICAL - Disable message processing BEFORE changelevel
+	// This prevents crashes from stale pointers during map transition
+	g_bServerActive = false;
+	g_pFirstEdict = nullptr;
+
+	// Call original to perform the changelevel
+	chain->callNext(s1, s2);
+}
+
+// KTP: SV_DropClient hook handler - replaces FN_ClientDisconnect
+static void DODX_OnSV_DropClient(IVoidHookChain<IGameClient *, bool, const char *> *chain, IGameClient *client, bool crash, const char *reason)
+{
+	// KTP: Call chain first so AMXX core can fire client_disconnected while player is still "ingame"
+	// This matches the PRE/POST behavior of Metamod's ClientDisconnect/ClientDisconnect_Post hooks
+	chain->callNext(client, crash, reason);
+
+	// KTP: Now do DODX cleanup AFTER chain (POST behavior)
+	// Safety check - gpGlobals must be valid
+	if (client && gpGlobals)
+	{
+		int clientIndex = client->GetId() + 1;
+		if (clientIndex >= 1 && clientIndex <= gpGlobals->maxClients)
+		{
+			CPlayer* pPlayer = GET_PLAYER_POINTER_I(clientIndex);
+			if (pPlayer->ingame)
+			{
+				pPlayer->Disconnect();
+			}
+		}
+	}
+}
+
 // KTP: Message handler for IMessageManager - replaces all the Write*_Post and MessageBegin/End_Post hooks
 static void DODX_OnMessageHandler(IVoidHookChain<IMessage *> *chain, IMessage *msg)
 {
+	// Safety check
+	if (!msg)
+	{
+		chain->callNext(msg);
+		return;
+	}
+
+	// KTP: Skip all message processing if server is not active (during map change)
+	if (!g_bServerActive)
+	{
+		chain->callNext(msg);
+		return;
+	}
+
 	// Get message info
 	int msg_type = msg->getId();
 	edict_t *ed = msg->getEdict();
 
-	// Set up player info (like MessageBegin_Post)
-	if(ed)
+	// Validate message type is in range
+	if (msg_type < 0 || msg_type >= MAX_REG_MSGS)
 	{
-		mPlayerIndex = ENTINDEX(ed);
-		mPlayer = GET_PLAYER_POINTER_I(mPlayerIndex);
+		chain->callNext(msg);
+		return;
+	}
+
+	// Set up player info (like MessageBegin_Post)
+	// KTP: Extra safety - validate edict and gpGlobals before using ENTINDEX_SAFE
+	if (ed && !ed->free && g_pFirstEdict && gpGlobals)
+	{
+		int idx = ENTINDEX_SAFE(ed);
+
+		// Validate player index range
+		if (idx < 1 || idx > gpGlobals->maxClients)
+		{
+			mPlayerIndex = 0;
+			mPlayer = NULL;
+		}
+		else
+		{
+			mPlayerIndex = idx;
+			mPlayer = GET_PLAYER_POINTER_I(mPlayerIndex);
+		}
 	}
 	else
 	{
@@ -698,21 +1020,31 @@ static void DODX_OnMessageHandler(IVoidHookChain<IMessage *> *chain, IMessage *m
 	mState = 0;
 
 	// Get the callbacks for this message type
-	if (msg_type >= 0 && msg_type < MAX_REG_MSGS)
+	function = modMsgs[msg_type];
+	endfunction = modMsgsEnd[msg_type];
+
+	// Skip processing if no callbacks registered for this message
+	if (!function && !endfunction)
 	{
-		function = modMsgs[msg_type];
-		endfunction = modMsgsEnd[msg_type];
+		chain->callNext(msg);
+		return;
 	}
-	else
+
+	// KTP: Skip processing for players that aren't initialized yet.
+	// In extension mode, players are initialized via SV_PlayerRunPreThink hook.
+	// In Metamod mode, they're initialized via ClientPutInServer_Post.
+	if (mPlayer && !mPlayer->ingame)
 	{
-		function = nullptr;
-		endfunction = nullptr;
+		// Player not fully initialized yet, skip message processing
+		chain->callNext(msg);
+		return;
 	}
 
 	// Process message parameters (like the Write*_Post hooks)
 	if (function)
 	{
 		int paramCount = msg->getParamCount();
+
 		for (int i = 0; i < paramCount; i++)
 		{
 			IMessage::ParamType type = msg->getParamType(i);
@@ -773,13 +1105,7 @@ void DODX_DetectMapInfo()
 		// For now, we'll use a fallback approach: check the map name
 		// and use known defaults, or allow server admins to configure via cvars
 
-		MF_PrintSrvConsole("[DODX] Found info_doddetect entity.\n");
 		break;
-	}
-
-	if (!g_map.initialized)
-	{
-		MF_PrintSrvConsole("[DODX] No info_doddetect entity found. Using default map settings.\n");
 	}
 }
 
@@ -789,68 +1115,118 @@ static bool DODX_SetupExtensionHooks()
 	if (!MF_IsExtensionMode || !MF_IsExtensionMode())
 		return false;
 
+	// KTP: Get g_engfuncs from core AMXX - essential for extension mode
+	// Without this, engine function calls like ENTINDEX will crash
+	if (MF_GetEngineFuncs)
+	{
+		enginefuncs_t* pEngfuncs = (enginefuncs_t*)MF_GetEngineFuncs();
+		if (pEngfuncs)
+			memcpy(&g_engfuncs, pEngfuncs, sizeof(enginefuncs_t));
+	}
+
+	// KTP: Get gpGlobals from core AMXX - essential for extension mode
+	// Without this, gpGlobals is NULL and many engine-dependent functions fail
+	if (MF_GetGlobalVars)
+		gpGlobals = (globalvars_t*)MF_GetGlobalVars();
+
 	// Get ReHLDS hookchains
 	if (MF_GetRehldsHookchains)
-	{
 		g_pRehldsHookchains = (IRehldsHookchains*)MF_GetRehldsHookchains();
-	}
 
 	// Get message manager
 	if (MF_GetRehldsMessageManager)
-	{
 		g_pMessageManager = (IMessageManager*)MF_GetRehldsMessageManager();
-	}
 
 	if (!g_pRehldsHookchains)
-	{
-		MF_PrintSrvConsole("[DODX] Warning: Could not get ReHLDS hookchains.\n");
 		return false;
-	}
 
-	// Register TraceLine hook
+	// NOTE: ClientConnected hook not needed - bot detection uses FL_FAKECLIENT, IP never used
+
+	// Register PlayerPreThink hook - main stats tracking loop
+	// Also handles player initialization in extension mode (replaces ClientPutInServer_Post)
+	if (g_pRehldsHookchains->SV_PlayerRunPreThink())
+		g_pRehldsHookchains->SV_PlayerRunPreThink()->registerHook(DODX_OnPlayerPreThink, HC_PRIORITY_DEFAULT);
+
+	// KTP: Register changelevel hook to disable message processing before map change
+	// This prevents crashes from stale pointers during map transition
+	if (g_pRehldsHookchains->PF_changelevel_I())
+		g_pRehldsHookchains->PF_changelevel_I()->registerHook(DODX_OnChangelevel, HC_PRIORITY_DEFAULT);
+
+	// KTP: Register TraceLine hook for:
+	// 1. Player aiming detection (records iHitgroup for headshot tracking)
+	// 2. Grenade/rocket tracking (fires dod_grenade_explosion, dod_rocket_explosion forwards)
+	// NOTE: This is a POST hook - reads trace results only, does NOT modify.
+	// Safe for wallpen because it never changes TraceResult or supercedes the call.
 	if (g_pRehldsHookchains->PF_TraceLine())
-	{
 		g_pRehldsHookchains->PF_TraceLine()->registerHook(DODX_OnTraceLine, HC_PRIORITY_DEFAULT);
-		MF_PrintSrvConsole("[DODX] Registered PF_TraceLine hook.\n");
-	}
 
-	// Register SetClientKeyValue hook
-	if (g_pRehldsHookchains->PF_SetClientKeyValue())
-	{
-		g_pRehldsHookchains->PF_SetClientKeyValue()->registerHook(DODX_OnSetClientKeyValue, HC_PRIORITY_DEFAULT);
-		MF_PrintSrvConsole("[DODX] Registered PF_SetClientKeyValue hook.\n");
-	}
-
-	// Register RegUserMsg hook
-	if (g_pRehldsHookchains->PF_RegUserMsg_I())
-	{
-		g_pRehldsHookchains->PF_RegUserMsg_I()->registerHook(DODX_OnRegUserMsg, HC_PRIORITY_DEFAULT);
-		MF_PrintSrvConsole("[DODX] Registered PF_RegUserMsg_I hook.\n");
-	}
-
-	// Register message hooks via IMessageManager
-	if (g_pMessageManager)
-	{
-		// We need to register hooks for each message type we care about
-		// This will be done in OnPluginsLoaded after message IDs are known
-		MF_PrintSrvConsole("[DODX] IMessageManager available for message interception.\n");
-	}
+	// IMessageManager hooks enabled - players will be initialized on-demand
+	// when messages arrive (in DODX_OnMessageHandler)
 
 	return true;
+}
+
+// KTP: Begin handler - called once at the start of each message to set up DODX's mPlayer/mState
+static void DODX_OnMsgBegin(int msg_id, int dest, int player_index, edict_t* ed)
+{
+	// KTP: Skip message processing if server is not active (during map change)
+	if (!g_bServerActive)
+		return;
+
+	// KTP: Use the player_index passed from the core, which has already been validated
+	// This is more reliable than recalculating from edict
+	if (player_index >= 1 && player_index <= gpGlobals->maxClients)
+	{
+		mPlayerIndex = player_index;
+		mPlayer = GET_PLAYER_POINTER_I(mPlayerIndex);
+	}
+	else
+	{
+		mPlayerIndex = 0;
+		mPlayer = NULL;
+	}
+
+	mDest = dest;
+	mState = 0;
+
+	// Get the callbacks for this message type
+	function = modMsgs[msg_id];
+	endfunction = modMsgsEnd[msg_id];
 }
 
 // KTP: Register message hooks after message IDs are known
 void DODX_RegisterMessageHooks()
 {
-	if (!g_bExtensionMode || !g_pMessageManager)
+	if (!g_bExtensionMode)
+	{
 		return;
+	}
 
-	// Register hooks for all message types we're tracking
+	// KTP: Use the new module message handler API instead of direct IMessageManager calls
+	// This allows KTPAMXX core to forward messages to DODX handlers
+	if (!MF_RegModuleMsgHandler || !MF_RegModuleMsgBeginHandler)
+	{
+		MF_Log("[DODX] Error: Module message API not available - cannot register message hooks");
+		return;
+	}
+
+	int hookCount = 0;
 	for (int i = 0; g_user_msg[i].name; ++i)
 	{
-		if (*g_user_msg[i].id > 0)
+		if (*g_user_msg[i].id > 0 && g_user_msg[i].func)
 		{
-			g_pMessageManager->registerHook(*g_user_msg[i].id, DODX_OnMessageHandler, HC_PRIORITY_DEFAULT);
+			// Register begin handler for each message to set up mPlayer/mState
+			MF_RegModuleMsgBeginHandler(*g_user_msg[i].id, DODX_OnMsgBegin);
+
+			// Cast funEventCall to PFN_MODULE_MSG_HANDLER (both are void (*)(void*))
+			if (MF_RegModuleMsgHandler(*g_user_msg[i].id, (PFN_MODULE_MSG_HANDLER)g_user_msg[i].func, g_user_msg[i].endmsg))
+			{
+				hookCount++;
+			}
+			else
+			{
+				MF_Log("[DODX] Warning: Failed to register handler for msg '%s' id=%d", g_user_msg[i].name, *g_user_msg[i].id);
+			}
 		}
 	}
 }
@@ -863,33 +1239,27 @@ static void DODX_CleanupExtensionHooks()
 
 	if (g_pRehldsHookchains)
 	{
+		// Unregister PlayerPreThink hook
+		if (g_pRehldsHookchains->SV_PlayerRunPreThink())
+			g_pRehldsHookchains->SV_PlayerRunPreThink()->unregisterHook(DODX_OnPlayerPreThink);
+
+		// Unregister changelevel hook
+		if (g_pRehldsHookchains->PF_changelevel_I())
+			g_pRehldsHookchains->PF_changelevel_I()->unregisterHook(DODX_OnChangelevel);
+
 		// Unregister TraceLine hook
 		if (g_pRehldsHookchains->PF_TraceLine())
-		{
 			g_pRehldsHookchains->PF_TraceLine()->unregisterHook(DODX_OnTraceLine);
-		}
-
-		// Unregister SetClientKeyValue hook
-		if (g_pRehldsHookchains->PF_SetClientKeyValue())
-		{
-			g_pRehldsHookchains->PF_SetClientKeyValue()->unregisterHook(DODX_OnSetClientKeyValue);
-		}
-
-		// Unregister RegUserMsg hook
-		if (g_pRehldsHookchains->PF_RegUserMsg_I())
-		{
-			g_pRehldsHookchains->PF_RegUserMsg_I()->unregisterHook(DODX_OnRegUserMsg);
-		}
 	}
 
-	if (g_pMessageManager)
+	// KTP: Unregister module message handlers via new API
+	if (MF_UnregModuleMsgHandler)
 	{
-		// Unregister message hooks
 		for (int i = 0; g_user_msg[i].name; ++i)
 		{
-			if (*g_user_msg[i].id > 0)
+			if (*g_user_msg[i].id > 0 && g_user_msg[i].func)
 			{
-				g_pMessageManager->unregisterHook(*g_user_msg[i].id, DODX_OnMessageHandler);
+				MF_UnregModuleMsgHandler(*g_user_msg[i].id, (PFN_MODULE_MSG_HANDLER)g_user_msg[i].func, g_user_msg[i].endmsg);
 			}
 		}
 	}

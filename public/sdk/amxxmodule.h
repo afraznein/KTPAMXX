@@ -2232,6 +2232,11 @@ typedef void (*MODULEFRAMEFUNC)(void);
 typedef void			(*PFN_REG_MODULE_FRAME_FUNC)	(MODULEFRAMEFUNC);
 typedef void			(*PFN_UNREG_MODULE_FRAME_FUNC)	(MODULEFRAMEFUNC);
 
+// KTP: Engine access for modules in extension mode
+// Returns void* to avoid dependency on engine type definitions - cast in module code
+typedef void*			(*PFN_GET_ENGINE_FUNCS)			();
+typedef void*			(*PFN_GET_GLOBAL_VARS)			();
+
 // KTP: ReHLDS API access for modules in extension mode
 typedef int				(*PFN_IS_EXTENSION_MODE)		();
 typedef void*			(*PFN_GET_REHLDS_API)			();
@@ -2240,6 +2245,16 @@ typedef void*			(*PFN_GET_REHLDS_FUNCS)			();
 typedef void*			(*PFN_GET_REHLDS_SERVERDATA)	();
 typedef void*			(*PFN_GET_REHLDS_MSGMGR)		();
 typedef void*			(*PFN_GET_GAMEDLL_FUNCS)		();
+typedef int				(*PFN_GET_USER_MSG_ID)			(const char *name);  // KTP: Get message ID by name (works in extension mode)
+// KTP: Module message handler callback type: matches funEventCall signature void (*)(void*)
+// Called once per message parameter (handler) or once after all params (end_handler)
+typedef void			(*PFN_MODULE_MSG_HANDLER)		(void* mValue);
+typedef bool			(*PFN_REG_MODULE_MSG_HANDLER)	(int msg_id, PFN_MODULE_MSG_HANDLER handler, bool end_handler);
+typedef bool			(*PFN_UNREG_MODULE_MSG_HANDLER)	(int msg_id, PFN_MODULE_MSG_HANDLER handler, bool end_handler);
+// KTP: Module message begin handler - called once at start of each message
+// Allows module to set up its mPlayer/mState before per-param handlers are called
+typedef void			(*PFN_MODULE_MSG_BEGIN_HANDLER)	(int msg_id, int dest, int player_index, struct edict_s* ed);
+typedef bool			(*PFN_REG_MODULE_MSG_BEGIN_HANDLER)(int msg_id, PFN_MODULE_MSG_BEGIN_HANDLER handler);
 
 extern PFN_ADD_NATIVES				g_fn_AddNatives;
 extern PFN_ADD_NEW_NATIVES			g_fn_AddNewNatives;
@@ -2327,6 +2342,10 @@ extern PFN_GET_CONFIG_MANAGER		g_fn_GetConfigManager;
 extern PFN_REG_MODULE_FRAME_FUNC	g_fn_RegModuleFrameFunc;
 extern PFN_UNREG_MODULE_FRAME_FUNC	g_fn_UnregModuleFrameFunc;
 
+// KTP: Engine access for modules in extension mode
+extern PFN_GET_ENGINE_FUNCS			g_fn_GetEngineFuncs;
+extern PFN_GET_GLOBAL_VARS			g_fn_GetGlobalVars;
+
 // KTP: ReHLDS API access for modules in extension mode
 extern PFN_IS_EXTENSION_MODE		g_fn_IsExtensionMode;
 extern PFN_GET_REHLDS_API			g_fn_GetRehldsApi;
@@ -2335,6 +2354,10 @@ extern PFN_GET_REHLDS_FUNCS			g_fn_GetRehldsFuncs;
 extern PFN_GET_REHLDS_SERVERDATA	g_fn_GetRehldsServerData;
 extern PFN_GET_REHLDS_MSGMGR		g_fn_GetRehldsMessageManager;
 extern PFN_GET_GAMEDLL_FUNCS		g_fn_GetGameDllFuncs;
+extern PFN_GET_USER_MSG_ID			g_fn_GetUserMsgId;
+extern PFN_REG_MODULE_MSG_HANDLER	g_fn_RegModuleMsgHandler;
+extern PFN_UNREG_MODULE_MSG_HANDLER	g_fn_UnregModuleMsgHandler;
+extern PFN_REG_MODULE_MSG_BEGIN_HANDLER	g_fn_RegModuleMsgBeginHandler;
 
 #ifdef MAY_NEVER_BE_DEFINED
 // Function prototypes for intellisense and similar systems
@@ -2502,6 +2525,10 @@ void MF_LogError(AMX *amx, int err, const char *fmt, ...);
 #define MF_RegModuleFrameFunc g_fn_RegModuleFrameFunc
 #define MF_UnregModuleFrameFunc g_fn_UnregModuleFrameFunc
 
+// KTP: Engine access macros for modules in extension mode
+#define MF_GetEngineFuncs g_fn_GetEngineFuncs
+#define MF_GetGlobalVars g_fn_GetGlobalVars
+
 // KTP: ReHLDS API access macros for modules
 #define MF_IsExtensionMode g_fn_IsExtensionMode
 #define MF_GetRehldsApi g_fn_GetRehldsApi
@@ -2510,6 +2537,10 @@ void MF_LogError(AMX *amx, int err, const char *fmt, ...);
 #define MF_GetRehldsServerData g_fn_GetRehldsServerData
 #define MF_GetRehldsMessageManager g_fn_GetRehldsMessageManager
 #define MF_GetGameDllFuncs g_fn_GetGameDllFuncs
+#define MF_GetUserMsgId g_fn_GetUserMsgId
+#define MF_RegModuleMsgHandler g_fn_RegModuleMsgHandler
+#define MF_UnregModuleMsgHandler g_fn_UnregModuleMsgHandler
+#define MF_RegModuleMsgBeginHandler g_fn_RegModuleMsgBeginHandler
 
 #ifdef MEMORY_TEST
 /*** Memory ***/

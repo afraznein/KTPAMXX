@@ -17,11 +17,20 @@
 
 static cell AMX_NATIVE_CALL get_user_astats(AMX *amx, cell *params) /* 6 param */
 {
+	// KTP: gpGlobals can be NULL during map change in extension mode
+	if (!gpGlobals)
+		return 0;
+
 	int index = params[1];
-	CHECK_PLAYERRANGE(index);
+	if (index < 0 || index > gpGlobals->maxClients)
+		return 0;
 	int attacker = params[2];
-	CHECK_PLAYERRANGE(attacker);
-	CPlayer* pPlayer = GET_PLAYER_POINTER_I(index);
+	if (attacker < 0 || attacker > gpGlobals->maxClients)
+		return 0;
+	CPlayer* pPlayer = &players[index];
+	// KTP: Safety check - verify player is valid before accessing stats
+	if (!pPlayer->ingame || !pPlayer->pEdict || pPlayer->pEdict->free)
+		return 0;
 	if (pPlayer->attackers[attacker].hits){
 		cell *cpStats = MF_GetAmxAddr(amx,params[3]);
 		cell *cpBodyHits = MF_GetAmxAddr(amx,params[4]);
@@ -44,11 +53,20 @@ static cell AMX_NATIVE_CALL get_user_astats(AMX *amx, cell *params) /* 6 param *
 
 static cell AMX_NATIVE_CALL get_user_vstats(AMX *amx, cell *params) /* 6 param */
 {
+	// KTP: gpGlobals can be NULL during map change in extension mode
+	if (!gpGlobals)
+		return 0;
+
 	int index = params[1];
-	CHECK_PLAYERRANGE(index);
+	if (index < 0 || index > gpGlobals->maxClients)
+		return 0;
 	int victim = params[2];
-	CHECK_PLAYERRANGE(victim);
-	CPlayer* pPlayer = GET_PLAYER_POINTER_I(index);
+	if (victim < 0 || victim > gpGlobals->maxClients)
+		return 0;
+	CPlayer* pPlayer = &players[index];
+	// KTP: Safety check - verify player is valid before accessing stats
+	if (!pPlayer->ingame || !pPlayer->pEdict || pPlayer->pEdict->free)
+		return 0;
 	if (pPlayer->victims[victim].hits){
 		cell *cpStats = MF_GetAmxAddr(amx,params[3]);
 		cell *cpBodyHits = MF_GetAmxAddr(amx,params[4]);
@@ -71,14 +89,22 @@ static cell AMX_NATIVE_CALL get_user_vstats(AMX *amx, cell *params) /* 6 param *
 
 static cell AMX_NATIVE_CALL get_user_wlstats(AMX *amx, cell *params) /* 4 param */ // DEC-Weapon (round) stats (end)
 {
+	// KTP: gpGlobals can be NULL during map change in extension mode
+	if (!gpGlobals)
+		return 0;
+
 	int index = params[1];
-	CHECK_PLAYER(index);
+	if (index < 1 || index > gpGlobals->maxClients)
+		return 0;
 	int weapon = params[2];
 	if (weapon<0||weapon>=DODMAX_WEAPONS){
 		MF_LogError(amx, AMX_ERR_NATIVE, "Invalid weapon id %d", weapon);
 		return 0;
 	}
-	CPlayer* pPlayer = GET_PLAYER_POINTER_I(index);
+	CPlayer* pPlayer = &players[index];
+	// KTP: Safety check - verify player is valid before accessing stats
+	if (!pPlayer->ingame || !pPlayer->pEdict || pPlayer->pEdict->free)
+		return 0;
 	if (pPlayer->weaponsLife[weapon].shots){
 		cell *cpStats = MF_GetAmxAddr(amx,params[3]);
 		cell *cpBodyHits = MF_GetAmxAddr(amx,params[4]);
@@ -100,14 +126,22 @@ static cell AMX_NATIVE_CALL get_user_wlstats(AMX *amx, cell *params) /* 4 param 
 
 static cell AMX_NATIVE_CALL get_user_wrstats(AMX *amx, cell *params) /* 4 param */ // DEC-Weapon (round) stats (end)
 {
+	// KTP: gpGlobals can be NULL during map change in extension mode
+	if (!gpGlobals)
+		return 0;
+
 	int index = params[1];
-	CHECK_PLAYER(index)
+	if (index < 1 || index > gpGlobals->maxClients)
+		return 0;
 	int weapon = params[2];
 	if (weapon<0||weapon>=DODMAX_WEAPONS){
 		MF_LogError(amx, AMX_ERR_NATIVE, "Invalid weapon id %d", weapon);
 		return 0;
 	}
-	CPlayer* pPlayer = GET_PLAYER_POINTER_I(index);
+	CPlayer* pPlayer = &players[index];
+	// KTP: Safety check - verify player is valid before accessing stats
+	if (!pPlayer->ingame || !pPlayer->pEdict || pPlayer->pEdict->free)
+		return 0;
 	if (pPlayer->weaponsLife[weapon].shots){
 		cell *cpStats = MF_GetAmxAddr(amx,params[3]);
 		cell *cpBodyHits = MF_GetAmxAddr(amx,params[4]);
@@ -130,13 +164,30 @@ static cell AMX_NATIVE_CALL get_user_wrstats(AMX *amx, cell *params) /* 4 param 
 static cell AMX_NATIVE_CALL get_user_wstats(AMX *amx, cell *params) /* 4 param */
 {
 	int index = params[1];
-	CHECK_PLAYER(index)
+
+	// KTP: gpGlobals can be NULL during map change in extension mode - return safely
+	if (!gpGlobals) {
+		return 0;
+	}
+
+	// KTP: Range check
+	if (index < 1 || index > gpGlobals->maxClients) {
+		return 0;
+	}
+
+	CPlayer* pPlayer = &players[index];
+
+	// KTP: Safety check - player may not be valid during disconnect in extension mode
+	if (!pPlayer->ingame || !pPlayer->pEdict || pPlayer->pEdict->free) {
+		return 0;
+	}
+
 	int weapon = params[2];
 	if (weapon<0||weapon>=DODMAX_WEAPONS){
 		MF_LogError(amx, AMX_ERR_NATIVE, "Invalid weapon id %d", weapon);
 		return 0;
 	}
-	CPlayer* pPlayer = GET_PLAYER_POINTER_I(index);
+
 	if (pPlayer->weapons[weapon].shots){
 		cell *cpStats = MF_GetAmxAddr(amx,params[3]);
 		cell *cpBodyHits = MF_GetAmxAddr(amx,params[4]);
@@ -158,21 +209,45 @@ static cell AMX_NATIVE_CALL get_user_wstats(AMX *amx, cell *params) /* 4 param *
 
 static cell AMX_NATIVE_CALL reset_user_wstats(AMX *amx, cell *params) /* 6 param */
 {
+	// KTP: gpGlobals can be NULL during map change in extension mode
+	if (!gpGlobals)
+		return 0;
+
 	int index = params[1];
-	CHECK_PLAYER(index);
-	CPlayer* pPlayer = GET_PLAYER_POINTER_I(index);
+	if (index < 1 || index > gpGlobals->maxClients)
+		return 0;
+	CPlayer* pPlayer = &players[index];
+	// KTP: Safety check - verify player is valid before accessing stats
+	if (!pPlayer->ingame || !pPlayer->pEdict || pPlayer->pEdict->free)
+		return 0;
 	pPlayer->restartStats();
 	return 1;
 }
 
 static cell AMX_NATIVE_CALL get_user_stats(AMX *amx, cell *params) /* 3 param */
 {
+	// KTP: gpGlobals can be NULL during map change in extension mode
+	if (!gpGlobals)
+		return 0;
+
 	int index = params[1];
-	CHECK_PLAYER(index);
-	CPlayer* pPlayer = GET_PLAYER_POINTER_I(index);
+	if (index < 1 || index > gpGlobals->maxClients)
+		return 0;
+	CPlayer* pPlayer = &players[index];
+	// KTP: Safety check - verify player is valid before accessing stats
+	if (!pPlayer->ingame || !pPlayer->pEdict || pPlayer->pEdict->free)
+		return 0;
 	if ( pPlayer->ingame ){
 		cell *cpStats = MF_GetAmxAddr(amx,params[2]);
 		cell *cpBodyHits = MF_GetAmxAddr(amx,params[3]);
+		// KTP: rank may be NULL in extension mode - return zeros
+		if (!pPlayer->rank) {
+			for(int i = 0; i < 9; ++i)
+				cpStats[i] = 0;
+			for(int i = 0; i < 8; ++i)
+				cpBodyHits[i] = 0;
+			return 0;
+		}
 		cpStats[0] = pPlayer->rank->kills;
 		cpStats[1] = pPlayer->rank->deaths;
 		cpStats[2] = pPlayer->rank->hs;
@@ -187,14 +262,22 @@ static cell AMX_NATIVE_CALL get_user_stats(AMX *amx, cell *params) /* 3 param */
 		return pPlayer->rank->getPosition();
 	}
 	return 0;
-	
+
 }
 
 static cell AMX_NATIVE_CALL get_user_lstats(AMX *amx, cell *params) /* 3 param */
 {
+	// KTP: gpGlobals can be NULL during map change in extension mode
+	if (!gpGlobals)
+		return 0;
+
 	int index = params[1];
-	CHECK_PLAYER(index);
-	CPlayer* pPlayer = GET_PLAYER_POINTER_I(index);
+	if (index < 1 || index > gpGlobals->maxClients)
+		return 0;
+	CPlayer* pPlayer = &players[index];
+	// KTP: Safety check - verify player is valid before accessing stats
+	if (!pPlayer->ingame || !pPlayer->pEdict || pPlayer->pEdict->free)
+		return 0;
 	if (pPlayer->ingame){
 		cell *cpStats = MF_GetAmxAddr(amx,params[2]);
 		cell *cpBodyHits = MF_GetAmxAddr(amx,params[3]);
@@ -215,9 +298,17 @@ static cell AMX_NATIVE_CALL get_user_lstats(AMX *amx, cell *params) /* 3 param *
 
 static cell AMX_NATIVE_CALL get_user_rstats(AMX *amx, cell *params) /* 3 param */
 {
+	// KTP: gpGlobals can be NULL during map change in extension mode
+	if (!gpGlobals)
+		return 0;
+
 	int index = params[1];
-	CHECK_PLAYER(index)
-	CPlayer* pPlayer = GET_PLAYER_POINTER_I(index);
+	if (index < 1 || index > gpGlobals->maxClients)
+		return 0;
+	CPlayer* pPlayer = &players[index];
+	// KTP: Safety check - verify player is valid before accessing stats
+	if (!pPlayer->ingame || !pPlayer->pEdict || pPlayer->pEdict->free)
+		return 0;
 	if (pPlayer->ingame){
 		cell *cpStats = MF_GetAmxAddr(amx,params[2]);
 		cell *cpBodyHits = MF_GetAmxAddr(amx,params[3]);
