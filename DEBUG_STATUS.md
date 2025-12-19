@@ -1,8 +1,14 @@
 # DODX Shot Tracking Debug Status
 
-## Current Issue
-Weaponstats are not logging shots fired in DODX module running in ReHLDS extension mode.
-Player fires weapons but no shot stats appear in logs - only "time" and "latency".
+## Status: RESOLVED (v2.4.0)
+
+Shot tracking is now working in DODX extension mode. This document is kept for historical reference.
+
+---
+
+## Original Issue (Resolved)
+Weaponstats were not logging shots fired in DODX module running in ReHLDS extension mode.
+Player fires weapons but no shot stats appeared in logs - only "time" and "latency".
 
 ## Root Cause Found (2025-12-16)
 

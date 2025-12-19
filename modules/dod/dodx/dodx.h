@@ -139,6 +139,11 @@ extern int iFGrenadeExplode;
 extern int iFRocketExplode;
 extern int iFObjectTouched;
 extern int iFStaminaForward;
+extern int iFFlushStats;  // KTP: Forward for stats flush notification
+
+// KTP: Match ID for HLStatsX integration
+extern char g_szMatchId[64];
+const char* DODX_GetMatchId();
 
 extern cvar_t* dodstats_maxsize;
 extern cvar_t* dodstats_rank;

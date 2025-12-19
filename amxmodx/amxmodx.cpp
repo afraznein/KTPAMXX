@@ -2690,7 +2690,18 @@ static cell AMX_NATIVE_CALL get_user_msgid(AMX *amx, cell *params) /* 1 param */
 	int ilen;
 	char* sptemp = get_amxstring(amx, params[1], 0, ilen);
 
-	return GET_USER_MSG_ID(PLID, sptemp, NULL);
+	// KTP: In extension mode, use REG_USER_MSG with size -1 to lookup existing message ID
+	// GET_USER_MSG_ID requires Metamod PLID which doesn't work in extension mode
+	if (g_bRunningWithMetamod)
+	{
+		return GET_USER_MSG_ID(PLID, sptemp, NULL);
+	}
+	else
+	{
+		// REG_USER_MSG with size -1 returns existing ID without creating a new message
+		// (thanks to KTPReHLDS dual-list search fix)
+		return REG_USER_MSG(sptemp, -1);
+	}
 }
 
 static cell AMX_NATIVE_CALL get_user_msgname(AMX *amx, cell *params) /* get_user_msgname(msg, str[], len) = 3 params */

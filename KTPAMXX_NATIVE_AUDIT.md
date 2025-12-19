@@ -1,6 +1,6 @@
 # KTPAMXX Native Audit - Extension Mode Compatibility
 
-> **Version:** 2.4.0 | **Last Updated:** 2025-12-16 | **Status:** Active Development
+> **Version:** 2.5.0 | **Last Updated:** 2025-12-18 | **Status:** Active Development
 
 [![Extension Mode](https://img.shields.io/badge/Extension%20Mode-Supported-brightgreen)](#)
 [![Map Change](https://img.shields.io/badge/Map%20Change-Fixed-brightgreen)](#)
@@ -326,6 +326,15 @@ By checking `pPlayer->initialized`, we detect if reinitialization is needed.
 | `get_timeleft` | ![OK](https://img.shields.io/badge/-OK-brightgreen) | Time remaining |
 | `get_gametime` | ![OK](https://img.shields.io/badge/-OK-brightgreen) | Game time |
 
+### HLStatsX Integration Natives (DODX)
+
+| Native | Status | Notes |
+|:-------|:------:|:------|
+| `dodx_flush_all_stats` | ![OK](https://img.shields.io/badge/-OK-brightgreen) | Fire dod_stats_flush forward for all players |
+| `dodx_reset_all_stats` | ![OK](https://img.shields.io/badge/-OK-brightgreen) | Reset all player stats |
+| `dodx_set_match_id` | ![OK](https://img.shields.io/badge/-OK-brightgreen) | Set match ID for stats correlation |
+| `dodx_get_match_id` | ![OK](https://img.shields.io/badge/-OK-brightgreen) | Get current match ID |
+
 ---
 
 ## Module Dependencies
@@ -457,6 +466,24 @@ Stats tracking intercepts these game messages:
 ---
 
 ## Changelog
+
+<details>
+<summary><strong>2025-12-18</strong> - HLStatsX Integration (v2.5.0)</summary>
+
+- **NEW DODX NATIVES** - Match-based statistics tracking for KTPMatchHandler
+  - `dodx_flush_all_stats()` - Fire `dod_stats_flush` forward for all players
+  - `dodx_reset_all_stats()` - Reset all player stats
+  - `dodx_set_match_id(matchId[])` - Set match ID for stats correlation
+  - `dodx_get_match_id(output[], maxlen)` - Get current match ID
+
+- **NEW FORWARD** - `dod_stats_flush(id)` fired by `dodx_flush_all_stats()`
+
+- **stats_logging.sma UPDATES**
+  - Now includes `(matchid "xxx")` in weaponstats, weaponstats2, time, latency logs
+  - `dod_stats_flush` handler for on-demand stats logging
+  - `log_player_stats()` stock function (refactored from client_disconnected)
+
+</details>
 
 <details>
 <summary><strong>2025-12-16</strong> - DODX Extension Mode Complete Rewrite</summary>

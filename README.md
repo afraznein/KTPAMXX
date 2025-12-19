@@ -8,6 +8,25 @@ Part of the [KTP Competitive Infrastructure](https://github.com/afraznein).
 
 ---
 
+## What's New in v2.5.0
+
+### HLStatsX Integration
+
+New DODX natives enable match-based statistics tracking with KTPMatchHandler:
+
+| Native | Purpose |
+|--------|---------|
+| `dodx_flush_all_stats()` | Flush warmup stats before match starts |
+| `dodx_reset_all_stats()` | Reset all player stats for fresh match |
+| `dodx_set_match_id(id[])` | Set match ID for stats correlation |
+| `dodx_get_match_id(out[], len)` | Get current match ID |
+
+**New Forward:** `dod_stats_flush(id)` - Called for each player when flushing stats
+
+**stats_logging.sma:** Now includes `(matchid "xxx")` in all log lines when match ID is set
+
+---
+
 ## What's New in v2.4.0
 
 ### DODX Extension Mode - Complete Rewrite
@@ -181,7 +200,7 @@ public client_cvar_changed(id, const cvar[], const value[]) {
 
 Check server console on startup:
 ```
-KTP AMX v2.4.0 loaded
+KTP AMX v2.5.0 loaded
 Core mode: JIT+ASM32
 Running as: ReHLDS Extension (or: Metamod Plugin)
 ```

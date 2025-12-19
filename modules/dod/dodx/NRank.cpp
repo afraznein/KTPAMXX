@@ -15,6 +15,19 @@
 #include "amxxmodule.h"
 #include "dodx.h"
 
+// KTP: Match ID for HLStatsX integration
+// Format: "KTP-{timestamp}-{mapname}" set by KTPMatchHandler
+char g_szMatchId[64] = "";
+
+// KTP: Forward for stats flush notification
+int iFFlushStats = -1;
+
+// KTP: Get current match ID (for stats_logging to include in logs)
+const char* DODX_GetMatchId()
+{
+	return g_szMatchId;
+}
+
 static cell AMX_NATIVE_CALL get_user_astats(AMX *amx, cell *params) /* 6 param */
 {
 	// KTP: gpGlobals can be NULL during map change in extension mode
@@ -359,6 +372,113 @@ static cell AMX_NATIVE_CALL get_statsnum(AMX *amx, cell *params)
 	return g_rank.getRankNum();
 }
 
+// ============================================================================
+// KTP: HLStatsX Integration Natives
+// ============================================================================
+
+// Native: dodx_flush_all_stats()
+// Purpose: Fire forward to notify stats_logging.sma to log all pending player stats
+// This allows stats_logging to write weaponstats for all players (warmup stats flush)
+// Returns: Number of players for which the forward was fired
+static cell AMX_NATIVE_CALL dodx_flush_all_stats(AMX *amx, cell *params)
+{
+	// KTP: Safety check - gpGlobals must be valid
+	if (!gpGlobals)
+		return 0;
+
+	// KTP: Check if forward is registered
+	if (iFFlushStats < 0)
+	{
+		MF_LogError(amx, AMX_ERR_NATIVE, "dodx_flush_all_stats: dod_stats_flush forward not registered");
+		return 0;
+	}
+
+	int count = 0;
+	int maxClients = gpGlobals->maxClients;
+	if (maxClients < 1 || maxClients > 32)
+		maxClients = 32;
+
+	// Fire forward for each connected player
+	// stats_logging.sma will handle the actual logging
+	for (int i = 1; i <= maxClients; i++)
+	{
+		CPlayer* pPlayer = GET_PLAYER_POINTER_I(i);
+		if (pPlayer && pPlayer->ingame && pPlayer->pEdict && !pPlayer->pEdict->free)
+		{
+			// Fire forward: dod_stats_flush(id)
+			// stats_logging.sma should register for this and log weaponstats
+			MF_ExecuteForward(iFFlushStats, i);
+			count++;
+		}
+	}
+
+	return count;
+}
+
+// Native: dodx_reset_all_stats()
+// Purpose: Reset all accumulated stats for all connected players
+// This clears weapons[], attackers[], victims[], weaponsLife[], weaponsRnd[], life, round
+// Returns: Number of players reset
+static cell AMX_NATIVE_CALL dodx_reset_all_stats(AMX *amx, cell *params)
+{
+	// KTP: Safety check - gpGlobals must be valid
+	if (!gpGlobals)
+		return 0;
+
+	int count = 0;
+	int maxClients = gpGlobals->maxClients;
+	if (maxClients < 1 || maxClients > 32)
+		maxClients = 32;
+
+	for (int i = 1; i <= maxClients; i++)
+	{
+		CPlayer* pPlayer = GET_PLAYER_POINTER_I(i);
+		if (pPlayer && pPlayer->ingame && pPlayer->pEdict && !pPlayer->pEdict->free)
+		{
+			// restartStats(true) clears all stats including weapons[], victims[], attackers[]
+			pPlayer->restartStats(true);
+			count++;
+		}
+	}
+
+	return count;
+}
+
+// Native: dodx_set_match_id(const matchId[])
+// Purpose: Set the current match context for stats logging
+// When set, stats_logging.sma should include this in weaponstats log lines
+// Pass empty string to clear the match context
+// Returns: 1 on success
+static cell AMX_NATIVE_CALL dodx_set_match_id(AMX *amx, cell *params)
+{
+	int len;
+	const char* matchId = MF_GetAmxString(amx, params[1], 0, &len);
+
+	if (matchId)
+	{
+		// Copy match ID (or clear if empty)
+		strncpy(g_szMatchId, matchId, sizeof(g_szMatchId) - 1);
+		g_szMatchId[sizeof(g_szMatchId) - 1] = '\0';
+	}
+	else
+	{
+		g_szMatchId[0] = '\0';
+	}
+
+	return 1;
+}
+
+// Native: dodx_get_match_id(output[], maxlen)
+// Purpose: Get the current match ID (for stats_logging to include in logs)
+// Returns: Length of match ID string, 0 if not set
+static cell AMX_NATIVE_CALL dodx_get_match_id(AMX *amx, cell *params)
+{
+	if (g_szMatchId[0] == '\0')
+		return 0;
+
+	return MF_SetAmxString(amx, params[1], g_szMatchId, params[2]);
+}
+
 AMX_NATIVE_INFO stats_Natives[] = {
 	{ "get_stats",      get_stats},
 	{ "get_statsnum",   get_statsnum},
@@ -371,6 +491,12 @@ AMX_NATIVE_INFO stats_Natives[] = {
 	{ "get_user_wrstats",  get_user_wrstats}, // DEC-Weapon(Round) Stats
 	{ "get_user_wstats",  get_user_wstats},
 	{ "reset_user_wstats",  reset_user_wstats },
+
+	// KTP: HLStatsX integration natives
+	{ "dodx_flush_all_stats",  dodx_flush_all_stats },
+	{ "dodx_reset_all_stats",  dodx_reset_all_stats },
+	{ "dodx_set_match_id",     dodx_set_match_id },
+	{ "dodx_get_match_id",     dodx_get_match_id },
 
 	{ NULL, NULL }
 };

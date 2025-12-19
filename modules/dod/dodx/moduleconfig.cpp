@@ -587,6 +587,10 @@ void OnPluginsLoaded()
 	iFObjectTouched = MF_RegisterForward("dod_client_objectpickup",ET_IGNORE,FP_CELL/*id*/,FP_CELL/*object*/,FP_ARRAY/*pos[3]*/,FP_CELL/*value*/,FP_DONE);
 	iFStaminaForward = MF_RegisterForward("dod_client_stamina",ET_IGNORE,FP_CELL/*id*/,FP_CELL/*stamina*/,FP_DONE);
 
+	// KTP: HLStatsX integration forward - fired by dodx_flush_all_stats() native
+	// stats_logging.sma should register for this to log weaponstats
+	iFFlushStats = MF_RegisterForward("dod_stats_flush",ET_IGNORE,FP_CELL/*id*/,FP_DONE);
+
 	// KTP: In extension mode, do deferred engine-dependent initialization
 	// Engine functions aren't ready during OnAmxxAttach in extension mode
 	if (g_bExtensionMode)

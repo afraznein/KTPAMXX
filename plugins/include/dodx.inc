@@ -159,3 +159,53 @@ native dod_get_pronestate(index);
 
 /* It is not as safe as original but player deaths will not be increased */
 native dod_user_kill(index);
+
+/************* KTP: HLStatsX Integration Natives ********************************/
+
+/**
+ * Forward called by dodx_flush_all_stats() for each connected player.
+ * Stats logging plugins should register for this to log pending weaponstats.
+ *
+ * @param id        Player index to flush stats for
+ */
+forward dod_stats_flush(id);
+
+// =============== KTP: HLStatsX Integration Natives ===============
+
+/**
+ * Flush all pending player stats by firing dod_stats_flush forward.
+ * Call this before match starts to log warmup stats.
+ *
+ * @return          Number of players for which stats were flushed
+ */
+native dodx_flush_all_stats();
+
+/**
+ * Reset all accumulated stats for all connected players.
+ * Call this after flushing warmup stats to start fresh for match.
+ * Clears: weapons[], attackers[], victims[], weaponsLife[], weaponsRnd[], life, round
+ *
+ * @return          Number of players reset
+ */
+native dodx_reset_all_stats();
+
+/**
+ * Set the match ID for stats logging.
+ * When set, weaponstats log lines will include (matchid "xxx") property.
+ * Pass empty string to clear match context (for post-match/warmup).
+ *
+ * @param matchId   Match ID string (e.g., "KTP-1734355200-dod_charlie")
+ * @return          1 on success
+ */
+native dodx_set_match_id(const matchId[]);
+
+/**
+ * Get the current match ID.
+ *
+ * @param output    Buffer to store match ID
+ * @param maxlen    Maximum buffer length
+ * @return          Length of match ID string, 0 if not set
+ */
+native dodx_get_match_id(output[], maxlen);
+
+// ==================================================================

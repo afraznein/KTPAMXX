@@ -5,6 +5,47 @@ All notable changes to KTP AMX will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.0] - 2025-12-18
+
+### Added
+
+#### HLStatsX Integration
+New DODX natives for match-based statistics tracking with KTPMatchHandler:
+
+**New Natives:**
+- **`dodx_flush_all_stats()`** - Fire `dod_stats_flush` forward for all connected players
+  - Allows flushing warmup stats before match starts
+  - Returns number of players flushed
+- **`dodx_reset_all_stats()`** - Reset all accumulated stats for all players
+  - Clears weapons[], attackers[], victims[], weaponsLife[], weaponsRnd[], life, round
+  - Call after flushing to start fresh for match
+- **`dodx_set_match_id(matchId[])`** - Set match ID for stats correlation
+  - When set, weaponstats log lines include `(matchid "xxx")` property
+  - Pass empty string to clear match context
+- **`dodx_get_match_id(output[], maxlen)`** - Get current match ID
+
+**New Forward:**
+- **`dod_stats_flush(id)`** - Called by `dodx_flush_all_stats()` for each player
+  - stats_logging.sma registers for this to log pending weaponstats
+
+#### stats_logging.sma Updates
+- **Match ID support** - All log lines include `(matchid "xxx")` when match ID is set
+- **`dod_stats_flush` handler** - Logs weaponstats on demand (for warmup flush)
+- **`log_player_stats()` stock** - Refactored from client_disconnected for reuse
+
+### Technical Details
+
+**Intended workflow for KTPMatchHandler:**
+1. During warmup: stats accumulate normally
+2. Match start: `dodx_flush_all_stats()` → logs warmup stats without match ID
+3. Match start: `dodx_reset_all_stats()` → clears stats for fresh match
+4. Match start: `dodx_set_match_id("KTP-1234567890-dod_charlie")` → sets context
+5. During match: stats accumulate with match ID
+6. Match end: Stats logged on disconnect include match ID
+7. Match end: `dodx_set_match_id("")` → clears context for warmup
+
+---
+
 ## [2.4.0] - 2025-12-16
 
 ### Added
@@ -358,6 +399,7 @@ See [AMX Mod X releases](https://github.com/alliedmodders/amxmodx/releases) for 
 
 | Version | Date | Description |
 |---------|------|-------------|
+| 2.5.0 | 2025-12-18 | HLStatsX integration: match ID, stats flush/reset natives |
 | 2.4.0 | 2025-12-16 | DODX shot tracking, module SDK extensions, log file fix, debug cleanup |
 | 2.3.0 | 2025-12-14 | DODX extension mode complete, TraceLine hook, stats_logging crash fix |
 | 2.2.0 | 2025-12-08 | register_event/register_logevent extension mode, module API |
@@ -365,6 +407,7 @@ See [AMX Mod X releases](https://github.com/alliedmodders/amxmodx/releases) for 
 | 2.0.0 | 2024-12-04 | Major release: ReHLDS extension mode, KTP branding, client_cvar_changed |
 | 1.10.0 | - | Base fork from AMX Mod X |
 
+[2.5.0]: https://github.com/afraznein/KTPAMXX/releases/tag/v2.5.0
 [2.4.0]: https://github.com/afraznein/KTPAMXX/releases/tag/v2.4.0
 [2.3.0]: https://github.com/afraznein/KTPAMXX/releases/tag/v2.3.0
 [2.2.0]: https://github.com/afraznein/KTPAMXX/releases/tag/v2.2.0
