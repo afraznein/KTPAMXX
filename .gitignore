@@ -115,3 +115,4 @@ setup_wsl_build.ps1
 
 # Accidental nul file (Windows artifact)
 nul
+.claude/settings.local.json

@@ -99,9 +99,16 @@ int gmsgSetFOV_End;
 int gmsgObject;
 int gmsgObject_End;
 int gmsgPStatus;
+int gmsgTeamInfo;  // KTP: For scoreboard team name refresh
 
 RankSystem g_rank;
 Grenades g_grenades;
+
+// KTP: Gamerules access for scoreboard score modification
+IGameConfig *g_pCommonConfig = nullptr;
+IGameConfig *g_pGamerulesConfig = nullptr;
+void **g_pGameRulesAddress = nullptr;
+int g_iTeamScoreOffset = 56;  // Default offset from gamedata, may be overridden
 
 cvar_t init_dodstats_maxsize ={"dodstats_maxsize","3500", 0 , 3500.0 };
 cvar_t init_dodstats_reset ={"dodstats_reset","0"};
@@ -140,6 +147,7 @@ g_user_msg[] =
 	{ "PStatus",	&gmsgPStatus,			Client_PStatus,			false },
 	{ "ScoreShort",	&gmsgScoreShort,		NULL,					false },
 	{ "PTeam",		&gmsgPTeam,				NULL,					false },
+	{ "TeamInfo",	&gmsgTeamInfo,			NULL,					false },  // KTP: For scoreboard refresh
 	{ 0,0,0,false }
 };
 
@@ -565,6 +573,19 @@ void OnAmxxDetach()
 	// KTP: Cleanup extension mode hooks before detaching
 	DODX_CleanupExtensionHooks();
 
+	// KTP: Cleanup gamerules config files
+	IGameConfigManager *ConfigManager = MF_GetConfigManager();
+	if (ConfigManager)
+	{
+		if (g_pCommonConfig)
+			ConfigManager->CloseGameConfigFile(g_pCommonConfig);
+		if (g_pGamerulesConfig)
+			ConfigManager->CloseGameConfigFile(g_pGamerulesConfig);
+	}
+	g_pCommonConfig = nullptr;
+	g_pGamerulesConfig = nullptr;
+	g_pGameRulesAddress = nullptr;
+
 	g_rank.clear();
 	g_grenades.clear();
 	g_rank.unloadCalc();
@@ -590,6 +611,54 @@ void OnPluginsLoaded()
 	// KTP: HLStatsX integration forward - fired by dodx_flush_all_stats() native
 	// stats_logging.sma should register for this to log weaponstats
 	iFFlushStats = MF_RegisterForward("dod_stats_flush",ET_IGNORE,FP_CELL/*id*/,FP_DONE);
+
+	// KTP: Initialize gamerules access for scoreboard score modification
+	// This allows dodx_set_team_score/dodx_get_team_score natives to work
+	IGameConfigManager *ConfigManager = MF_GetConfigManager();
+	if (ConfigManager)
+	{
+		char error[256] = "";
+
+		// Load common.games for g_pGameRules address signature
+		if (ConfigManager->LoadGameConfigFile("common.games", &g_pCommonConfig, error, sizeof(error)))
+		{
+			// Try to get g_pGameRules address
+			void *address = nullptr;
+			if (g_pCommonConfig->GetAddress("g_pGameRules", &address) && address)
+			{
+				// Windows: address points to a pointer to g_pGameRules
+				// Linux: address is g_pGameRules directly
+#if defined(KE_WINDOWS)
+				g_pGameRulesAddress = *reinterpret_cast<void***>(address);
+#else
+				g_pGameRulesAddress = reinterpret_cast<void**>(address);
+#endif
+			}
+			else
+			{
+				MF_Log("[DODX] Warning: Could not find g_pGameRules address - scoreboard score natives disabled");
+			}
+		}
+		else if (error[0])
+		{
+			MF_Log("[DODX] Warning: Could not load common.games: %s", error);
+		}
+
+		// Load gamerules.games for m_iTeamScores offset
+		*error = '\0';
+		if (ConfigManager->LoadGameConfigFile("common.games/gamerules.games", &g_pGamerulesConfig, error, sizeof(error)))
+		{
+			TypeDescription data;
+			if (g_pGamerulesConfig->GetOffsetByClass("CDoDTeamPlay", "m_iTeamScores", &data))
+			{
+				g_iTeamScoreOffset = data.fieldOffset;
+			}
+		}
+		else if (error[0])
+		{
+			MF_Log("[DODX] Warning: Could not load gamerules.games: %s", error);
+		}
+	}
 
 	// KTP: In extension mode, do deferred engine-dependent initialization
 	// Engine functions aren't ready during OnAmxxAttach in extension mode

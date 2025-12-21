@@ -19,6 +19,7 @@
 #include "CFlagManager.h"
 #include "nongpl_matches.h"
 #include "format.h"
+#include <resdk/mod_rehlds_api.h>  // KTP: ReHLDS API for DropClient native
 
 extern CFlagManager FlagMan;
 ke::Vector<CAdminData *> DynamicAdmins;
@@ -4721,6 +4722,64 @@ static cell AMX_NATIVE_CALL RequestFrame(AMX *amx, cell *params)
 	return 1;
 }
 
+// KTP: native ktp_drop_client(id, const reason[] = "")
+// Drops a client using ReHLDS API directly, bypassing the blocked kick console command.
+// Returns 1 on success, 0 on failure (invalid player or ReHLDS not available)
+static cell AMX_NATIVE_CALL ktp_drop_client(AMX *amx, cell *params)
+{
+	// Check if ReHLDS API is available
+	if (!RehldsFuncs || !RehldsSvs)
+	{
+		LogError(amx, AMX_ERR_NATIVE, "ReHLDS API not available - ktp_drop_client requires ReHLDS");
+		return 0;
+	}
+
+	int index = params[1];
+
+	// Validate player index
+	if (index < 1 || index > gpGlobals->maxClients)
+	{
+		LogError(amx, AMX_ERR_NATIVE, "Invalid player index %d", index);
+		return 0;
+	}
+
+	CPlayer* pPlayer = GET_PLAYER_POINTER_I(index);
+	if (!pPlayer->ingame)
+	{
+		LogError(amx, AMX_ERR_NATIVE, "Player %d is not in game", index);
+		return 0;
+	}
+
+	// Get the reason string (optional)
+	int len;
+	const char* reason = "";
+	if (params[0] >= 2)
+	{
+		reason = get_amxstring(amx, params[2], 0, len);
+	}
+
+	// Get the IGameClient from ReHLDS - index is 0-based for ReHLDS
+	IGameClient* client = RehldsSvs->GetClient(index - 1);
+	if (!client)
+	{
+		LogError(amx, AMX_ERR_NATIVE, "Could not get ReHLDS client for player %d", index);
+		return 0;
+	}
+
+	// Drop the client using ReHLDS API
+	// false = not a crash, reason is the disconnect message
+	if (reason[0] != '\0')
+	{
+		RehldsFuncs->DropClient(client, false, "%s", reason);
+	}
+	else
+	{
+		RehldsFuncs->DropClient(client, false, "Kicked by admin");
+	}
+
+	return 1;
+}
+
 AMX_NATIVE_INFO amxmodx_Natives[] =
 {
 	{"abort",					amx_abort},
@@ -4826,6 +4885,7 @@ AMX_NATIVE_INFO amxmodx_Natives[] =
 	{"is_user_connected",		is_user_connected},
 	{"is_user_connecting",		is_user_connecting},
 	{"is_user_hltv",			is_user_hltv},
+	{"ktp_drop_client",			ktp_drop_client},  // KTP: Drop client via ReHLDS API
 	{"lang_exists",				lang_exists},
 	{"log_amx",					log_amx},
 	{"log_message",				log_message},

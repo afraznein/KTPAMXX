@@ -8,9 +8,40 @@ Part of the [KTP Competitive Infrastructure](https://github.com/afraznein).
 
 ---
 
-## What's New in v2.5.0
+## What's New in v2.6.0
 
-### HLStatsX Integration
+### New Native: ktp_drop_client
+
+Drop clients via ReHLDS API, bypassing blocked kick console command:
+
+| Native | Purpose |
+|--------|---------|
+| `ktp_drop_client(id, const reason[] = "")` | Drop client via ReHLDS DropClient API |
+
+- Bypasses blocked kick command in KTP ReHLDS
+- Works in extension mode (no Metamod required)
+- Requires ReHLDS API to be available
+- Used by KTPAdminAudit for menu-based kick execution
+
+### New Include: ktp_discord.inc
+
+Shared Discord integration for KTP plugins:
+
+- Common configuration loading from `discord.ini`
+- Audit channel ID retrieval for logging
+- Used by: KTPAdminAudit, KTPCvarChecker, KTPFileChecker, KTPMatchHandler
+
+---
+
+## What's New in v2.5.x
+
+### v2.5.1 - DODX Player Team Name Native
+
+| Native | Purpose |
+|--------|---------|
+| `dodx_set_pl_teamname(id, szName[])` | Set player's team name in private data |
+
+### v2.5.0 - HLStatsX Integration
 
 New DODX natives enable match-based statistics tracking with KTPMatchHandler:
 
@@ -200,7 +231,7 @@ public client_cvar_changed(id, const cvar[], const value[]) {
 
 Check server console on startup:
 ```
-KTP AMX v2.5.0 loaded
+KTP AMX v2.6.0 loaded
 Core mode: JIT+ASM32
 Running as: ReHLDS Extension (or: Metamod Plugin)
 ```

@@ -18,6 +18,7 @@
 #include "amxxmodule.h"
 #include "CMisc.h"
 #include "CRank.h"
+#include <IGameConfigs.h>
 
 // KTP: First edict pointer for safe entity index calculation
 // This avoids calling engine functions in extension mode hooks
@@ -62,6 +63,18 @@ enum
 	DOD_SEQ_PRONE_DOWN,
 	DOD_SEQ_PRONE_UP
 };
+
+// KTP: Player private data offsets for scoreboard team name
+// Same offsets as dodfun module, but implemented here for extension mode compatibility
+#if defined(__linux__) || defined(__APPLE__)
+	#define STEAM_PDOFFSET_TEAMNAME (1400 + 5)  // Linux offset adjustment
+	#define STEAM_PDOFFSET_SCORE    (476 + 5)   // Player score
+	#define STEAM_PDOFFSET_DEATHS   (477 + 5)   // Player deaths
+#else
+	#define STEAM_PDOFFSET_TEAMNAME 1400        // Windows offset
+	#define STEAM_PDOFFSET_SCORE    476         // Player score
+	#define STEAM_PDOFFSET_DEATHS   477         // Player deaths
+#endif
 
 // Weapons Structure
 struct weapon_t 
@@ -124,6 +137,7 @@ extern int gmsgSetFOV_End;
 extern int gmsgObject;
 extern int gmsgObject_End;
 extern int gmsgPStatus;
+extern int gmsgTeamInfo;  // KTP: For scoreboard team name refresh
 
 extern int iFDamage;
 extern int iFDeath;
@@ -217,5 +231,18 @@ edict_t *FindEntityInSphere(edict_t *pentStart, edict_t *origin, float radius);
 
 #define GETEDICT(n) \
 	((n >= 1 && n <= gpGlobals->maxClients) ? MF_GetPlayerEdict(n) : INDEXENT(n))
+
+// KTP: Gamerules access for scoreboard score modification
+// Loaded from common.games gamedata - signature scan finds g_pGameRules
+extern IGameConfig *g_pCommonConfig;
+extern IGameConfig *g_pGamerulesConfig;
+extern void **g_pGameRulesAddress;  // Pointer to g_pGameRules pointer
+extern int g_iTeamScoreOffset;       // Offset of m_iTeamScores in CDoDTeamPlay (56)
+
+// Check if gamerules is available for score modification
+inline bool DODX_HasGameRules()
+{
+	return (g_pGameRulesAddress && *g_pGameRulesAddress);
+}
 
 #endif // DODX_H

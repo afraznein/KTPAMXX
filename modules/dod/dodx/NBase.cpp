@@ -616,7 +616,101 @@ static cell AMX_NATIVE_CALL dod_weaponlist(AMX *amx, cell *params) // player
 	return 1;
 }
 
+// KTP: Set player's team name in private data (extension mode compatible)
+// This affects server-side logs but NOT the scoreboard (DoD client hardcodes team names)
+// native dodx_set_pl_teamname(id, const szName[]);
+static cell AMX_NATIVE_CALL dodx_set_pl_teamname(AMX *amx, cell *params)
+{
+	int id = params[1];
+	if (id < 1 || id > gpGlobals->maxClients)
+		return 0;
 
+	edict_t* pEdict = MF_GetPlayerEdict(id);
+	if (!pEdict || !pEdict->pvPrivateData)
+		return 0;
+
+	int len;
+	const char* szName = MF_GetAmxString(amx, params[2], 0, &len);
+
+	// Copy exactly 16 bytes like dodfun does (null-padded)
+	char nameBuf[16] = {0};
+	int copyLen = (len < 15) ? len : 15;
+	memcpy(nameBuf, szName, copyLen);
+
+	// Copy all 16 bytes to private data
+	char* pTeamName = (char*)pEdict->pvPrivateData + STEAM_PDOFFSET_TEAMNAME;
+	for (int i = 0; i < 16; i++) {
+		pTeamName[i] = nameBuf[i];
+	}
+
+	return 1;
+}
+
+// KTP: Set team score in gamerules (modifies the scoreboard directly)
+// This allows restoring cumulative scores from 1st half when 2nd half starts
+// native dodx_set_team_score(team, score);
+static cell AMX_NATIVE_CALL dodx_set_team_score(AMX *amx, cell *params)
+{
+	// Check if gamerules is available
+	if (!DODX_HasGameRules())
+	{
+		MF_LogError(amx, AMX_ERR_NATIVE, "dodx_set_team_score: gamerules not available");
+		return 0;
+	}
+
+	int team = params[1];   // 1=Allies, 2=Axis
+	int score = params[2];
+
+	if (team < 1 || team > 2)
+	{
+		MF_LogError(amx, AMX_ERR_NATIVE, "dodx_set_team_score: invalid team %d (must be 1 or 2)", team);
+		return 0;
+	}
+
+	// m_iTeamScores is int[32] at offset g_iTeamScoreOffset in gamerules
+	// Team indices in DoD: 1=Allies, 2=Axis (same as array index)
+	int *pScores = (int*)((char*)*g_pGameRulesAddress + g_iTeamScoreOffset);
+	pScores[team] = score;
+
+	return 1;
+}
+
+// KTP: Get team score from gamerules (reads the scoreboard value directly)
+// native dodx_get_team_score(team);
+static cell AMX_NATIVE_CALL dodx_get_team_score(AMX *amx, cell *params)
+{
+	// Check if gamerules is available
+	if (!DODX_HasGameRules())
+	{
+		// Fallback to DODX tracked score (from TeamScore message)
+		int team = params[1];
+		switch (team)
+		{
+		case 1: return AlliesScore;
+		case 2: return AxisScore;
+		default: return 0;
+		}
+	}
+
+	int team = params[1];   // 1=Allies, 2=Axis
+
+	if (team < 1 || team > 2)
+	{
+		MF_LogError(amx, AMX_ERR_NATIVE, "dodx_get_team_score: invalid team %d (must be 1 or 2)", team);
+		return 0;
+	}
+
+	// m_iTeamScores is int[32] at offset g_iTeamScoreOffset in gamerules
+	int *pScores = (int*)((char*)*g_pGameRulesAddress + g_iTeamScoreOffset);
+	return pScores[team];
+}
+
+// KTP: Check if gamerules score modification is available
+// native dodx_has_gamerules();
+static cell AMX_NATIVE_CALL dodx_has_gamerules(AMX *amx, cell *params)
+{
+	return DODX_HasGameRules() ? 1 : 0;
+}
 
 AMX_NATIVE_INFO base_Natives[] = 
 {
@@ -664,6 +758,14 @@ AMX_NATIVE_INFO base_Natives[] =
 	{"dod_clear_model",		dod_clear_model},
 	{"dod_set_weaponlist",	dod_weaponlist},
 
+	// KTP: Scoreboard team name (extension mode compatible)
+	{"dodx_set_pl_teamname", dodx_set_pl_teamname},
+
+	// KTP: Gamerules score modification (scoreboard scores)
+	{"dodx_set_team_score", dodx_set_team_score},
+	{"dodx_get_team_score", dodx_get_team_score},
+	{"dodx_has_gamerules", dodx_has_gamerules},
+
 	///*******************
-	{ NULL, NULL } 
+	{ NULL, NULL }
 };

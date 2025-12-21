@@ -208,4 +208,47 @@ native dodx_set_match_id(const matchId[]);
  */
 native dodx_get_match_id(output[], maxlen);
 
+/**
+ * Set player's team name in private data.
+ * This affects server-side logs but NOT the scoreboard column
+ * (DoD client hardcodes "Allies"/"Axis" team names).
+ * Works in extension mode (no metamod required).
+ *
+ * @param id        Player index
+ * @param szName    Team name string (max 15 chars)
+ * @return          1 on success, 0 on failure
+ */
+native dodx_set_pl_teamname(id, const szName[]);
+
+// =============== KTP: Gamerules Score Modification ===============
+
+/**
+ * Check if gamerules score modification is available.
+ * Returns true if dodx_set_team_score/dodx_get_team_score will work.
+ * Requires g_pGameRules address to be found via gamedata signature.
+ *
+ * @return          1 if available, 0 if not
+ */
+native dodx_has_gamerules();
+
+/**
+ * Set team score in gamerules (modifies the scoreboard directly).
+ * This allows restoring cumulative scores from 1st half when 2nd half starts.
+ * The score is written directly to CDoDTeamPlay::m_iTeamScores array.
+ *
+ * @param team      Team index (1=Allies, 2=Axis)
+ * @param score     Score value to set
+ * @return          1 on success, 0 on failure (gamerules not available)
+ */
+native dodx_set_team_score(team, score);
+
+/**
+ * Get team score from gamerules (reads the scoreboard value directly).
+ * If gamerules is not available, falls back to DODX message-tracked score.
+ *
+ * @param team      Team index (1=Allies, 2=Axis)
+ * @return          Current team score
+ */
+native dodx_get_team_score(team);
+
 // ==================================================================

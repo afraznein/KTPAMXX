@@ -5,6 +5,74 @@ All notable changes to KTP AMX will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.0] - 2025-12-21
+
+### Added
+
+#### New Native: ktp_drop_client
+New native for dropping clients via ReHLDS API, bypassing blocked kick console command:
+
+**New Native:**
+- **`ktp_drop_client(id, const reason[] = "")`** - Drop client using ReHLDS DropClient API
+  - Bypasses blocked kick command in KTP ReHLDS
+  - Works in extension mode (no Metamod required)
+  - Requires ReHLDS API to be available
+  - Returns 1 on success, 0 on failure
+
+**Use Case:**
+- KTPAdminAudit uses this to execute kicks after menu-based admin approval
+- Allows kick functionality when console `kick` command is blocked at engine level
+
+#### New Include: ktp_discord.inc
+Shared Discord integration include for KTP plugins:
+
+**Features:**
+- Common Discord configuration loading from `discord.ini`
+- Audit channel ID retrieval
+- Shared webhook/relay integration pattern
+
+**Plugins using this include:**
+- KTPAdminAudit
+- KTPCvarChecker
+- KTPFileChecker
+- KTPMatchHandler
+
+### Technical Details
+- Native implemented in `amxmodx.cpp`
+- Uses `g_RehldsApi->GetFuncs()->DropClient()` for direct client drop
+- Include file location: `plugins/include/ktp_discord.inc`
+
+---
+
+## [2.5.1] - 2025-12-20
+
+### Added
+
+#### DODX Module - Player Team Name Native
+New native for setting player team names in private data (extension mode compatible):
+
+**New Native:**
+- **`dodx_set_pl_teamname(id, szName[])`** - Set player's team name in private data
+  - Affects server-side logging (team name in kill logs, etc.)
+  - Works in extension mode (no Metamod required)
+  - Max 15 characters + null terminator
+  - Note: Does NOT affect scoreboard (DoD client hardcodes "Allies"/"Axis")
+
+**New Defines (dodx.h):**
+- `STEAM_PDOFFSET_TEAMNAME` - Player private data offset for team name (1400 Windows, 1405 Linux)
+- `STEAM_PDOFFSET_SCORE` - Player score offset
+- `STEAM_PDOFFSET_DEATHS` - Player deaths offset
+
+**New Message Registration:**
+- `gmsgTeamInfo` - For potential future scoreboard refresh functionality
+
+### Technical Details
+- Native implemented in `NBase.cpp`
+- Uses same offsets as dodfun module for compatibility
+- 16-byte null-padded copy to match engine expectations
+
+---
+
 ## [2.5.0] - 2025-12-18
 
 ### Added
@@ -399,6 +467,8 @@ See [AMX Mod X releases](https://github.com/alliedmodders/amxmodx/releases) for 
 
 | Version | Date | Description |
 |---------|------|-------------|
+| 2.6.0 | 2025-12-21 | ktp_drop_client native, ktp_discord.inc shared include |
+| 2.5.1 | 2025-12-20 | DODX dodx_set_pl_teamname native for player team names |
 | 2.5.0 | 2025-12-18 | HLStatsX integration: match ID, stats flush/reset natives |
 | 2.4.0 | 2025-12-16 | DODX shot tracking, module SDK extensions, log file fix, debug cleanup |
 | 2.3.0 | 2025-12-14 | DODX extension mode complete, TraceLine hook, stats_logging crash fix |
@@ -407,6 +477,8 @@ See [AMX Mod X releases](https://github.com/alliedmodders/amxmodx/releases) for 
 | 2.0.0 | 2024-12-04 | Major release: ReHLDS extension mode, KTP branding, client_cvar_changed |
 | 1.10.0 | - | Base fork from AMX Mod X |
 
+[2.6.0]: https://github.com/afraznein/KTPAMXX/releases/tag/v2.6.0
+[2.5.1]: https://github.com/afraznein/KTPAMXX/releases/tag/v2.5.1
 [2.5.0]: https://github.com/afraznein/KTPAMXX/releases/tag/v2.5.0
 [2.4.0]: https://github.com/afraznein/KTPAMXX/releases/tag/v2.4.0
 [2.3.0]: https://github.com/afraznein/KTPAMXX/releases/tag/v2.3.0
