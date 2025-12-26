@@ -101,6 +101,8 @@ support/amxmodx/
 # KTP AMX build artifacts and local files
 KTPAMXX/
 KTP_AMX Files/
+CLAUDE.md
+build_linux.sh
 
 # Build output directories
 obj-linux/

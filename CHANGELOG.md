@@ -5,6 +5,29 @@ All notable changes to KTP AMX will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.1] - 2025-12-26
+
+### Changed
+
+#### ktp_discord.inc v1.1.0
+Major rewrite of Discord integration include:
+
+- **AMXX curl module** - Switched from `server_cmd("curl...")` to proper AMXX curl module
+  - `server_cmd()` cannot execute shell commands on Linux servers
+  - Now uses `curl_easy_init()`, `curl_easy_perform()` with async callbacks
+- **Fixed JSON field names** - Match Discord Relay API expectations
+  - `channel_id` → `channelId`
+  - `payload.embeds` → `embeds` (top level)
+- **Added curl cleanup** - Proper `curl_easy_cleanup()` and `curl_slist_free_all()` in callback
+- **Debug logging** - Added `log_amx()` calls for troubleshooting Discord issues
+
+#### reapi_engine_const.inc
+- **RH_SV_Rcon hook** - Added enum constant for new KTP-ReHLDS RCON audit hook
+  - Parameters: `(const command[], const from_ip[], bool:is_valid)`
+  - Used by KTPAdminAudit v2.2.0 for RCON command logging
+
+---
+
 ## [2.6.0] - 2025-12-21
 
 ### Added
@@ -73,7 +96,7 @@ New native for setting player team names in private data (extension mode compati
 
 ---
 
-## [2.5.0] - 2025-12-18
+## [2.5.0] - 2025-12-19
 
 ### Added
 
@@ -367,7 +390,7 @@ The extension mode now properly handles the map change sequence:
 
 ---
 
-## [2.0.0] - 2024-12-04
+## [2.0.0] - 2025-12-04
 
 ### Added
 
@@ -467,16 +490,18 @@ See [AMX Mod X releases](https://github.com/alliedmodders/amxmodx/releases) for 
 
 | Version | Date | Description |
 |---------|------|-------------|
+| 2.6.1 | 2025-12-26 | ktp_discord.inc v1.1.0 (curl module), RH_SV_Rcon hook constant |
 | 2.6.0 | 2025-12-21 | ktp_drop_client native, ktp_discord.inc shared include |
 | 2.5.1 | 2025-12-20 | DODX dodx_set_pl_teamname native for player team names |
-| 2.5.0 | 2025-12-18 | HLStatsX integration: match ID, stats flush/reset natives |
+| 2.5.0 | 2025-12-19 | HLStatsX integration: match ID, stats flush/reset natives |
 | 2.4.0 | 2025-12-16 | DODX shot tracking, module SDK extensions, log file fix, debug cleanup |
 | 2.3.0 | 2025-12-14 | DODX extension mode complete, TraceLine hook, stats_logging crash fix |
 | 2.2.0 | 2025-12-08 | register_event/register_logevent extension mode, module API |
 | 2.1.0 | 2025-12-06 | Map change support, client commands, menu systems in extension mode |
-| 2.0.0 | 2024-12-04 | Major release: ReHLDS extension mode, KTP branding, client_cvar_changed |
+| 2.0.0 | 2025-12-04 | Major release: ReHLDS extension mode, KTP branding, client_cvar_changed |
 | 1.10.0 | - | Base fork from AMX Mod X |
 
+[2.6.1]: https://github.com/afraznein/KTPAMXX/releases/tag/v2.6.1
 [2.6.0]: https://github.com/afraznein/KTPAMXX/releases/tag/v2.6.0
 [2.5.1]: https://github.com/afraznein/KTPAMXX/releases/tag/v2.5.1
 [2.5.0]: https://github.com/afraznein/KTPAMXX/releases/tag/v2.5.0

@@ -136,7 +136,7 @@ if [ -f "$BINARY_PATH" ]; then
 
     # Deploy to staging folder for easy VPS upload
     # This is a Windows path accessed via WSL
-    DEPLOY_DIR="/mnt/n/Nein_/KTP DoD Server"
+    DEPLOY_DIR="/mnt/n/Nein_/KTP Git Projects/KTP DoD Server/serverfiles"
     if [ -d "$DEPLOY_DIR" ]; then
         echo "Deploying to staging folder..."
 

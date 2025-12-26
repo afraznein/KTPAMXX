@@ -2,12 +2,17 @@
  * KTP Discord Integration - Shared Include File
  *
  * Provides standardized Discord webhook functionality for all KTP plugins.
- * Uses discord.ini for configuration and curl for HTTP requests.
+ * Uses discord.ini for configuration and AMXX curl module for HTTP requests.
  *
  * AUTHOR: Nein_
- * VERSION: 1.0.0
- * DATE: 2025-12-20
+ * VERSION: 1.1.0
+ * DATE: 2025-12-21
  * GITHUB: https://github.com/KTP-Community
+ *
+ * CHANGELOG:
+ * v1.1.0 (2025-12-21)
+ *   * FIXED: Use AMXX curl module instead of server_cmd() which can't execute shell commands
+ *   * REQUIRES: curl module (curl_amxx.so / curl_amxx.dll)
  *
  * ========== USAGE ==========
  * #include <ktp_discord>
@@ -48,6 +53,11 @@
     #include <amxmisc>
 #endif
 
+// Requires curl module for HTTP requests
+#if !defined _curl_included
+    #include <curl>
+#endif
+
 // Note: Not using #pragma semicolon 1 to maintain compatibility with plugins
 // that don't use semicolons. The include itself uses semicolons consistently.
 
@@ -55,7 +65,7 @@
 // CONSTANTS
 // ============================================================================
 
-#define KTP_DISCORD_VERSION "1.0.0"
+#define KTP_DISCORD_VERSION "1.1.0"
 
 // Channel types
 #define KTP_DISCORD_CHANNEL_DEFAULT     0   // Main channel (discord_channel_id)
@@ -94,13 +104,16 @@ new g_ktpDiscordAuditChannelCount = 0;
 new bool:g_ktpDiscordConfigLoaded = false;
 new bool:g_ktpDiscordEnabled = false;
 
-// Temp file for curl responses
+// Temp file for curl responses (no longer used, kept for compatibility)
 new g_ktpDiscordTempFile[128];
+
+// Curl state
+new curl_slist:g_ktpDiscordCurlHeaders = SList_Empty;
+new g_ktpDiscordAuthHeader[192];
 
 // Reusable buffers (to avoid stack overflow)
 new g_ktpDiscordEscapedBuf[512];
 new g_ktpDiscordPayloadBuf[1024];
-new g_ktpDiscordCmdBuf[2048];
 
 // ============================================================================
 // CONFIGURATION LOADING
@@ -397,9 +410,9 @@ stock bool:ktp_discord_send_to(channelType, const message[])
     // Escape message for JSON
     ktp_discord_escape_json(message, g_ktpDiscordEscapedBuf, charsmax(g_ktpDiscordEscapedBuf));
 
-    // Build payload
+    // Build payload (use channelId camelCase to match relay API)
     formatex(g_ktpDiscordPayloadBuf, charsmax(g_ktpDiscordPayloadBuf),
-        "{^"channel_id^":^"%s^",^"content^":^"%s^"}",
+        "{^"channelId^":^"%s^",^"content^":^"%s^"}",
         channelId, g_ktpDiscordEscapedBuf);
 
     // Send via curl
@@ -415,6 +428,7 @@ stock bool:ktp_discord_send_to(channelType, const message[])
  */
 stock ktp_discord_send_audit(const message[])
 {
+    log_amx("[KTP Discord] send_audit called, enabled=%d, audit_channels=%d", g_ktpDiscordEnabled, g_ktpDiscordAuditChannelCount);
     if (!g_ktpDiscordEnabled || g_ktpDiscordAuditChannelCount == 0) return 0;
 
     // Escape message once
@@ -424,9 +438,9 @@ stock ktp_discord_send_audit(const message[])
     for (new i = 0; i < g_ktpDiscordAuditChannelCount; i++) {
         if (!g_ktpDiscordAuditChannels[i][0]) continue;
 
-        // Build payload for this channel
+        // Build payload for this channel (use channelId camelCase to match relay API)
         formatex(g_ktpDiscordPayloadBuf, charsmax(g_ktpDiscordPayloadBuf),
-            "{^"channel_id^":^"%s^",^"content^":^"%s^"}",
+            "{^"channelId^":^"%s^",^"content^":^"%s^"}",
             g_ktpDiscordAuditChannels[i], g_ktpDiscordEscapedBuf);
 
         ktp_discord_send_raw(g_ktpDiscordPayloadBuf);
@@ -480,9 +494,9 @@ stock bool:ktp_discord_send_embed_to(channelType, const title[], const descripti
     new escapedServer[128];
     ktp_discord_escape_json(serverName, escapedServer, charsmax(escapedServer));
 
-    // Build embed payload
+    // Build embed payload (use channelId camelCase, embeds at top level to match relay API)
     formatex(g_ktpDiscordPayloadBuf, charsmax(g_ktpDiscordPayloadBuf),
-        "{^"channel_id^":^"%s^",^"payload^":{^"embeds^":[{^"title^":^"%s^",^"description^":^"%s^",^"color^":%d,^"footer^":{^"text^":^"%s - %s^"}}]}}",
+        "{^"channelId^":^"%s^",^"embeds^":[{^"title^":^"%s^",^"description^":^"%s^",^"color^":%d,^"footer^":{^"text^":^"%s - %s^"}}]}",
         channelId, escapedTitle, escapedDesc, color, escapedServer, mapName);
 
     ktp_discord_send_raw(g_ktpDiscordPayloadBuf);
@@ -499,6 +513,7 @@ stock bool:ktp_discord_send_embed_to(channelType, const title[], const descripti
  */
 stock ktp_discord_send_embed_audit(const title[], const description[], color = KTP_DISCORD_COLOR_BLUE)
 {
+    log_amx("[KTP Discord] send_embed_audit called, title='%s', enabled=%d, audit_channels=%d", title, g_ktpDiscordEnabled, g_ktpDiscordAuditChannelCount);
     if (!g_ktpDiscordEnabled || g_ktpDiscordAuditChannelCount == 0) return 0;
 
     // Escape strings once
@@ -518,11 +533,13 @@ stock ktp_discord_send_embed_audit(const title[], const description[], color = K
     for (new i = 0; i < g_ktpDiscordAuditChannelCount; i++) {
         if (!g_ktpDiscordAuditChannels[i][0]) continue;
 
-        // Build embed payload for this channel
+        // Build embed payload for this channel (use channelId camelCase, embeds at top level)
         formatex(g_ktpDiscordPayloadBuf, charsmax(g_ktpDiscordPayloadBuf),
-            "{^"channel_id^":^"%s^",^"payload^":{^"embeds^":[{^"title^":^"%s^",^"description^":^"%s^",^"color^":%d,^"footer^":{^"text^":^"%s - %s^"}}]}}",
+            "{^"channelId^":^"%s^",^"embeds^":[{^"title^":^"%s^",^"description^":^"%s^",^"color^":%d,^"footer^":{^"text^":^"%s - %s^"}}]}",
             g_ktpDiscordAuditChannels[i], escapedTitle, escapedDesc, color, escapedServer, mapName);
 
+        log_amx("[KTP Discord] Sending to audit channel[%d]='%s'", i, g_ktpDiscordAuditChannels[i]);
+        log_amx("[KTP Discord] Payload: %s", g_ktpDiscordPayloadBuf);
         ktp_discord_send_raw(g_ktpDiscordPayloadBuf);
         sent++;
     }
@@ -544,13 +561,8 @@ stock ktp_discord_send_raw(const payload[])
 {
     if (!g_ktpDiscordRelayUrl[0] || !g_ktpDiscordAuthSecret[0]) return;
 
-    // Build curl command
-    // Note: Using ^" for quotes inside the command string
-    formatex(g_ktpDiscordCmdBuf, charsmax(g_ktpDiscordCmdBuf),
-        "curl -s -X POST ^"%s/send^" -H ^"Content-Type: application/json^" -H ^"X-Auth-Secret: %s^" -d ^"%s^" -o ^"%s^" &",
-        g_ktpDiscordRelayUrl, g_ktpDiscordAuthSecret, payload, g_ktpDiscordTempFile);
-
-    server_cmd(g_ktpDiscordCmdBuf);
+    // Use AMXX curl module for proper HTTP requests
+    ktp_discord_curl_post(g_ktpDiscordRelayUrl, payload);
 }
 
 /**
@@ -563,11 +575,77 @@ stock ktp_discord_send_raw_to(const endpoint[], const payload[])
 {
     if (!g_ktpDiscordAuthSecret[0]) return;
 
-    formatex(g_ktpDiscordCmdBuf, charsmax(g_ktpDiscordCmdBuf),
-        "curl -s -X POST ^"%s^" -H ^"Content-Type: application/json^" -H ^"X-Auth-Secret: %s^" -d ^"%s^" -o ^"%s^" &",
-        endpoint, g_ktpDiscordAuthSecret, payload, g_ktpDiscordTempFile);
+    // Use AMXX curl module for proper HTTP requests
+    ktp_discord_curl_post(endpoint, payload);
+}
 
-    server_cmd(g_ktpDiscordCmdBuf);
+/**
+ * Internal: Perform a POST request using AMXX curl module
+ *
+ * @param url       URL to POST to
+ * @param payload   JSON payload string
+ */
+stock ktp_discord_curl_post(const url[], const payload[])
+{
+    log_amx("[KTP Discord] curl_post called, url=%s", url);
+
+    new CURL:curl = curl_easy_init();
+    if (!curl) {
+        log_amx("[KTP Discord] Failed to initialize curl");
+        return;
+    }
+
+    // Free any previous headers
+    if (g_ktpDiscordCurlHeaders != SList_Empty) {
+        curl_slist_free_all(g_ktpDiscordCurlHeaders);
+        g_ktpDiscordCurlHeaders = SList_Empty;
+    }
+
+    // Set URL
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+
+    // Disable SSL verification (server may not have CA bundle)
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
+
+    // Build headers (X-Relay-Auth matches the relay API expectation)
+    g_ktpDiscordCurlHeaders = curl_slist_append(SList_Empty, "Content-Type: application/json");
+    formatex(g_ktpDiscordAuthHeader, charsmax(g_ktpDiscordAuthHeader), "X-Relay-Auth: %s", g_ktpDiscordAuthSecret);
+    g_ktpDiscordCurlHeaders = curl_slist_append(g_ktpDiscordCurlHeaders, g_ktpDiscordAuthHeader);
+
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, g_ktpDiscordCurlHeaders);
+
+    // Set POST data
+    curl_easy_setopt(curl, CURLOPT_COPYPOSTFIELDS, payload);
+
+    // Set timeout (5 seconds)
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5);
+
+    // Perform request asynchronously
+    log_amx("[KTP Discord] Performing curl request...");
+    curl_easy_perform(curl, "ktp_discord_curl_callback");
+}
+
+/**
+ * Callback for curl requests
+ */
+public ktp_discord_curl_callback(CURL:curl, CURLcode:code)
+{
+    if (code != CURLE_OK) {
+        new error[128];
+        curl_easy_strerror(code, error, charsmax(error));
+        log_amx("[KTP Discord] curl error: %s (code %d)", error, code);
+    } else {
+        log_amx("[KTP Discord] curl request successful");
+    }
+
+    // Cleanup curl handle
+    curl_easy_cleanup(curl);
+
+    // Free headers
+    if (g_ktpDiscordCurlHeaders != SList_Empty) {
+        curl_slist_free_all(g_ktpDiscordCurlHeaders);
+        g_ktpDiscordCurlHeaders = SList_Empty;
+    }
 }
 
 // ============================================================================
