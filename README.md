@@ -8,9 +8,22 @@ Part of the [KTP Competitive Infrastructure](https://github.com/afraznein).
 
 ---
 
-## What's New in v2.6.0
+## What's New in v2.6.1
 
-### New Native: ktp_drop_client
+### ktp_discord.inc v1.1.0
+
+Major rewrite of Discord integration include:
+- **AMXX curl module** - Switched from `server_cmd("curl...")` to proper curl module
+- **Fixed JSON field names** - Match Discord Relay API expectations
+- **Added curl cleanup** - Proper resource management in callbacks
+
+### RH_SV_Rcon Hook Constant
+
+Added `RH_SV_Rcon` enum constant for KTP-ReHLDS RCON audit hook.
+
+---
+
+## v2.6.0 - New Native: ktp_drop_client
 
 Drop clients via ReHLDS API, bypassing blocked kick console command:
 
