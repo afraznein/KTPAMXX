@@ -1710,19 +1710,44 @@ void DODX_RegisterMessageHooks()
 	}
 }
 
-// KTP: BSP entity lump parser — reads point_index keyvalues for dod_control_point entities.
-// The game DLL orders CPs by point_index (1-based) from the BSP entity lump.
-// SetObj cp_index = point_index - 1. FindEntityByClassname iteration order (edict number)
-// does NOT match this ordering, so we must read point_index from the BSP and reorder.
+// KTP: BSP entity lump parser — reads point_index and point_default_owner keyvalues
+// for dod_control_point entities.
+//
+// point_index: the game DLL orders CPs by point_index (1-based) from the BSP entity
+// lump. SetObj cp_index = point_index - 1. FindEntityByClassname iteration order
+// (edict number) does NOT match this ordering, so we must read point_index from the
+// BSP and reorder.
+//
+// point_default_owner: the team that owns the CP at round start (0/absent neutral,
+// 1 allies, 2 axis). In extension mode this is the ONLY source for it — the pdata
+// `owner`/`default_owner` fields read as 0 for every CP, and the engine only sends
+// SetObj when a CP actually changes hands, so a map whose flags are never captured
+// would report every flag neutral for its entire lifetime. See
+// DoD-hud-observer/docs/dodx-cp-index-space-findings.md.
 struct bsp_cp_info {
-	int point_index;
+	int point_index;      // -1 when the entity carries no point_index key
+	int default_owner;    // 0 neutral / 1 allies / 2 axis (0 when key absent)
 	float origin_x;
 	float origin_y;
 	float origin_z;
 };
 
-static int DODX_ReadBSPPointIndices(bsp_cp_info *cpInfo, int maxCPs)
+// Fills cpInfo with EVERY dod_control_point in the BSP (in entity-lump order) and
+// returns that count. *outWithIndex receives how many of them carried a usable
+// point_index — the reorder gate keys off that, NOT the return value, so adding
+// default-owner parsing does not change ordering behaviour.
+//
+// One behavioural caveat: the maxCPs cutoff now counts every CP, where before it
+// counted only indexed ones. On a map with more than maxCPs total CP entities that
+// mixes indexed and non-indexed ones, parsing could stop before a later indexed
+// entity the old code would still have reached. Moot in practice — mObjects itself
+// caps at 12 and no DoD map ships more than 9 CPs — but it is the one input the
+// reorder no longer sees identically.
+static int DODX_ReadBSPControlPoints(bsp_cp_info *cpInfo, int maxCPs, int *outWithIndex)
 {
+	if (outWithIndex)
+		*outWithIndex = 0;
+
 	const char *mapName = STRING(gpGlobals->mapname);
 
 	// Build path using game directory (MF_BuildPathnameR prepends mod dir)
@@ -1800,6 +1825,7 @@ static int DODX_ReadBSPPointIndices(bsp_cp_info *cpInfo, int maxCPs)
 
 		char classname[64] = "";
 		int point_index = -1;
+		int default_owner = 0;
 		float origin_x = 0, origin_y = 0, origin_z = 0;
 
 		while (*pos && *pos != '}')
@@ -1837,6 +1863,8 @@ static int DODX_ReadBSPPointIndices(bsp_cp_info *cpInfo, int maxCPs)
 				strncpy(classname, value, 63);
 			else if (strcmp(key, "point_index") == 0)
 				point_index = atoi(value);
+			else if (strcmp(key, "point_default_owner") == 0)
+				default_owner = atoi(value);
 			else if (strcmp(key, "origin") == 0)
 				sscanf(value, "%f %f %f", &origin_x, &origin_y, &origin_z);
 		}
@@ -1846,20 +1874,20 @@ static int DODX_ReadBSPPointIndices(bsp_cp_info *cpInfo, int maxCPs)
 		if (strcmp(classname, "dod_control_point") == 0)
 		{
 			totalDCP++;
-			if (point_index >= 0)
-			{
-				cpInfo[cpCount].point_index = point_index;
-				cpInfo[cpCount].origin_x = origin_x;
-				cpInfo[cpCount].origin_y = origin_y;
-				cpInfo[cpCount].origin_z = origin_z;
-				cpCount++;
-			}
+			cpInfo[cpCount].point_index = point_index;
+			cpInfo[cpCount].default_owner = default_owner;
+			cpInfo[cpCount].origin_x = origin_x;
+			cpInfo[cpCount].origin_y = origin_y;
+			cpInfo[cpCount].origin_z = origin_z;
+			if (point_index >= 0 && outWithIndex)
+				(*outWithIndex)++;
+			cpCount++;
 		}
 	}
 
 	free(entData);
 	MF_Log("[DODX] BSP: Parsed %s — %d dod_control_point, %d with point_index",
-		mapName, totalDCP, cpCount);
+		mapName, totalDCP, outWithIndex ? *outWithIndex : 0);
 	return cpCount;
 }
 
@@ -1908,12 +1936,62 @@ static void DODX_InitCPFromEntities()
 
 	if (mObjects.count > 0)
 	{
+		// One BSP parse, two consumers: default ownership (below) and the
+		// point_index reorder (further down). bspAll holds EVERY dod_control_point;
+		// bspWithIndex counts the subset carrying a usable point_index, which is the
+		// only thing the reorder gate may key off.
+		bsp_cp_info bspAll[12];
+		int bspWithIndex = 0;
+		int bspTotal = DODX_ReadBSPControlPoints(bspAll, 12, &bspWithIndex);
+
+		// Seed default/current ownership from the BSP, matched by origin (the same
+		// identifier the reorder uses — targetname is empty on many maps). Done
+		// BEFORE any reordering, and the reorder moves whole objinfo_t structs, so
+		// the values travel with their CP either way.
+		//
+		// Without this, `owner` starts at 0 (neutral) for every CP: the pdata
+		// `owner` field reads as 0, and the engine only broadcasts SetObj when a CP
+		// actually changes hands — so on a map with default-owned flags (dod_donner,
+		// dod_kalt, dod_saints2_*) every consumer reports neutral until the flag is
+		// captured, and a round restart does not heal it.
+		for (int oi = 0; oi < mObjects.count; oi++)
+		{
+			bool matched = false;
+			for (int bi = 0; bi < bspTotal; bi++)
+			{
+				float dx = mObjects.obj[oi].origin_x - bspAll[bi].origin_x;
+				float dy = mObjects.obj[oi].origin_y - bspAll[bi].origin_y;
+				if (dx > -1.0f && dx < 1.0f && dy > -1.0f && dy < 1.0f)
+				{
+					mObjects.obj[oi].default_owner = bspAll[bi].default_owner;
+					mObjects.obj[oi].owner = bspAll[bi].default_owner;
+					matched = true;
+					break;
+				}
+			}
+			// Log the miss. Without it a failed match is indistinguishable from a
+			// genuinely neutral map: default_owner just stays at the pdata read,
+			// which is 0 for every CP — i.e. it looks fixed and silently isn't.
+			if (!matched)
+			{
+				MF_Log("[DODX] BSP: no default_owner match for CP[%d] origin=(%.0f,%.0f) — leaving owner=%d",
+					oi, mObjects.obj[oi].origin_x, mObjects.obj[oi].origin_y, mObjects.obj[oi].owner);
+			}
+		}
+
 		// Reorder mObjects by BSP point_index to match game DLL's SetObj cp_index.
 		// SetObj cp_index = point_index - 1 (point_index is 1-based in the BSP).
 		if (mObjects.count > 1)
 		{
+			// Filtered view: only entries with a usable point_index, preserving the
+			// exact input the reorder saw before default-owner parsing existed.
 			bsp_cp_info bspCPs[12];
-			int bspCount = DODX_ReadBSPPointIndices(bspCPs, 12);
+			int bspCount = 0;
+			for (int bi = 0; bi < bspTotal && bspCount < bspWithIndex; bi++)
+			{
+				if (bspAll[bi].point_index >= 0)
+					bspCPs[bspCount++] = bspAll[bi];
+			}
 
 			if (bspCount == mObjects.count)
 			{
@@ -1993,12 +2071,13 @@ static void DODX_InitCPFromEntities()
 			}
 			else if (bspCount > 0)
 			{
-				MF_Log("[DODX] BSP CP count (%d) != entity scan count (%d), skipping reorder",
+				MF_Log("[DODX] BSP CP count with point_index (%d) != entity scan count (%d), skipping reorder",
 					bspCount, mObjects.count);
 			}
 			else
 			{
-				MF_Log("[DODX] BSP parse returned 0 CPs — using entity scan order");
+				MF_Log("[DODX] BSP: no CP carries point_index (%d parsed) — using entity scan order",
+					bspTotal);
 			}
 		}
 
@@ -2008,8 +2087,9 @@ static void DODX_InitCPFromEntities()
 			edict_t *pe = mObjects.obj[i].pEdict;
 			const char *tn = pe ? STRING(pe->v.targetname) : "?";
 			const char *nn = pe ? STRING(pe->v.netname) : "?";
-			MF_Log("[DODX]   CP[%d] point_index=%d owner=%d targetname='%s' netname='%s'",
-				i, mObjects.obj[i].index, mObjects.obj[i].owner, tn, nn);
+			MF_Log("[DODX]   CP[%d] point_index=%d owner=%d default_owner=%d targetname='%s' netname='%s'",
+				i, mObjects.obj[i].index, mObjects.obj[i].owner,
+				mObjects.obj[i].default_owner, tn, nn);
 		}
 
 		if (iFInitCP >= 0)
