@@ -1864,7 +1864,17 @@ static int DODX_ReadBSPControlPoints(bsp_cp_info *cpInfo, int maxCPs, int *outWi
 			else if (strcmp(key, "point_index") == 0)
 				point_index = atoi(value);
 			else if (strcmp(key, "point_default_owner") == 0)
+			{
+				// Clamp at the parse site: this value is map-supplied and reaches
+				// WRITE_BYTE (CMisc.cpp) and Pawn (CP_owner / CP_default_owner).
+				// Out of range is not a crash — MSG_WriteByte casts without a range
+				// error — but a nonsense value would truncate to something plausible,
+				// and a public fork should not propagate it. 0=neutral, 1=allies,
+				// 2=axis; anything else is treated as neutral.
 				default_owner = atoi(value);
+				if (default_owner < 0 || default_owner > 2)
+					default_owner = 0;
+			}
 			else if (strcmp(key, "origin") == 0)
 				sscanf(value, "%f %f %f", &origin_x, &origin_y, &origin_z);
 		}
@@ -1954,17 +1964,25 @@ static void DODX_InitCPFromEntities()
 		// actually changes hands — so on a map with default-owned flags (dod_donner,
 		// dod_kalt, dod_saints2_*) every consumer reports neutral until the flag is
 		// captured, and a round restart does not heal it.
+		// Consume matches one-to-one, same as the reorder below. Without this the
+		// match is many-to-one and silently first-wins: two CPs stacked in z, or
+		// two entities that both fell back to origin (0,0,0) because the key was
+		// absent, would take the same BSP entry with no diagnostic.
+		bool bspUsed[12] = {};
+
 		for (int oi = 0; oi < mObjects.count; oi++)
 		{
 			bool matched = false;
 			for (int bi = 0; bi < bspTotal; bi++)
 			{
+				if (bspUsed[bi]) continue;
 				float dx = mObjects.obj[oi].origin_x - bspAll[bi].origin_x;
 				float dy = mObjects.obj[oi].origin_y - bspAll[bi].origin_y;
 				if (dx > -1.0f && dx < 1.0f && dy > -1.0f && dy < 1.0f)
 				{
 					mObjects.obj[oi].default_owner = bspAll[bi].default_owner;
 					mObjects.obj[oi].owner = bspAll[bi].default_owner;
+					bspUsed[bi] = true;
 					matched = true;
 					break;
 				}
