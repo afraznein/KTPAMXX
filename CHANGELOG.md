@@ -9,9 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.7.26] - 2026-08-08
 
-DODX-only delta over 2.7.25 (`dodx_ktp_i386.so`; core unchanged, no `.inc` change, so no dependent
-plugin needs recompiling). Contributed as [#9](https://github.com/afraznein/KTPAMXX/pull/9) by
-JimmyLockhart65616 and rebased onto master here.
+DODX-only delta over 2.7.25. Contributed as [#9](https://github.com/afraznein/KTPAMXX/pull/9) by
+JimmyLockhart65616 and rebased onto master here. No `.inc` change, so no dependent plugin needs
+recompiling.
+
+**Shipping artifact — `dodx_ktp_i386.so` md5 `c2975aedf0cc8da640efd1af2b791b3a`** (built 2026-08-08
+from `3bd51b2d`, `build_linux.sh`, GLIBC 2.35 / Ubuntu 22.04).
+⚠️ **Do not rebuild to re-verify** — AMXX bakes a per-minute build timestamp, so a rebuild churns
+this md5 and you would stage a binary nobody reviewed. Verify by this md5, never by the banner.
+
+> **Core source is unchanged, but the core BINARY is not identical** — `product.version` feeds
+> `support/generate_headers.py`, so the version bump alone changes `ktpamx_i386.so` (this build:
+> `80decf574c51bbabb1aa327cb5f0f0fd`). Only the DODX artifact is meant to ship here; the core is a
+> byproduct of the build, exactly as in the 2.7.23 DODX-only cut. The only source files that differ
+> from 2.7.25 are `modules/dod/dodx/moduleconfig.cpp`, `CHANGELOG.md` and `product.version`.
 
 > **Includes everything in 2.7.25, which never shipped.** 2.7.25 was cut and review-corrected but no
 > fleet instance ever ran it — the fleet is still on 2.7.24 (`d599452d…`) with nothing staged. This
