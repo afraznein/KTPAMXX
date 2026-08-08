@@ -1666,10 +1666,10 @@ void DODX_RegisterMessageHooks()
 // BSP and reorder.
 //
 // point_default_owner: the team that owns the CP at round start (0/absent neutral,
-// 1 allies, 2 axis). In extension mode this is the ONLY source for it — the pdata
-// `owner`/`default_owner` fields read as 0 for every CP, and the engine only sends
-// SetObj when a CP actually changes hands, so a map whose flags are never captured
-// would report every flag neutral for its entire lifetime.
+// 1 allies, 2 axis). In extension mode this is the ONLY source for it at map load —
+// the pdata `owner`/`default_owner` fields read as 0 for every CP, and the engine
+// sends SetObj only when a CP changes hands. The round-restart cascade does restore
+// defaults, so the gap is map load → first restart: the whole first round.
 struct bsp_cp_info {
 	int point_index;      // -1 when absent OR explicitly negative; see hasPointIndex
 	int default_owner;    // 0 neutral / 1 allies / 2 axis (0 when key absent)
@@ -1678,10 +1678,12 @@ struct bsp_cp_info {
 	float origin_z;
 };
 
-// One constant, because three arrays are now sized against it and a parallel
-// bool[] indexes the same range — widening one and not the others would be a
-// stack overwrite, not a compile error. Matches mObjects' own cap.
+// Sizes bspAll/bspCPs/bspUsed, which are indexed together — widening one and not
+// the others is a stack overwrite, not a compile error. NOT the bound on sortedObj[]
+// or used[] below: those are indexed by mObjects.count, capped at 12 by objinfo_t
+// obj[12] in dodx.h, so SHRINKING this constant would overflow them.
 #define BSP_MAX_CPS 12
+static_assert(BSP_MAX_CPS <= 12, "mObjects.obj[] is 12 (dodx.h)");
 
 // Caller owns the returned buffer (free()). NULL on any failure; the reason is logged.
 static char *DODX_LoadBSPEntityLump()
@@ -1845,7 +1847,12 @@ static int DODX_ReadBSPControlPoints(bsp_cp_info *cpInfo, int maxCPs, int *outWi
 				// 2=axis; anything else is treated as neutral.
 				default_owner = atoi(value);
 				if (default_owner < 0 || default_owner > 2)
+				{
+					// Log it: a silent cap turns a map bug into invisible behaviour.
+					MF_Log("[DODX] BSP: point_default_owner=%d out of range on %s — treating as neutral",
+						default_owner, STRING(gpGlobals->mapname));
 					default_owner = 0;
+				}
 			}
 			else if (strcmp(key, "origin") == 0)
 				sscanf(value, "%f %f %f", &origin_x, &origin_y, &origin_z);
@@ -1938,11 +1945,9 @@ static void DODX_InitCPFromEntities()
 		// BEFORE any reordering, and the reorder moves whole objinfo_t structs, so
 		// the values travel with their CP either way.
 		//
-		// Without this, `owner` starts at 0 (neutral) for every CP: the pdata
-		// `owner` field reads as 0, and the engine only broadcasts SetObj when a CP
-		// actually changes hands — so on a map with default-owned flags (dod_donner,
-		// dod_kalt, dod_saints2_*) every consumer reports neutral until the flag is
-		// captured, and a round restart does not heal it.
+		// Without this, `owner` starts at 0 (neutral) for every CP on a default-owned
+		// map (dod_donner, dod_kalt, dod_saints2_*) until the flag is captured or the
+		// round-restart cascade restores it — i.e. for the whole first round.
 		//
 		// Consume matches one-to-one, same as the reorder below. Without this the
 		// match is many-to-one and silently first-wins: two CPs stacked in z, or
@@ -1950,7 +1955,9 @@ static void DODX_InitCPFromEntities()
 		// absent, would take the same BSP entry with no diagnostic.
 		bool bspUsed[BSP_MAX_CPS] = {};
 
-		for (int oi = 0; oi < mObjects.count; oi++)
+		// Skip on an unreadable BSP: every CP would log its own miss, burying the
+		// one line that says why (the loader already logged the open failure).
+		for (int oi = 0; bspTotal > 0 && oi < mObjects.count; oi++)
 		{
 			bool matched = false;
 			for (int bi = 0; bi < bspTotal; bi++)
@@ -2080,9 +2087,12 @@ static void DODX_InitCPFromEntities()
 				// function). dod_saints2_b3e/_b2 hit this: 5 CPs, all with an
 				// explicit point_index of -1. Say so instead of logging it as a
 				// neutral statistic.
-				MF_Log("[DODX] WARNING: %d control points but NONE carried a usable point_index — "
-					"CP ORDER IS UNRELIABLE on this map (falling back to entity scan order)",
-					mObjects.count);
+				// bspTotal disambiguates: 0 means the BSP was unreadable, not that
+				// the map's point_index keys are bad. Same conflation 98aba6ec removed.
+				MF_Log("[DODX] WARNING: %d control points but NONE carried a usable point_index "
+					"(%d parsed from BSP) — CP ORDER IS UNRELIABLE on this map "
+					"(falling back to entity scan order)",
+					mObjects.count, bspTotal);
 			}
 			else
 			{
@@ -2096,8 +2106,11 @@ static void DODX_InitCPFromEntities()
 			edict_t *pe = mObjects.obj[i].pEdict;
 			const char *tn = pe ? STRING(pe->v.targetname) : "?";
 			const char *nn = pe ? STRING(pe->v.netname) : "?";
-			MF_Log("[DODX]   CP[%d] point_index=%d owner=%d targetname='%s' netname='%s'",
-				i, mObjects.obj[i].index, mObjects.obj[i].owner, tn, nn);
+			// default_owner is near-redundant with owner here, but it is the one field
+			// that separates "seeded from the BSP" from "read 0 out of pdata" in a log.
+			MF_Log("[DODX]   CP[%d] point_index=%d owner=%d default_owner=%d targetname='%s' netname='%s'",
+				i, mObjects.obj[i].index, mObjects.obj[i].owner,
+				mObjects.obj[i].default_owner, tn, nn);
 		}
 
 		if (iFInitCP >= 0)
