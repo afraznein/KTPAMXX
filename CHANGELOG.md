@@ -7,6 +7,101 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.26] - 2026-08-08
+
+DODX-only delta over 2.7.25 (`dodx_ktp_i386.so`; core unchanged, no `.inc` change, so no dependent
+plugin needs recompiling). Contributed as [#9](https://github.com/afraznein/KTPAMXX/pull/9) by
+JimmyLockhart65616 and rebased onto master here.
+
+> **Includes everything in 2.7.25, which never shipped.** 2.7.25 was cut and review-corrected but no
+> fleet instance ever ran it — the fleet is still on 2.7.24 (`d599452d…`) with nothing staged. This
+> is a new version rather than an amendment to that entry so the reviewed artifact and the shipped
+> artifact stay the same thing; folding a later contribution into an already-reviewed cut is how
+> "2.7.25" would come to mean two different binaries.
+
+> **No upstream-file edits in this cut.** The only file touched is
+> `modules/dod/dodx/moduleconfig.cpp`, which is KTP-owned.
+
+### Fixed
+
+#### dodx: control points reported neutral for a map's whole lifetime when the map starts them owned
+
+In extension mode a CP's owner is seeded from `cpd.owner`, a pdata field that reads **0 for every
+CP**, and `mObjects[].owner` is thereafter corrected only by `Client_SetObj` — which the game DLL
+sends only when a flag actually changes hands. So on any map whose flags start owned, every consumer
+read neutral from map load until the flag was first captured. Affects `dod_donner`, `dod_kalt`,
+`dod_flash` and `dod_saints2_*` in the league pool, and is why the KTP HUD overlay showed an
+all-neutral flag bar.
+
+> 🔻 **Scope corrected during review.** The contributed change claimed *"a round restart does not
+> heal it"*, i.e. that the whole map lifetime was affected. It doesn't: the engine resets every CP to
+> its default at a round restart and dodx replays that as a `dod_control_point_captured` cascade —
+> `KTPHudObserver.sma:243` and `:2268` document it and name these maps specifically — so `owner`
+> self-heals at the first restart. The genuine gap is **map load → first round restart**, which is
+> the whole first round, so this still matters exactly where a match is decided. Recorded because the
+> overstated version was in the code comments and would have outlived the PR.
+
+`point_default_owner` is now read from the BSP entity lump and used to seed both `default_owner` and
+`owner`, matched to the scanned entities by origin — the same identifier the existing `point_index`
+reorder uses, since `targetname` is empty on many maps. Seeding happens before any reorder, and the
+reorder moves whole `objinfo_t` structs, so the values travel with their CP either way.
+
+- **The BSP parser now returns every `dod_control_point`, not only the indexed ones**, because the
+  ownership seed matches by origin and has to see unindexed entities too. The reorder's input is
+  unchanged: it keys off the new `*outWithIndex` (the indexed subset), never the return value.
+- **Origin matches are consumed one-to-one.** Without that the match is many-to-one and silently
+  first-wins, so two CPs stacked in z — or two entities that both fell back to `(0,0,0)` because the
+  key was absent — would take the same BSP entry with no diagnostic. Unmatched CPs are logged: a
+  failed match is otherwise indistinguishable from a genuinely neutral map, because `owner` just
+  stays at the pdata read of 0, i.e. it looks fixed and silently isn't.
+- **`point_default_owner` is clamped to 0..2 at the parse site.** Out of range is not a crash —
+  `MSG_WriteByte` casts without a range error — but a nonsense value would truncate to something
+  plausible on its way to Pawn (`CP_owner` / `CP_default_owner`), and a public fork should not
+  propagate it.
+- `BSP_MAX_CPS` replaces the repeated literal `12` now that a parallel `bool[]` indexes the same
+  range as `bspAll`/`bspCPs`: widening one array and not the others would be a stack overwrite rather
+  than a compile error. It deliberately does **not** cover `sortedObj[]`/`used[]`, which are bounded
+  by `mObjects.count` — i.e. by `objinfo_t obj[12]` in `dodx.h` — so *shrinking* the constant would
+  overflow them. A `static_assert` pins that invariant.
+
+Diagnostics tightened in the same pass, all on paths that previously failed quietly:
+
+- **An unreadable BSP no longer reads as bad map data.** It reached the "NONE carried a usable
+  `point_index`" warning, which blamed the map; the count parsed from the BSP is now printed, so `0`
+  identifies the real cause. That path also made every CP log its own "no default_owner match" line,
+  burying the loader's single line saying why — the seed loop is skipped when nothing parsed.
+- **The out-of-range clamp now logs.** It silently produced neutral, turning a map bug into
+  invisible behaviour.
+- **`default_owner` restored to the final CP dump** — the one field that distinguishes "seeded from
+  the BSP" from "read 0 out of pdata" in a live log.
+
+⚠️ **This does not fix the three maps that reorder.** `dod_escape`, `dod_jagd` and `dod_kraftstoff`
+are the only 3 of 18 pool maps observed to emit a full `newCount=N` InitObj, and there the rebuild in
+`Client_InitObj` takes `default_owner`/`owner` straight off message field 3 — which arrives as **0** —
+so the reorder wipes the seed within about a second of map load rather than restoring it. On those
+maps this change is a no-op and the flags read exactly as they did before. That is a separate defect
+in a different function, filed rather than folded in here; it pairs with the
+`g_cpOrderingFinalized`-never-reset mechanism in
+[#10](https://github.com/afraznein/KTPAMXX/issues/10). On the maps this was written for the seed
+survives — verified on `dod_kalt` by a `CP_owner` read ~16 minutes and one client connect after map
+load — so it is a permanent fix there, not a window fix.
+
+⚠️ **Plugin-visible contract change — `dod_control_point_captured`.** Seeding `owner` changes both
+*when* the forward fires and what it carries: a `SetObj` that merely restates the BSP default is no
+longer a transition, so it fires nothing (suppressing a spurious map-start capture), and the first
+genuine capture now reports `old_owner=1/2` instead of `0`. `KTPHudObserver` is already written for
+this module build and degrades safely on an un-upgraded fleet.
+✅ **`KTPScoreTracker` checked against the new semantics and is unaffected** — its
+`dod_control_point_captured` handler never reads `old_owner`, and `check_all_cps_owned()` (the
+`CP_owner` capout read) is unreachable at map load: its only caller returns unless a real flip
+happened inside `CAPOUT_RECOVERY_WINDOW`, and `g_lastCPFlipTime` is reset to `0.0` at match start.
+The seed makes that capout check slightly *more* correct, since previously-neutral default-owned
+flags now read their real owner.
+
+⚠️ **Behavioural note from the rebase:** the BSP parse moved from `mObjects.count > 1` to
+`> 0`, since the ownership seed must run on a single-CP map too. Same number of read sites, one
+slightly wider condition, and it runs at map load rather than in the frame loop.
+
 ## [2.7.25] - 2026-08-08
 
 > **Upstream-file edits in this cut**, flagged per the fork-delta rule. Each is a minimal diff to
