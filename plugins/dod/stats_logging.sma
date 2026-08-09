@@ -148,7 +148,7 @@ stock log_player_stats(id) {
 public client_death(killer, victim, wpnindex, hitplace, TK) {
   // KTP: assists are credited on EVERY death, so this has to run ahead of the
   // headshot-only early return below.
-  ksc_on_death(killer, victim)
+  ksc_on_death(killer, victim, TK)
 
   if (hitplace != HIT_HEAD)
     return PLUGIN_CONTINUE

@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Cap-break capture for HLStatsX** (`ktp_stats_capture.inc`). A break --
+  killing an enemy standing on a point their team is capturing -- is the only
+  way to stop capture progress in DoD, and has never been recorded outside the
+  HUD observer. Ports KTPHudObserver's queue-and-confirm detection: a kill on a
+  contested point queues a candidate, and a 0.5s zone poll credits it when the
+  capping team's in-zone count actually drops. It cannot be decided at kill
+  time -- the engine applies the dead player's zone decrement 0.2-2.5s late, and
+  the one-shot snapshot that predates the queue caught under 20% of real breaks.
+
+  Simplified vs. the original: this works entirely in dodx objective/area index
+  space. KTPHudObserver carries a DLL-index <-> dodx-index remap with hardcoded
+  per-map exceptions because it also consumes `dod_control_point_captured`
+  (DLL-indexed). Detecting a completed capture from `CA_owning_team` instead
+  drops that hook, the remap, and its map-specific special cases entirely.
+
+  Needs an `hlstats_Actions` row (`code='cap_break'`, `for_PlayerActions='1'`),
+  shipped alongside in KTPHLStatsX. The `(flag "...")` property on the line is
+  log-only for now -- `doEvent_PlayerAction` discards unrecognised properties,
+  so which point was broken is not persisted until the break-context phase.
+
 - **Assist capture for HLStatsX** (`plugins/dod/ktp_stats_capture.inc`, new;
   `stats_logging.sma` 1.11.0 -> 1.12.0). DoD assists have never existed in
   HLStatsX: the engine logs no damage events, so the daemon has no way to derive
