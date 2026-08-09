@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Assist capture for HLStatsX** (`plugins/dod/ktp_stats_capture.inc`, new;
+  `stats_logging.sma` 1.11.0 -> 1.12.0). DoD assists have never existed in
+  HLStatsX: the engine logs no damage events, so the daemon has no way to derive
+  them, and `hlstats_Events_PlayerPlayerActions` has sat empty since the table
+  was created. This ports the attribution rule already proven in production by
+  KTPHudObserver -- a third party who dealt >= 50 enemy damage to the victim
+  since their last spawn -- onto a `client_damage` hook here, and emits a
+  `triggered "assist" against` line on death for the daemon's existing
+  player-vs-player action path to record.
+
+  Requires a matching `hlstats_Actions` seed row (`game='dod'`, `code='assist'`,
+  `for_PlayerPlayerActions='1'`) or the daemon parses the line and silently
+  drops it -- the same failure mode that lost every LAN capture event. Shipped
+  alongside in KTPHLStatsX.
+
+  New capture is self-contained in its own include (shares no state with
+  `stats_logging.sma`), buffers on its own ring with a drop-counter rather than
+  flushing inline like the stock buffer does -- postthink is the wrong place for
+  a synchronous write -- and is gated on a new `ktp_stats_capture` cvar so it can
+  be switched off live without a redeploy.
+
+  > **Upstream-file edit**, flagged per the fork-delta rule: `stats_logging.sma`
+  > gains the `#include`, five call-outs (init/cfg/end, death, disconnect) and
+  > the version bump. No existing logic changed; the assist call is placed ahead
+  > of the headshot-only early return so it runs for every death.
+
 ## [2.7.25] - 2026-08-08
 
 > **Upstream-file edits in this cut**, flagged per the fork-delta rule. Each is a minimal diff to

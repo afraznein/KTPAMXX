@@ -15,7 +15,12 @@
 #include <amxmodx>
 #include <dodx>
 
-#define PLUGIN_VERSION "1.11.0"
+// KTP: extra per-match stat capture for HLStatsX (assists today; cap breaks,
+// positions and the per-hit damage ledger in later phases). Self-contained --
+// it shares no state with this file. See its header for why.
+#include "ktp_stats_capture"
+
+#define PLUGIN_VERSION "1.12.0"
 
 // KTP: Buffered logging to avoid synchronous file I/O during postthink.
 // client_death fires inside SV_RunCmd postthink phase — a single log_message()
@@ -41,6 +46,8 @@ public plugin_init() {
   // KTP: Don't call "log on" - it causes log rotation
   // Logging should be enabled via sv_logfile 1 in server.cfg
   // The "log on" command will close and reopen the log file, breaking file writes
+
+  ksc_init()
 }
 
 public plugin_cfg() {
@@ -49,11 +56,14 @@ public plugin_cfg() {
   // within a hookchain handler in extension mode, where set_task with repeating
   // flag intermittently fails to register (~10% failure rate).
   set_task(LOG_BUFFER_FLUSH_INTERVAL, "flush_log_buffer_task", .flags="b")
+
+  ksc_cfg()
 }
 
 public plugin_end() {
   // KTP: Flush any remaining buffered log entries before map change
   flush_log_buffer()
+  ksc_flush()
 }
 
 // KTP: Append a formatted log line to the memory buffer instead of writing to disk.
@@ -136,6 +146,10 @@ stock log_player_stats(id) {
 // We log a separate "headshot_kill" triggered event so HLStatsX can mark
 // the corresponding frag entry as a headshot without double-counting kills.
 public client_death(killer, victim, wpnindex, hitplace, TK) {
+  // KTP: assists are credited on EVERY death, so this has to run ahead of the
+  // headshot-only early return below.
+  ksc_on_death(killer, victim)
+
   if (hitplace != HIT_HEAD)
     return PLUGIN_CONTINUE
 
@@ -183,6 +197,10 @@ public client_disconnected(id) {
   // errors when the slot is reused by a new player.
   remove_task( id )
   g_pingSum[ id ] = g_pingCount[ id ] = 0
+
+  // KTP: drop this slot's assist state so the next player to occupy it can't
+  // inherit pending credit.
+  ksc_clear_player(id)
 
   if ( is_user_bot(id) || !isDSMActive() )
     return PLUGIN_CONTINUE
