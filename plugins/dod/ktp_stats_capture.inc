@@ -40,7 +40,11 @@
 #define KSC_BREAK_WINDOW    5   // polls a candidate stays live (~2.5s)
 
 #define KSC_BUF_MAX_ENTRIES 48
-#define KSC_BUF_LINE_LEN    288
+// Sized for the longest line we emit: an assist carrying two player strings
+// (32-char name + userid + steamid + team each) plus both position properties,
+// which measures ~256. Headroom kept deliberately -- a truncated line does not
+// fail loudly, it just silently stops matching the daemon's regex.
+#define KSC_BUF_LINE_LEN    384
 #define KSC_BUF_FLUSH_SECS  5.0
 
 // Distinct from stats_logging.sma's own flush task, which registers with the
@@ -146,6 +150,36 @@ stock ksc_player_str(id, out[], len) {
 	formatex(out, len, "%s<%d><%s><%s>", name, get_user_userid(id), authid, team)
 }
 
+// "X Y Z" for the (position ...) family of log-line properties. hlstats.pl
+// splits these on a single space and stores them in the event row's pos_x/y/z,
+// so the format is fixed by the daemon, not chosen here.
+//
+// Rounded to integers: HL world units are already coarse relative to anything
+// we would ask of this data (which flag was this near, how far was the kill),
+// and it keeps the line short enough that a full assist line with two positions
+// still fits the buffer.
+//
+// Returns false if the origin could not be read, so callers can omit the
+// property entirely rather than emit a bogus "0 0 0" that looks like the map
+// origin.
+stock bool:ksc_origin_str(id, out[], len) {
+	out[0] = 0
+
+	if (id < 1 || id > MAX_PLAYERS)
+		return false
+	if (!is_user_connected(id))
+		return false
+
+	new Float:origin[3]
+	if (!dodx_get_user_origin(id, origin))
+		return false
+
+	formatex(out, len, "%d %d %d",
+		floatround(origin[0]), floatround(origin[1]), floatround(origin[2]))
+
+	return true
+}
+
 stock ksc_clear_damage_row(victim) {
 	for (new a = 0; a <= MAX_PLAYERS; a++)
 		g_kscDmgTaken[victim][a] = 0
@@ -244,6 +278,13 @@ stock ksc_emit_break(f, breaker) {
 	new breaker_str[96], line[KSC_BUF_LINE_LEN]
 	ksc_player_str(breaker, breaker_str, charsmax(breaker_str))
 
+	// Where the breaker was standing. doEvent_PlayerAction reads a `position`
+	// property into pos_x/y/z, so this needs no daemon change -- and it is what
+	// later lets the query layer work out WHICH point was broken, since the
+	// flag name in the line itself is discarded.
+	new pos[40]
+	new bool:have_pos = ksc_origin_str(breaker, pos, charsmax(pos))
+
 	// Single-player action shape. Requires an hlstats_Actions row for
 	// game='dod', code='cap_break' with for_PlayerActions='1'.
 	//
@@ -252,9 +293,14 @@ stock ksc_emit_break(f, breaker) {
 	// properties, so which point was broken is not persisted yet. It is
 	// emitted anyway because it makes a raw log readable while verifying, and
 	// the later break-context phase is what teaches the daemon to read it.
-	formatex(line, charsmax(line),
-		"^"%s^" triggered ^"cap_break^" (flag ^"%s^")",
-		breaker_str, g_kscFlagName[f])
+	if (have_pos)
+		formatex(line, charsmax(line),
+			"^"%s^" triggered ^"cap_break^" (flag ^"%s^") (position ^"%s^")",
+			breaker_str, g_kscFlagName[f], pos)
+	else
+		formatex(line, charsmax(line),
+			"^"%s^" triggered ^"cap_break^" (flag ^"%s^")",
+			breaker_str, g_kscFlagName[f])
 
 	ksc_buffer(line)
 }
@@ -404,8 +450,9 @@ stock ksc_on_death(killer, victim, TK) {
 
 	if (ksc_enabled()) {
 		new victim_team = get_user_team(victim)
-		new victim_str[96]
+		new victim_str[96], victim_pos[40]
 		new bool:built_victim_str = false
+		new bool:have_victim_pos = false
 
 		for (new a = 1; a <= MAX_PLAYERS; a++) {
 			if (a == killer || a == victim)
@@ -421,19 +468,41 @@ stock ksc_on_death(killer, victim, TK) {
 
 			if (!built_victim_str) {
 				ksc_player_str(victim, victim_str, charsmax(victim_str))
+				// Read once, before the loop can advance -- this is the victim's
+				// position at the moment of death, which is the useful one.
+				have_victim_pos = ksc_origin_str(victim, victim_pos, charsmax(victim_pos))
 				built_victim_str = true
 			}
 
-			new assister_str[96], line[KSC_BUF_LINE_LEN]
+			new assister_str[96], line[KSC_BUF_LINE_LEN], assister_pos[40]
 			ksc_player_str(a, assister_str, charsmax(assister_str))
+			new bool:have_assister_pos = ksc_origin_str(a, assister_pos, charsmax(assister_pos))
 
 			// Player-vs-player action shape (hlstats.pl's "triggered ... against"
 			// regex). Requires an hlstats_Actions row for game='dod',
 			// code='assist' with for_PlayerPlayerActions='1' -- without it the
 			// daemon parses the line and silently drops it.
-			formatex(line, charsmax(line),
-				"^"%s^" triggered ^"assist^" against ^"%s^"",
-				assister_str, victim_str)
+			// assister_position / victim_position are the property names
+			// doEvent_PlayerPlayerAction already looks for; they land in the
+			// event row's pos_x/y/z and vpos_x/y/z with no daemon change.
+			// Emitted only when actually read, so a failed lookup omits the
+			// property rather than writing a bogus map-origin coordinate.
+			if (have_assister_pos && have_victim_pos)
+				formatex(line, charsmax(line),
+					"^"%s^" triggered ^"assist^" against ^"%s^" (assister_position ^"%s^") (victim_position ^"%s^")",
+					assister_str, victim_str, assister_pos, victim_pos)
+			else if (have_assister_pos)
+				formatex(line, charsmax(line),
+					"^"%s^" triggered ^"assist^" against ^"%s^" (assister_position ^"%s^")",
+					assister_str, victim_str, assister_pos)
+			else if (have_victim_pos)
+				formatex(line, charsmax(line),
+					"^"%s^" triggered ^"assist^" against ^"%s^" (victim_position ^"%s^")",
+					assister_str, victim_str, victim_pos)
+			else
+				formatex(line, charsmax(line),
+					"^"%s^" triggered ^"assist^" against ^"%s^"",
+					assister_str, victim_str)
 
 			ksc_buffer(line)
 		}
