@@ -1711,8 +1711,16 @@ static char *DODX_LoadBSPEntityLump()
 
 	// GoldSrc BSP v30: 4-byte version, then 15 lump entries (offset + length, 8 bytes each)
 	// Entity lump is lump 0 (first entry, at bytes 4-11)
+	// Short read and wrong version are separate failures: folded together, a
+	// truncated file reports whatever `version` holds as its version number.
 	int version = 0;
-	if (fread(&version, 4, 1, fp) != 1 || version != 30)
+	if (fread(&version, 4, 1, fp) != 1)
+	{
+		MF_Log("[DODX] BSP: Short read on version field (file truncated?)");
+		fclose(fp);
+		return 0;
+	}
+	if (version != 30)
 	{
 		MF_Log("[DODX] BSP: Invalid version %d (expected 30)", version);
 		fclose(fp);
@@ -1737,6 +1745,9 @@ static char *DODX_LoadBSPEntityLump()
 	char *entData = (char *)malloc(entLength + 1);
 	if (!entData)
 	{
+		// Was a silent return: CP init falls back to the pdata read with no trace
+		// of why, the same failure mode the per-CP miss log exists to prevent.
+		MF_Log("[DODX] BSP: Allocation failed for entity lump (%d bytes)", entLength);
 		fclose(fp);
 		return 0;
 	}
@@ -1776,7 +1787,6 @@ static int DODX_ReadBSPControlPoints(bsp_cp_info *cpInfo, int maxCPs, int *outWi
 
 	// Parse entity lump for dod_control_point entities
 	int cpCount = 0;
-	int totalDCP = 0;
 	int withIndex = 0;
 	int negIndexCPs = 0;   // explicit point_index < 0 -- a map choice, not an absent key
 	char *pos = entData;
@@ -1862,7 +1872,6 @@ static int DODX_ReadBSPControlPoints(bsp_cp_info *cpInfo, int maxCPs, int *outWi
 
 		if (strcmp(classname, "dod_control_point") == 0)
 		{
-			totalDCP++;
 			if (hasPointIndex && point_index < 0)
 				negIndexCPs++;
 			// Store EVERY CP: the default-owner seed matches by origin and must see
@@ -1883,7 +1892,7 @@ static int DODX_ReadBSPControlPoints(bsp_cp_info *cpInfo, int maxCPs, int *outWi
 	if (outWithIndex)
 		*outWithIndex = withIndex;
 	MF_Log("[DODX] BSP: Parsed %s — %d dod_control_point, %d with point_index, %d with a NEGATIVE point_index",
-		mapName, totalDCP, withIndex, negIndexCPs);
+		mapName, cpCount, withIndex, negIndexCPs);
 	return cpCount;
 }
 
