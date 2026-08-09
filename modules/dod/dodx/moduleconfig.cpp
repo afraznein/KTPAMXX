@@ -1771,8 +1771,17 @@ static int DODX_ReadBSPControlPoints(bsp_cp_info *cpInfo, int maxCPs, int *outWi
 
 	// GoldSrc BSP v30: 4-byte version, then 15 lump entries (offset + length, 8 bytes each)
 	// Entity lump is lump 0 (first entry, at bytes 4-11)
-	int version;
-	if (fread(&version, 4, 1, fp) != 1 || version != 30)
+	// Split the short-read case from the wrong-version case: folded together, a
+	// short fread left `version` uninitialised and then printed it, so a truncated
+	// file reported a garbage version number instead of a truncated file.
+	int version = 0;
+	if (fread(&version, 4, 1, fp) != 1)
+	{
+		MF_Log("[DODX] BSP: Short read on version field (file truncated?)");
+		fclose(fp);
+		return 0;
+	}
+	if (version != 30)
 	{
 		MF_Log("[DODX] BSP: Invalid version %d (expected 30)", version);
 		fclose(fp);
@@ -1797,6 +1806,10 @@ static int DODX_ReadBSPControlPoints(bsp_cp_info *cpInfo, int maxCPs, int *outWi
 	char *entData = (char *)malloc(entLength + 1);
 	if (!entData)
 	{
+		// Was a silent return: CP init would fall back to the pdata read with no
+		// trace of why, which is the same failure mode the miss-log below exists
+		// to prevent.
+		MF_Log("[DODX] BSP: Allocation failed for entity lump (%d bytes)", entLength);
 		fclose(fp);
 		return 0;
 	}
@@ -1814,7 +1827,6 @@ static int DODX_ReadBSPControlPoints(bsp_cp_info *cpInfo, int maxCPs, int *outWi
 
 	// Parse entity lump for dod_control_point entities
 	int cpCount = 0;
-	int totalDCP = 0;
 	char *pos = entData;
 
 	while (*pos && cpCount < maxCPs)
@@ -1883,7 +1895,6 @@ static int DODX_ReadBSPControlPoints(bsp_cp_info *cpInfo, int maxCPs, int *outWi
 
 		if (strcmp(classname, "dod_control_point") == 0)
 		{
-			totalDCP++;
 			cpInfo[cpCount].point_index = point_index;
 			cpInfo[cpCount].default_owner = default_owner;
 			cpInfo[cpCount].origin_x = origin_x;
@@ -1897,7 +1908,7 @@ static int DODX_ReadBSPControlPoints(bsp_cp_info *cpInfo, int maxCPs, int *outWi
 
 	free(entData);
 	MF_Log("[DODX] BSP: Parsed %s — %d dod_control_point, %d with point_index",
-		mapName, totalDCP, outWithIndex ? *outWithIndex : 0);
+		mapName, cpCount, outWithIndex ? *outWithIndex : 0);
 	return cpCount;
 }
 
