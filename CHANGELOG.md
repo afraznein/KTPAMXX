@@ -13,8 +13,10 @@ DODX-only delta over 2.7.25. Contributed as [#9](https://github.com/afraznein/KT
 JimmyLockhart65616 and rebased onto master here. No `.inc` change, so no dependent plugin needs
 recompiling.
 
-**Shipping artifact — `dodx_ktp_i386.so` md5 `c2975aedf0cc8da640efd1af2b791b3a`** (built 2026-08-08
-from `3bd51b2d`, `build_linux.sh`, GLIBC 2.35 / Ubuntu 22.04).
+**Shipping artifact — `dodx_ktp_i386.so` md5 `717ad410745be0e1e33b9885658b0d38`** (built 2026-08-08
+from `da12e368`, `build_linux.sh`, GLIBC 2.35 / Ubuntu 22.04).
+*(Supersedes `c2975aedf0cc8da640efd1af2b791b3a` from `3bd51b2d` — the source changed after that
+build, so this is a required rebuild, not a re-verification of the same tree.)*
 ⚠️ **Do not rebuild to re-verify** — AMXX bakes a per-minute build timestamp, so a rebuild churns
 this md5 and you would stage a binary nobody reviewed. Verify by this md5, never by the banner.
 
@@ -85,6 +87,14 @@ Diagnostics tightened in the same pass, all on paths that previously failed quie
   invisible behaviour.
 - **`default_owner` restored to the final CP dump** — the one field that distinguishes "seeded from
   the BSP" from "read 0 out of pdata" in a live log.
+- **A short read on the BSP version field said the wrong thing.** `fread(...) != 1 || version != 30`
+  folded two failures into one message, so a truncated file was reported as an invalid *version*
+  number. Split into separate branches. (Contributed on #9 as `1c3f7e03` and ported here; the
+  uninitialised-`version` half of his fix did not apply, since master already zero-initialised it.)
+- **The entity-lump `malloc` failure was the only exit from the reader with no log**, so CP init
+  fell back to the pdata read with no trace — indistinguishable from a map that has no defaults.
+- `totalDCP` dropped: it counted every CP while `cpCount` counted the indexed ones, but the parser
+  now stores every CP, so the two increment on the same branch and cannot diverge.
 
 ⚠️ **This does not fix the three maps that reorder.** `dod_escape`, `dod_jagd` and `dod_kraftstoff`
 are the only 3 of 18 pool maps observed to emit a full `newCount=N` InitObj, and there the rebuild in
