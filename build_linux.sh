@@ -1,4 +1,6 @@
 #!/bin/bash
+# Set KTP_NO_STAGE=1 to build WITHOUT copying into the local test tree -- staging
+# overwrites an artifact whose md5 may be pinned to a reviewed build.
 # KTP AMX Linux Build Script
 # Run this on your Ubuntu server
 
@@ -132,32 +134,37 @@ if [ -f "$BINARY_PATH" ]; then
     # This is a Windows path accessed via WSL
     DEPLOY_DIR="/mnt/n/Nein_/KTP Git Projects/KTP DoD Server/serverfiles"
     if [ -d "$DEPLOY_DIR" ]; then
-        echo "Deploying to staging folder..."
+        if [ -n "${KTP_NO_STAGE:-}" ]; then
+            echo "Staging SKIPPED (KTP_NO_STAGE set)."
+            echo "  Binary left at: $BINARY_PATH"
+        else
+            echo "Deploying to staging folder..."
 
-        # Deploy main AMXX binary
-        mkdir -p "$DEPLOY_DIR/dod/addons/ktpamx/dlls"
-        cp "$BINARY_PATH" "$DEPLOY_DIR/dod/addons/ktpamx/dlls/"
-        echo "  -> Copied ktpamx_i386.so"
+            # Deploy main AMXX binary
+            mkdir -p "$DEPLOY_DIR/dod/addons/ktpamx/dlls"
+            cp "$BINARY_PATH" "$DEPLOY_DIR/dod/addons/ktpamx/dlls/"
+            echo "  -> Copied ktpamx_i386.so"
 
-        # Deploy DODX module if built
-        DODX_PATH="obj-linux/packages/dod/addons/ktpamx/modules/dodx_ktp_i386.so"
-        if [ -f "$DODX_PATH" ]; then
-            mkdir -p "$DEPLOY_DIR/dod/addons/ktpamx/modules"
-            cp "$DODX_PATH" "$DEPLOY_DIR/dod/addons/ktpamx/modules/"
-            echo "  -> Copied dodx_ktp_i386.so"
+            # Deploy DODX module if built
+            DODX_PATH="obj-linux/packages/dod/addons/ktpamx/modules/dodx_ktp_i386.so"
+            if [ -f "$DODX_PATH" ]; then
+                mkdir -p "$DEPLOY_DIR/dod/addons/ktpamx/modules"
+                cp "$DODX_PATH" "$DEPLOY_DIR/dod/addons/ktpamx/modules/"
+                echo "  -> Copied dodx_ktp_i386.so"
+            fi
+
+            # Deploy stats_logging plugin if it exists
+            STATS_LOGGING_PATH="plugins/dod/stats_logging.amxx"
+            if [ -f "$STATS_LOGGING_PATH" ]; then
+                mkdir -p "$DEPLOY_DIR/dod/addons/ktpamx/plugins"
+                cp "$STATS_LOGGING_PATH" "$DEPLOY_DIR/dod/addons/ktpamx/plugins/"
+                echo "  -> Copied stats_logging.amxx"
+            fi
+
+            echo ""
+            echo "Files staged at: $DEPLOY_DIR/dod/addons/ktpamx/"
+            echo "Ready for upload to VPS!"
         fi
-
-        # Deploy stats_logging plugin if it exists
-        STATS_LOGGING_PATH="plugins/dod/stats_logging.amxx"
-        if [ -f "$STATS_LOGGING_PATH" ]; then
-            mkdir -p "$DEPLOY_DIR/dod/addons/ktpamx/plugins"
-            cp "$STATS_LOGGING_PATH" "$DEPLOY_DIR/dod/addons/ktpamx/plugins/"
-            echo "  -> Copied stats_logging.amxx"
-        fi
-
-        echo ""
-        echo "Files staged at: $DEPLOY_DIR/dod/addons/ktpamx/"
-        echo "Ready for upload to VPS!"
     else
         echo "Staging folder not found: $DEPLOY_DIR"
         echo "You can manually deploy from: $BINARY_PATH"
