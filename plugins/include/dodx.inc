@@ -1013,3 +1013,56 @@ native dodx_get_aim_window(id, slot, window[4]);
  * @return  1 on success
  */
 native dodx_reset_aim_stats(id);
+
+/**
+ * Read the geometry of the shot the current dod_client_weapon_fire dispatch is
+ * reporting, captured at the bullet's own trace inside the lag-compensation window.
+ * Measurements only: no threshold, no ratio, no conclusion is applied here.
+ *
+ * CONTRACT -- read this before calling:
+ *   - Call ONLY from inside a dod_client_weapon_fire handler, BEFORE the handler
+ *     performs any trace of its own (a plugin trace that ignores the shooter and
+ *     crosses a player could otherwise be captured as if it were the shot), and
+ *     from NO OTHER forward: a client_damage handler calling this for the same
+ *     shot would consume the sample and the fire handler would then read 0.
+ *   - Call ONLY for hitscan firearm ids (melee via the damage path also carries real
+ *     swing geometry). Grenade/rocket fire dispatches trace from the projectile, not
+ *     the shooter, so any geometry returned for them describes some other ray --
+ *     do not query for those ids.
+ *   - The read is DESTRUCTIVE: a captured shot is returned at most once. A second
+ *     call for the same dispatch returns 0.
+ *   - 0 means "no geometry belongs to this shot" -- the shot's trace hit no player,
+ *     the pairing guard rejected a stale capture, or the shooter's in-hand weapon
+ *     at trace time failed to match `weapon` (possible around a weapon switch).
+ *     Record NULL. Never substitute a previous sample; a stale value here is
+ *     fabricated evidence. A consumer computing NULL rates should not read every
+ *     0 as "hit no player".
+ *
+ * geom[] units, all integers:
+ *   [0] angular error between the traced ray and the line to target centre,
+ *       micro-degrees. The traced ray is post-spread/recoil, so weapon spread
+ *       travels inside this number; target centre is the entity origin (hull
+ *       centre), not the head.
+ *   [1] range, world units, trace start to target centre.
+ *   [2] target bearing rate across the shooter's view, milli-degrees per second,
+ *       averaged since the previous captured sighting of the SAME target.
+ *       -1 = no prior sighting; NOT the same as 0 (stationary).
+ *   [3] the averaging gap for [2], milliseconds; -1 when [2] is -1. Judge validity
+ *       with it -- a gap spanning a death/respawn describes a teleport, not motion.
+ *       The per-usercmd clock re-anchors at client packet boundaries, so when the
+ *       two sightings straddle packets, [3] (and therefore [2]) carries jitter of
+ *       the same order as one packet gap.
+ *   [4] hitgroup the trace struck (HIT_* / studio hitgroup).
+ *   [5] the traced ray's start point, as distance from the shooter's view origin,
+ *       world units. Near 0 for a normal fire trace. A wall-penetration
+ *       continuation starts at the wall exit point instead of the eye, which
+ *       shrinks [1] and inflates [0] for the same aim -- this cell is how those
+ *       samples are told apart.
+ *
+ * @param id        Firing player index (the forward's id argument)
+ * @param weapon    The forward's weapon argument; must match what the shooter held
+ *                  at trace time or the read returns 0
+ * @param geom      Output, 6 cells as above
+ * @return  1 with geometry, 0 when no geometry belongs to this shot (record NULL)
+ */
+native dodx_get_shot_geom(id, weapon, geom[6]);

@@ -938,6 +938,108 @@ void OnPluginsLoaded()
 // KTP: ReHLDS Extension Mode Hook Implementations
 // ============================================================================
 
+// KTP: slot whose usercmd most recently began (set in the PreThink hook body).
+// The window it opens is never explicitly closed -- nothing hookable runs between
+// the last cmd of a frame and the send phase -- so a shooter-owned trace fired
+// after his cmd still passes while he remains the most recent cmd player. That
+// residual is documented at the capture site rather than papered over.
+static int g_ktpCmdOwner = 0;
+
+// KTP: per-shot aim geometry capture (tier-2 sensor -- read once by
+// dodx_get_shot_geom, guard rationale in KTPShotGeom.h). Reached only for
+// player-hitting traces whose ignore-entity is a player, so the per-trace cost
+// on every other trace is the branch that got us here; the trig runs at hit
+// rate. Everything reported is a measurement -- no threshold, no conclusion.
+//
+// What can write this stash besides the bullet trace, and what stops each:
+//   - other players' traces: excluded structurally (per-shooter stash, and the
+//     trace's ignore-entity must be this shooter).
+//   - traces outside the shooter's cmd window (e.g. HLSDK sends nothing here,
+//     but a game-DLL trace in the send phase would qualify): excluded by the
+//     cmd-owner gate, EXCEPT when this shooter was the frame's last cmd player,
+//     because the window has no closing edge.
+//   - a later same-cmd trace after the bullet's: excluded by first-wins.
+//   - a shooter-owned player-hitting trace BETWEEN the PreThink hook body and
+//     PostThink (player Think, or a touch handler under SV_Impact -- both run
+//     in that gap in SV_RunCmd): NOT excluded, and the worst class here, because
+//     first-wins lets it DISPLACE the bullet's own capture. No hookable edge
+//     exists between those phases to fence it; an SV_PlayerRunPostThink
+//     hookchain in KTP-ReHLDS would be the real fix.
+//   - a shooter-owned player-hitting trace in his own cmd window when his bullet
+//     hit nobody: NOT excluded. dod.so is closed source, so neither this class
+//     nor the one above can be enumerated; vanilla HLSDK has none on these
+//     paths. If one exists, the geometry is still a ray the shooter's own think
+//     code cast this cmd, with his in-hand weapon id -- but it is not the
+//     bullet, and the consumer should know this class exists.
+static void KTPCaptureShotGeom(CPlayer *pPlayer, const float *v1, const float *v2, TraceResult *ptr)
+{
+	KTPShotGeom &sg = pPlayer->ktpShot;
+
+	if (pPlayer->index != g_ktpCmdOwner || sg.cmdSeq == 0)
+		return;
+
+	// First capture wins the cmd: nothing after the bullet's PostThink trace can
+	// replace it. The cost is the pre-PostThink displacement class enumerated
+	// above; last-wins would only swap which unenumerable class is exposed.
+	if (sg.geomSeq == sg.cmdSeq)
+		return;
+
+	// Target centre is the entity origin: GoldSrc keeps a player's origin at hull
+	// centre, and lag compensation moves origin and relinks, so this is the centre
+	// the shooter's trace actually ran against.
+	float aim[3] = { v2[0] - v1[0], v2[1] - v1[1], v2[2] - v1[2] };
+	float to[3]  = { ptr->pHit->v.origin[0] - v1[0],
+	                 ptr->pHit->v.origin[1] - v1[1],
+	                 ptr->pHit->v.origin[2] - v1[2] };
+
+	float aimN[3], toN[3];
+	float range = ktpshot::normalize3(to, toN);
+	if (range <= 0.0f || ktpshot::normalize3(aim, aimN) <= 0.0f)
+		return;
+
+	// Bearing rate to THIS target since its previous captured sighting, averaged
+	// over the gap between them; the gap ships alongside so the consumer judges
+	// validity instead of this layer picking a horizon. -1 is "no usable prior"
+	// -- a consumer must never read it as "stationary". The now > prevTime guard
+	// matters: svtimebase is re-anchored per packet, so the delta can step
+	// backward, and a negative dt would fabricate a rate.
+	int tgtAngVelMdps = -1;
+	int sightGapMs = -1;
+	const int tgtIdx = ENTINDEX_SAFE(ptr->pHit);
+	const double now = (double)gpGlobals->time;
+	if (tgtIdx == sg.prevTarget && sg.prevTime > 0.0 && now > sg.prevTime)
+	{
+		const double dt = now - sg.prevTime;
+		double mdps = ((double)ktpshot::angleUdeg(sg.prevDir, toN) / 1000.0) / dt;
+		double gap  = dt * 1000.0 + 0.5;
+		if (mdps > 2147483000.0) mdps = 2147483000.0;  // int32 headroom, not a threshold
+		if (gap  > 2147483000.0) gap  = 2147483000.0;
+		tgtAngVelMdps = (int)mdps;
+		sightGapMs = (int)gap;
+	}
+	sg.prevTarget = tgtIdx;
+	sg.prevTime = now;
+	sg.prevDir[0] = toN[0]; sg.prevDir[1] = toN[1]; sg.prevDir[2] = toN[2];
+
+	// How far the ray's start sits from the shooter's view origin. A penetration
+	// continuation trace starts at the wall exit point, not the eye, which shrinks
+	// range and inflates the angle for the same aim -- shipping the offset lets
+	// the consumer separate those samples instead of this layer guessing.
+	const edict_t *pe = pPlayer->pEdict;
+	float off[3] = { pe->v.origin[0] + pe->v.view_ofs[0] - v1[0],
+	                 pe->v.origin[1] + pe->v.view_ofs[1] - v1[1],
+	                 pe->v.origin[2] + pe->v.view_ofs[2] - v1[2] };
+
+	sg.geomSeq = sg.cmdSeq;
+	sg.geomWeapon = pPlayer->current;
+	sg.errUdeg = ktpshot::angleUdeg(aimN, toN);
+	sg.rangeUnits = (int)(range + 0.5f);
+	sg.tgtAngVelMdps = tgtAngVelMdps;
+	sg.sightGapMs = sightGapMs;
+	sg.hitgroup = ptr->iHitgroup;
+	sg.startOffUnits = (int)(sqrtf(ktpshot::dot3(off, off)) + 0.5f);
+}
+
 // KTP: TraceLine hook handler - replaces FN_TraceLine_Post
 static void DODX_OnTraceLine(IVoidHookChain<const float *, const float *, int, edict_t *, TraceResult *> *chain,
                               const float *v1, const float *v2, int fNoMonsters, edict_t *e, TraceResult *ptr)
@@ -963,7 +1065,10 @@ static void DODX_OnTraceLine(IVoidHookChain<const float *, const float *, int, e
 		{
 			CPlayer* pPlayer = GET_PLAYER_POINTER_I(idx);
 			if (pPlayer->ingame)
+			{
 				pPlayer->aiming = ptr->iHitgroup;
+				KTPCaptureShotGeom(pPlayer, v1, v2, ptr);
+			}
 		}
 		return;
 	}
@@ -1201,7 +1306,10 @@ static void DODX_OnPlayerPreThink(IVoidHookChain<edict_t *, float> *chain, edict
 			g_pFirstEdict = pEntity - tmpIndex;
 			g_bServerActive = true;
 			for (int i = 1; i <= gpGlobals->maxClients; ++i)
+			{
 				GET_PLAYER_POINTER_I(i)->Init(i, g_pFirstEdict + i);
+				GET_PLAYER_POINTER_I(i)->ktpShot.reset();
+			}
 			MF_Log("dodx: PreThink recovered g_pFirstEdict after SV_ActivateServer hook miss (player idx=%d)", tmpIndex);
 		}
 		else
@@ -1237,11 +1345,24 @@ static void DODX_OnPlayerPreThink(IVoidHookChain<edict_t *, float> *chain, edict
 
 		pPlayer->bot = (pEntity->v.flags & FL_FAKECLIENT) ? true : false;
 		pPlayer->PutInServer();
+
+		// Extension-mode connect point (Init() is skipped for a slot that already
+		// has a pEdict) -- same reason ktpAim resets in Disconnect(): a mid-map
+		// substitute must not inherit the leaver's stash or sighting baseline.
+		pPlayer->ktpShot.reset();
 	}
 	else if (!pPlayer->ingame)
 	{
 		return;
 	}
+
+	// KTP: open this player's shot-geometry cmd window. Deliberately in the hook
+	// BODY, which runs after chain->callNext: the game's PreThink up there is where
+	// the CurWeapon-driven fire forward reads the stash, so bumping here keeps the
+	// read's cmdSeq equal to what the fire's own PostThink trace will stamp.
+	// KTPShotGeom.h walks the ordering.
+	pPlayer->ktpShot.cmdSeq++;
+	g_ktpCmdOwner = index;
 
 	// KTP: sample aim/movement BEFORE the isModuleActive() gate. Those pauses are
 	// round-freeze and dodstats_pause -- scoring concerns. A fire window that spans a
@@ -1448,9 +1569,15 @@ static void DODX_OnSV_ActivateServer(IVoidHookChain<int> *chain, int runPhysics)
 			g_pFirstEdict = pWorld;
 			g_bServerActive = true;
 
-			// Initialize player slots
+			// Initialize player slots. ktpShot alongside: a stash or sighting
+			// baseline captured on the previous map describes positions that no
+			// longer exist, and cmdSeq pairing alone cannot see the map boundary.
 			for (int i = 1; i <= gpGlobals->maxClients; i++)
+			{
 				GET_PLAYER_POINTER_I(i)->Init(i, g_pFirstEdict + i);
+				GET_PLAYER_POINTER_I(i)->ktpShot.reset();
+			}
+			g_ktpCmdOwner = 0;
 		}
 		else
 		{
@@ -1504,6 +1631,24 @@ static void DODX_OnSV_DropClient(IVoidHookChain<IGameClient *, bool, const char 
 			if (pPlayer->ingame)
 			{
 				pPlayer->Disconnect();
+				// Disconnect-side twin of the connect reset in the PreThink hook,
+				// kept beside the sensor's other lifecycle points rather than in
+				// Disconnect(): capture and read exist only on this hook path.
+				pPlayer->ktpShot.reset();
+			}
+
+			// The leaver was also someone's angular-velocity baseline. Clear every
+			// pointer into this slot, or the next occupant's first sighting computes
+			// a bearing change between two different people. Clearing only ever
+			// downgrades a rate to "no prior", never fabricates one.
+			for (int i = 1; i <= gpGlobals->maxClients; ++i)
+			{
+				KTPShotGeom &o = GET_PLAYER_POINTER_I(i)->ktpShot;
+				if (o.prevTarget == clientIndex)
+				{
+					o.prevTarget = 0;
+					o.prevTime = 0.0;
+				}
 			}
 		}
 	}
@@ -1703,7 +1848,12 @@ static bool DODX_SetupExtensionHooks()
 
 			int maxCl = gpGlobals ? gpGlobals->maxClients : 32;
 			for (int i = 1; i <= maxCl; i++)
+			{
 				GET_PLAYER_POINTER_I(i)->Init(i, g_pFirstEdict + i);
+				// ktpShot is zero-initialised at this point (module attach), so this
+				// is shape-parity with the other two Init() loops, not a live fix.
+				GET_PLAYER_POINTER_I(i)->ktpShot.reset();
+			}
 		}
 	}
 

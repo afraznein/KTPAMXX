@@ -46,10 +46,20 @@
 // KNOWN OCCLUSION BLINDNESS, deliberately not corrected either -- and the larger of
 // the two contaminants. The ray is infinite and untraced (tracing is the rejected
 // design above), so a crossing fires for an enemy behind a wall or across the map,
-// and the crossings counter is dominated by entries no one could see. A latency
-// anchored on an occluded entry runs LONG -- the target crossed before it became
-// visible -- so this blinds toward reading more human, never less; but any consumer
-// dividing by crossings is dividing by a mixed population and must know it.
+// and the crossings counter is dominated by entries no one could see. Bias direction
+// differs per path and is established for only one of them. On the INSIDE-PRESS path
+// a latency anchored on an occluded entry runs LONG (the target crossed before it
+// became visible), which reads more human. On the PENDING path it is UNESTABLISHED:
+// a through-wall crossing can consume the pending record earlier than the visible one
+// would, SHORTENING the reported anticipation window. Do not read "never less human"
+// as covering both -- a consumer correcting for this bias needs the distinction, and
+// any consumer dividing by crossings is dividing by a mixed population.
+//
+// ⚠️ THE BACKWARD-CLOCK GUARD IS NOT A MAP-IDENTITY GUARD. It cannot fire when the
+// old map's final time is LESS than the new map's time at the first post-change
+// sample -- a changelevel within a few seconds of map start. That makes the
+// DODX_OnSV_ActivateServer reset LOAD-BEARING, not belt-and-braces: do not drop it as
+// redundant on the strength of the in-file guard.
 //
 // Requires dodx.h (CPlayer, players[], engine globals). Include from exactly one
 // translation unit: state lives in file-scope statics, and a second inclusion would
