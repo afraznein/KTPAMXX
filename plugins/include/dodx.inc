@@ -1066,3 +1066,49 @@ native dodx_reset_aim_stats(id);
  * @return  1 with geometry, 0 when no geometry belongs to this shot (record NULL)
  */
 native dodx_get_shot_geom(id, weapon, geom[6]);
+
+/**
+ * Read a player's aim-vs-transmission counters. Measurements only: no threshold,
+ * no ratio, no conclusion is applied here.
+ *
+ * Each sample is taken when the game's own aim trace lands on a live enemy (at
+ * most one per usercmd; bot shooters excluded), and asks whether that enemy was
+ * present in ANY entity pack the server sent this player within a window of the
+ * engine's default client interpolation depth plus this player's measured ping --
+ * how far in the past the player's screen legitimately runs.
+ *
+ * READ THE THREE STATES CORRECTLY -- they are not two:
+ *   - stats[0] samples with an answer (packed-within-window or not);
+ *   - stats[1] the subset of stats[0] whose enemy was NOT in any pack inside the
+ *     window: the server had not transmitted that entity to that client recently
+ *     enough for any renderer, stock or otherwise, to have drawn it;
+ *   - stats[2] samples with NO answer (recording had not yet covered a full
+ *     window for both slots, recorder inactive, clock boundary). Unknown counts
+ *     toward NEITHER side; folding it into either fabricates a rate.
+ *   - A packed-within-window sample says nothing about visibility -- PVS is
+ *     leaf-based and generous, and entities stay packed while occluded.
+ *
+ * stats[3]/stats[4] carry the window actually used (ms): sum across stats[0]
+ * samples (saturating) and the widest single window. stats[5] is 1 while the
+ * pack recorder hook is registered; 0 means every sample lands in stats[2] and
+ * the interval says nothing at all.
+ *
+ * Counters reset on connect, disconnect and map change, so a mid-map substitute
+ * never inherits the previous occupant's numbers.
+ *
+ * @param id        Player index
+ * @param stats     Output, 6 cells as above; zeroed before any failure return
+ * @return  1 on success, 0 for a not-ingame player (an out-of-range index
+ *          raises a native error instead of returning)
+ */
+native dodx_get_aim_vis_stats(id, stats[6]);
+
+/**
+ * Clear a player's aim-vs-transmission counters after a successful flush.
+ * Separate from the read so a failed flush does not silently discard the
+ * interval that justified it: read, ship, and only then reset.
+ *
+ * @param id        Player index
+ * @return  1 on success
+ */
+native dodx_reset_aim_vis_stats(id);

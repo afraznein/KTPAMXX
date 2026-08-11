@@ -1040,6 +1040,192 @@ static void KTPCaptureShotGeom(CPlayer *pPlayer, const float *v1, const float *v
 	sg.startOffUnits = (int)(sqrtf(ktpshot::dot3(off, off)) + 0.5f);
 }
 
+// KTP: pack recorder for the tier-2.7 aim-vs-transmission sensor (KTPPackVis.h).
+// SV_CreatePacketEntities hands over, per client per sent frame, the exact
+// entity pack the engine is about to serialize -- one step downstream of the
+// game DLL's AddToFullPack verdicts, so "recorded here" and "transmitted to
+// that client" are the same statement. Player entities only: the sampler only
+// ever asks about players, and a last-packed-time table makes the per-usercmd
+// query O(1) -- no per-call scan of the frame ring, and no ring-length bound
+// turning high ping into a stricter check.
+//
+// Why not read client_t::frames directly (the rh_is_entity_fullpacked shape):
+// dodx has no ABI-safe path to client_t. engine_strucs.h pins NET_MAX_PAYLOAD
+// at 3990 while this fork's engine builds netchan_t with 65536, so every
+// client_t field after netchan -- frames included -- sits at the wrong offset
+// through that mirror. The hook hands us engine-built pointers instead, which
+// cannot go stale that way.
+static double g_ktpPackLastSeen[33][33]; // [host][target] = sv time of the last pack containing target
+static double g_ktpPackSince[33];        // when this slot's recording/occupancy continuity began
+bool g_ktpPackRecorderLive = false;      // read by dodx_get_aim_vis_stats (NBase.cpp)
+
+// Clock note, load-bearing for the sampler's compare: recording stamps
+// gpGlobals->time in the send phase (sv.time), while the sampler reads it
+// inside a usercmd (the shooter's svtimebase). They differ by at most about one
+// client packet interval -- an order below the window -- and both freeze under
+// a server pause together, which a wall clock would not.
+
+static void KTPPackVisClearSlot(int slot, double now)
+{
+	for (int i = 0; i < 33; ++i)
+	{
+		g_ktpPackLastSeen[slot][i] = 0.0;
+		g_ktpPackLastSeen[i][slot] = 0.0;
+	}
+	g_ktpPackSince[slot] = now;
+}
+
+static void KTPPackVisClearAll(double now)
+{
+	memset(g_ktpPackLastSeen, 0, sizeof(g_ktpPackLastSeen));
+	for (int i = 0; i < 33; ++i)
+		g_ktpPackSince[i] = now;
+}
+
+static int DODX_OnSVCreatePacketEntities(IRehldsHook_SV_CreatePacketEntities *chain,
+	sv_delta_t type, IGameClient *cl, packet_entities_t *to, sizebuf_t *msg)
+{
+	// The pack is fully built before this call; the chain only serializes it.
+	int ret = chain->callNext(type, cl, to, msg);
+
+	if (g_bServerActive && gpGlobals && cl && to)
+	{
+		edict_t *pHostEdict = cl->GetEdict();
+		const int host = pHostEdict ? ENTINDEX_SAFE(pHostEdict) : 0;
+		if (host >= 1 && host <= gpGlobals->maxClients && host <= 32)
+		{
+			const double now = (double)gpGlobals->time;
+			int maxc = gpGlobals->maxClients;
+			if (maxc > 32)
+				maxc = 32;
+			// The engine caps a pack at 256 entries; clamping the walk to that
+			// costs nothing and bounds this loop even against a corrupt count.
+			int count = to->num_entities;
+			if (count > 256)
+				count = 256;
+			for (int i = 0; i < count; ++i)
+			{
+				const int n = to->entities[i].number;
+				if (n >= 1 && n <= maxc)
+					g_ktpPackLastSeen[host][n] = now;
+			}
+		}
+	}
+
+	return ret;
+}
+
+// KTP: interpolation half of the sampling window, milliseconds. The GoldSrc
+// client renders ex_interp (default 0.1 s) behind its newest update; this is
+// that engine default. It is a forgiveness bound, not a judgement -- widening
+// it only moves samples toward "packed", never toward suspicion.
+#define KTP_VIS_INTERP_MS 100
+
+// KTP: one aim-vs-transmission sample (tier 2.7). Reached from the same
+// player-hitting-trace site as the shot capture, so the aim ray is one the game
+// itself cast -- this layer casts none and defines no aim cone of its own.
+// Everything recorded is a count; the meaning of the counts is the private
+// consumer's problem.
+static void KTPSampleAimVis(CPlayer *pPlayer, TraceResult *ptr)
+{
+	KTPPackVis &v = pPlayer->ktpVis;
+	KTPShotGeom &sg = pPlayer->ktpShot;
+
+	// Same cmd-window attribution gate as the shot capture, then one sample per
+	// cmd: the first QUALIFYING trace speaks for it (the latch is set after the
+	// team/alive filters, so a teammate-hitting trace does not spend the cmd).
+	if (pPlayer->index != g_ktpCmdOwner || sg.cmdSeq == 0)
+		return;
+	if (v.lastSampleSeq == sg.cmdSeq)
+		return;
+
+	// Bots receive no entity packets, so every bot-shooter sample would read
+	// "never packed" -- fabricated by construction. Bot TARGETS are packed to
+	// real clients like any entity and stay sampled.
+	if (pPlayer->bot)
+		return;
+
+	edict_t *pShooter = pPlayer->pEdict;
+	edict_t *pTarget = ptr->pHit;
+	if (!pShooter || pShooter->free || !pTarget || pTarget->free)
+		return;
+
+	// Live opponents only. Teammates and spectators are packed under the game's
+	// own rules regardless of visibility and would only dilute the counters.
+	const int shooterTeam = (int)pShooter->v.team;
+	const int targetTeam = (int)pTarget->v.team;
+	if (shooterTeam < 1 || shooterTeam > 2 || targetTeam < 1 || targetTeam > 2)
+		return;
+	if (shooterTeam == targetTeam)
+		return;
+	if (pTarget->v.deadflag != DEAD_NO || pTarget->v.health <= 0)
+		return;
+
+	const int host = pPlayer->index;
+	const int tgt = ENTINDEX_SAFE(pTarget);
+	if (host < 1 || host > 32 || tgt < 1 || tgt > gpGlobals->maxClients || tgt > 32)
+		return;
+
+	v.lastSampleSeq = sg.cmdSeq;
+
+	// A dead recorder means every answer would be fabricated. That is the
+	// unknown state, never a zero.
+	if (!g_ktpPackRecorderLive)
+	{
+		v.samplesUnknown++;
+		return;
+	}
+
+	int ping = 0, loss = 0;
+	if (g_engfuncs.pfnGetPlayerStats)
+		(*g_engfuncs.pfnGetPlayerStats)(pShooter, &ping, &loss);
+	if (ping < 0)
+		ping = 0;
+	const int winMs = KTP_VIS_INTERP_MS + ping;
+
+	const double now = (double)gpGlobals->time;
+	const double last = g_ktpPackLastSeen[host][tgt];
+
+	// The recorder stamps sv.time at send; this read runs on the shooter's
+	// svtimebase, which dropped commands pull BEHIND the newest send stamp — so
+	// a stamp slightly ahead of this clock is routine packet-loss skew, and it
+	// concentrates on lossy clients. The window is a forgiveness bound, so
+	// ahead-within-window reads as packed; only ahead-beyond-window — a real
+	// map/clock boundary — is unanswerable.
+	if (last > 0.0 && (last - now) * 1000.0 > (double)winMs)
+	{
+		v.samplesUnknown++;
+		return;
+	}
+
+	if (last > 0.0 && (now - last) * 1000.0 <= (double)winMs)
+	{
+		ktppackvis::satAdd(v.samplesKnown, 1);
+		ktppackvis::satAdd(v.windowMsSum, winMs);
+		if (winMs > v.windowMsMax)
+			v.windowMsMax = winMs;
+		return;
+	}
+
+	// Not seen within the window. That only means something once recording has
+	// covered a full window for BOTH slots; before that, absence of a stamp is
+	// absence of coverage. since==0 is the never-stamped state and never counts
+	// as covered — the storage default must not be the fabricating direction.
+	const double since = (g_ktpPackSince[host] > g_ktpPackSince[tgt])
+		? g_ktpPackSince[host] : g_ktpPackSince[tgt];
+	if (since <= 0.0 || now < since || (now - since) * 1000.0 < (double)winMs)
+	{
+		v.samplesUnknown++;
+		return;
+	}
+
+	ktppackvis::satAdd(v.samplesKnown, 1);
+	ktppackvis::satAdd(v.samplesUnpacked, 1);
+	ktppackvis::satAdd(v.windowMsSum, winMs);
+	if (winMs > v.windowMsMax)
+		v.windowMsMax = winMs;
+}
+
 // KTP: TraceLine hook handler - replaces FN_TraceLine_Post
 static void DODX_OnTraceLine(IVoidHookChain<const float *, const float *, int, edict_t *, TraceResult *> *chain,
                               const float *v1, const float *v2, int fNoMonsters, edict_t *e, TraceResult *ptr)
@@ -1068,6 +1254,7 @@ static void DODX_OnTraceLine(IVoidHookChain<const float *, const float *, int, e
 			{
 				pPlayer->aiming = ptr->iHitgroup;
 				KTPCaptureShotGeom(pPlayer, v1, v2, ptr);
+				KTPSampleAimVis(pPlayer, ptr);
 			}
 		}
 		return;
@@ -1309,7 +1496,11 @@ static void DODX_OnPlayerPreThink(IVoidHookChain<edict_t *, float> *chain, edict
 			{
 				GET_PLAYER_POINTER_I(i)->Init(i, g_pFirstEdict + i);
 				GET_PLAYER_POINTER_I(i)->ktpShot.reset();
+				GET_PLAYER_POINTER_I(i)->ktpVis.reset();
 			}
+			// Recovery implies the activate hook was missed, so the pack table may
+			// still describe the previous map. Restart coverage from here.
+			KTPPackVisClearAll((double)gpGlobals->time);
 			MF_Log("dodx: PreThink recovered g_pFirstEdict after SV_ActivateServer hook miss (player idx=%d)", tmpIndex);
 		}
 		else
@@ -1350,6 +1541,10 @@ static void DODX_OnPlayerPreThink(IVoidHookChain<edict_t *, float> *chain, edict
 		// has a pEdict) -- same reason ktpAim resets in Disconnect(): a mid-map
 		// substitute must not inherit the leaver's stash or sighting baseline.
 		pPlayer->ktpShot.reset();
+		// Nor the leaver's visibility counters or pack history -- and coverage
+		// for this slot restarts now, so early samples read unknown, not clean.
+		pPlayer->ktpVis.reset();
+		KTPPackVisClearSlot(index, (double)gpGlobals->time);
 	}
 	else if (!pPlayer->ingame)
 	{
@@ -1576,8 +1771,12 @@ static void DODX_OnSV_ActivateServer(IVoidHookChain<int> *chain, int runPhysics)
 			{
 				GET_PLAYER_POINTER_I(i)->Init(i, g_pFirstEdict + i);
 				GET_PLAYER_POINTER_I(i)->ktpShot.reset();
+				GET_PLAYER_POINTER_I(i)->ktpVis.reset();
 			}
 			g_ktpCmdOwner = 0;
+			// Pack timestamps ride sv.time, which restarts with the map; stale
+			// stamps would sit in the new map's future. Coverage restarts too.
+			KTPPackVisClearAll((double)gpGlobals->time);
 		}
 		else
 		{
@@ -1635,6 +1834,7 @@ static void DODX_OnSV_DropClient(IVoidHookChain<IGameClient *, bool, const char 
 				// kept beside the sensor's other lifecycle points rather than in
 				// Disconnect(): capture and read exist only on this hook path.
 				pPlayer->ktpShot.reset();
+				pPlayer->ktpVis.reset();
 			}
 
 			// The leaver was also someone's angular-velocity baseline. Clear every
@@ -1650,6 +1850,13 @@ static void DODX_OnSV_DropClient(IVoidHookChain<IGameClient *, bool, const char 
 					o.prevTime = 0.0;
 				}
 			}
+
+			// Same slot-reuse hazard for the pack table: the leaver's packed-time
+			// row and column must not describe the next occupant. Clearing only
+			// ever turns an answer into unknown, never the reverse. gpGlobals is
+			// non-null on this path (dereferenced by the loop above).
+			if (clientIndex >= 1 && clientIndex <= 32)
+				KTPPackVisClearSlot(clientIndex, (double)gpGlobals->time);
 		}
 	}
 }
@@ -1827,6 +2034,23 @@ static bool DODX_SetupExtensionHooks()
 	if (g_pRehldsHookchains->SV_DropClient())
 		g_pRehldsHookchains->SV_DropClient()->registerHook(DODX_OnSV_DropClient, HC_PRIORITY_DEFAULT);
 
+	// KTP: Register SV_CreatePacketEntities hook - the tier-2.7 pack recorder.
+	// Post-style: records after callNext and modifies nothing the engine sends.
+	// The live flag is what turns sampler answers from "unknown" into real ones,
+	// so it flips only here and back off in cleanup.
+	if (g_pRehldsHookchains->SV_CreatePacketEntities())
+	{
+		g_pRehldsHookchains->SV_CreatePacketEntities()->registerHook(DODX_OnSVCreatePacketEntities, HC_PRIORITY_DEFAULT);
+		g_ktpPackRecorderLive = true;
+		// Coverage restarts on the down->up transition itself, not only at the
+		// enumerated lifecycle sites: "recording was interrupted" is the actual
+		// precondition, and a cleanup->setup round trip reaches none of those
+		// sites. Without gpGlobals the table stays never-stamped (since==0),
+		// which the sampler reads as unknown — never as covered.
+		if (gpGlobals)
+			KTPPackVisClearAll((double)gpGlobals->time);
+	}
+
 	// KTP: Initialize g_pFirstEdict NOW as fallback.
 	// The SV_ActivateServer hook fires on map changes, but on the FIRST map load
 	// the server has already activated BEFORE this module registers its hooks.
@@ -1853,7 +2077,13 @@ static bool DODX_SetupExtensionHooks()
 				// ktpShot is zero-initialised at this point (module attach), so this
 				// is shape-parity with the other two Init() loops, not a live fix.
 				GET_PLAYER_POINTER_I(i)->ktpShot.reset();
+				GET_PLAYER_POINTER_I(i)->ktpVis.reset();
 			}
+			// Not shape-parity: the since[] array is zero at attach, and on this
+			// first-map path sv.time is already past zero -- without this, the
+			// coverage test would pass a window nothing ever recorded.
+			if (gpGlobals)
+				KTPPackVisClearAll((double)gpGlobals->time);
 		}
 	}
 
@@ -2447,6 +2677,12 @@ static void DODX_CleanupExtensionHooks()
 		// Unregister SV_DropClient hook
 		if (g_pRehldsHookchains->SV_DropClient())
 			g_pRehldsHookchains->SV_DropClient()->unregisterHook(DODX_OnSV_DropClient);
+
+		// Unregister the pack recorder; with the flag down, samples read unknown
+		// instead of trusting a table nothing feeds.
+		if (g_pRehldsHookchains->SV_CreatePacketEntities())
+			g_pRehldsHookchains->SV_CreatePacketEntities()->unregisterHook(DODX_OnSVCreatePacketEntities);
+		g_ktpPackRecorderLive = false;
 	}
 
 	// KTP: Unregister InitObj IMessage hook

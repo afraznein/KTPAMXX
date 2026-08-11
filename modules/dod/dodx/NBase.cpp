@@ -2113,6 +2113,49 @@ static cell AMX_NATIVE_CALL dodx_reset_aim_stats(AMX *amx, cell *params)
 	return 1;
 }
 
+// KTP: read the tier-2.7 aim-vs-transmission counters. Measurements only -- no
+// threshold is applied here and none should be added; KTPPackVis.h carries the
+// direction and unknown-state rules a consumer must honour.
+//
+// out[] = { samples_known, samples_unpacked, samples_unknown,
+//           window_ms_sum, window_ms_max, recorder_live }
+static cell AMX_NATIVE_CALL dodx_get_aim_vis_stats(AMX *amx, cell *params)
+{
+	int index = params[1];
+	CHECK_PLAYER(index);
+
+	// Zeroed even on the failure return: a caller that mishandles the 0 must
+	// read zeros, not whatever its own buffer held -- stale cells here are the
+	// fabrication direction.
+	cell *out = MF_GetAmxAddr(amx, params[2]);
+	for (int i = 0; i < 6; ++i)
+		out[i] = 0;
+
+	CPlayer *pPlayer = GET_PLAYER_POINTER_I(index);
+	if (!pPlayer->ingame || !pPlayer->pEdict || pPlayer->pEdict->free)
+		return 0;
+
+	const KTPPackVis &v = pPlayer->ktpVis;
+	out[0] = v.samplesKnown;
+	out[1] = v.samplesUnpacked;
+	out[2] = v.samplesUnknown;
+	out[3] = v.windowMsSum;
+	out[4] = v.windowMsMax;
+	out[5] = g_ktpPackRecorderLive ? 1 : 0;
+	return 1;
+}
+
+// KTP: clear the tier-2.7 counters. Separate from the read for the same reason
+// as the aim stats: a failed flush must not silently discard what justified it.
+static cell AMX_NATIVE_CALL dodx_reset_aim_vis_stats(AMX *amx, cell *params)
+{
+	int index = params[1];
+	CHECK_PLAYER(index);
+
+	GET_PLAYER_POINTER_I(index)->ktpVis.reset();
+	return 1;
+}
+
 AMX_NATIVE_INFO base_Natives[] =
 {
 	{ "dod_wpnlog_to_name", wpnlog_to_name },
@@ -2233,6 +2276,10 @@ AMX_NATIVE_INFO base_Natives[] =
 
 	// KTP: per-shot aim geometry (blind audit tier 2.3)
 	{"dodx_get_shot_geom",                   dodx_get_shot_geom},
+
+	// KTP: aim-vs-transmission counters (blind audit tier 2.7)
+	{"dodx_get_aim_vis_stats",               dodx_get_aim_vis_stats},
+	{"dodx_reset_aim_vis_stats",             dodx_reset_aim_vis_stats},
 
 	///*******************
 	{ NULL, NULL }
