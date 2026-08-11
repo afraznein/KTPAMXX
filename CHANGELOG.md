@@ -34,8 +34,11 @@ existing plugins compile unchanged, but a plugin wanting the new natives must be
 include set. **This cut also registers a new engine hookchain**, `SV_CreatePacketEntities` — the first
 addition to DODX's hook list since `SV_ActivateServer`.
 
-**Shipping artifact — `dodx_ktp_i386.so` md5 recorded in the follow-up commit**, paired with the
-source commit it was built from (same two-step as 2.7.27: build, then pin).
+**Shipping artifact — `dodx_ktp_i386.so` md5 `181e1ad1c387196191dc50bc90507810`** (built 2026-08-11
+from `d76104f7`, `build_linux.sh`, GLIBC 2.35 / Ubuntu 22.04). Natives verified present in the
+binary rather than inferred from "build succeeded", with `dodx_get_aim_stats` as a positive
+control and both `dodx_get_trigger_stats` (2.5, header-only by design) and a nonsense name as
+negative controls — a probe answering the same way for everything is broken, not informative.
 ⚠️ **Do not rebuild to re-verify** — a rebuild churns the md5 and you would stage a binary nobody
 reviewed. Verify by md5, never by the banner.
 
