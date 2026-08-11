@@ -27,6 +27,85 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `DODX_ReadBSPPointIndices` to `DODX_ReadBSPControlPoints`, and a textually clean merge produced a
   loop iterating an array nothing populated.
 
+## [2.7.28] - 2026-08-11
+
+DODX-only delta over 2.7.27. **The `.inc` DID change** (three natives added) — additive only, so
+existing plugins compile unchanged, but a plugin wanting the new natives must be rebuilt against this
+include set. **This cut also registers a new engine hookchain**, `SV_CreatePacketEntities` — the first
+addition to DODX's hook list since `SV_ActivateServer`.
+
+**Shipping artifact — `dodx_ktp_i386.so` md5 recorded in the follow-up commit**, paired with the
+source commit it was built from (same two-step as 2.7.27: build, then pin).
+⚠️ **Do not rebuild to re-verify** — a rebuild churns the md5 and you would stage a binary nobody
+reviewed. Verify by md5, never by the banner.
+
+> **Core source is unchanged, but the core BINARY is not identical** — `product.version` feeds
+> `support/generate_headers.py`, so the version bump alone changes `ktpamx_i386.so`. Only the DODX
+> artifact is meant to ship here; the core is a byproduct, exactly as in the 2.7.23, 2.7.26 and
+> 2.7.27 DODX-only cuts.
+
+⚠️ **A consumer plugin calling the new natives is hard-coupled to this module and must ship in the
+same restart.** An unresolved native sets `ps_bad_load` (`amxmodx/CPlugin.cpp:407-420`) unless the
+plugin installs a native filter — so a plugin built against this include set, landing on a server
+still running 2.7.27, does not degrade: it fails to load **entirely**.
+
+### Added
+- **Per-shot aim geometry** (`dodx_get_shot_geom`) — blind audit tier 2.3. Captures the geometry of a
+  shot at the bullet's own `TraceLine`, inside the lag-compensation window, and reports angular error
+  to target centre, range, target bearing rate, the averaging gap, hitgroup, and the ray's start
+  offset from the eye.
+
+  **Sensor, not detector** — no threshold, no ratio, no conclusion. This repository is public, so a
+  threshold compiled in here is a published one. Range and bearing rate ship as covariates rather
+  than folded into a scalar, because reducing them in this layer would bake a judgement into a public
+  file.
+
+  **The capture point is forced.** The bullet trace runs inside `SV_SetupMove`/`SV_RestoreMove`, so
+  enemy origins are the positions the shooter actually saw. `dod_client_weapon_fire` fires *outside*
+  that window, off the CurWeapon clip-decrement path, by which time the world is restored and the
+  geometry is gone. So the trace captures and the forward only reads.
+
+  **The pairing guard is a per-player usercmd ordinal, not a gametime compare.** Equality on
+  `gpGlobals->time` fails in both directions: it rejects every real shot (trace time and read time are
+  one usercmd apart), and any tolerance wide enough to fix that re-admits the aliasing it exists to
+  prevent. On top of the ordinal the read is destructive, capture is first-wins within a cmd, and the
+  reader must present a matching weapon id. Every guard failure returns 0 meaning record-NULL — never
+  a substitute value, because a stale sample here is fabricated evidence against a real person.
+
+  ⚠️ **Residual, stated rather than implied:** a shooter-owned player-hitting trace issued by the game
+  DLL between the PreThink hook body and PostThink (player Think, or a touch handler under
+  `SV_Impact`) can **displace** the bullet's own capture, and in a cmd where the bullet hit nobody it
+  can fill the gap. `dod.so` is closed source so the class cannot be enumerated; vanilla HLSDK has
+  none on these paths. The real fix is an `SV_PlayerRunPostThink` hookchain in KTP-ReHLDS. Until a
+  consumer has correlated these samples against the independent `client_damage` hit stream, treat
+  `err_udeg` as possibly describing a non-bullet ray.
+
+- **Aim-vs-transmission counters** (`dodx_get_aim_vis_stats`, `dodx_reset_aim_vis_stats`) — tier 2.7.
+  When a player's own aim trace lands on a live enemy, one sample per usercmd asks whether that enemy
+  was in **any** entity pack the server sent that player within a window of the engine's default
+  interpolation depth plus the player's measured ping.
+
+  Fed by a new `SV_CreatePacketEntities` hook — one step downstream of the game DLL's `AddToFullPack`
+  verdicts, so "recorded here" and "transmitted to that client" are the same statement. A
+  last-packed-time table keeps the query O(1), so high ping does not become a stricter check. Reading
+  `client_t::frames` directly was rejected: `engine_strucs.h` pins `NET_MAX_PAYLOAD` at 3990 while this
+  fork builds `netchan_t` with 65536, so every `client_t` field after `netchan` sits at the wrong
+  offset through that mirror.
+
+  **One direction only.** "Not packed" means the client had nothing to render. "Packed" means nothing
+  about visibility — PVS is leaf-based and generous, and entities stay packed while fully occluded. A
+  consumer reading packed-within-window as "legitimately seen" is measuring map topology.
+
+  **Unknown is a third state, not a default.** Fresh map, fresh connect, dead recorder or a clock
+  boundary all count as unknown rather than folding into either side; the recorder's live flag ships
+  with the counters so a consumer can tell "nothing suspicious" from "nothing recorded". Bot shooters
+  are excluded entirely — they receive no entity packets, so every such sample would be fabricated by
+  construction.
+
+  Both sensors reset on connect, disconnect and map change. The disconnect path also clears every
+  *other* player's sighting baseline and pack row pointing at the leaving slot, so the next occupant
+  cannot inherit a bearing rate computed between two different people.
+
 ## [2.7.27] - 2026-08-10
 
 DODX-only delta over 2.7.26. **The `.inc` DID change** (three natives added), unlike 2.7.26 — additive
