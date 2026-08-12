@@ -1146,6 +1146,8 @@ native dodx_get_aim_vis_stats(id, stats[6]);
  * @return  1 on success
  */
 native dodx_reset_aim_vis_stats(id);
+
+/**
  * Test/diagnostic-only: log what dodx_get_score_tick_time() is currently
  * seeing — whether a dod_control_point_master exists, whether it is active,
  * its m_fGivePointsTime / m_iGivePointsDelay, and the derived remaining time.
