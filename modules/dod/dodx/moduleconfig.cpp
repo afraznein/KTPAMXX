@@ -174,6 +174,27 @@ int g_iRoundRestartingOffset = -1;   // CDoDTeamPlay::m_bRoundRestarting (BOOL)
 // CVAR_GET_FLOAT is unsafe in extension-mode engine paths).
 cvar_t *g_pcvarMpTimelimit = nullptr;
 
+// KTP: CControlPointMaster members for dodx_get_score_tick_time().
+//
+// DoD awards periodic TERRITORIAL points — the score that ticks up while a team
+// holds ground — from the map's single dod_control_point_master entity, on its
+// own clock. The game client never surfaces that clock anywhere, which is why a
+// broadcast overlay has to read it: m_fGivePointsTime is the absolute gametime
+// of the next award and m_iGivePointsDelay is the period between awards, while
+// m_bActive gates whether the master is scoring at all.
+//
+// UNLIKE the CDoDTeamPlay members above, these offsets DIFFER BY PLATFORM
+// (windows 420/424/416 vs linux 436/440/432). Always resolve them through
+// gamedata; never hardcode. Shipped in
+// gamedata/common.games/entities.games/dod/offsets-ccontrolpointmaster.txt.
+int g_iCPMGivePointsTimeOffset = -1;   // CControlPointMaster::m_fGivePointsTime (float)
+int g_iCPMGivePointsDelayOffset = -1;  // CControlPointMaster::m_iGivePointsDelay (int)
+int g_iCPMActiveOffset = -1;           // CControlPointMaster::m_bActive (BOOL)
+
+// Resolved lazily per map by DODX_GetCPMaster(); cleared on map change so a
+// freed edict from the previous map can never be read.
+edict_t *g_pCPMasterEdict = nullptr;
+
 cvar_t init_dodstats_maxsize ={"dodstats_maxsize","3500", 0 , 3500.0 };
 cvar_t init_dodstats_reset ={"dodstats_reset","0"};
 cvar_t init_dodstats_rank ={"dodstats_rank","0"};
@@ -817,6 +838,21 @@ void OnPluginsLoaded()
 			}
 			MF_Log("[DODX] half-clock offsets: flDoDMapTime=%d flRestartRoundTime=%d bRoundRestarting=%d",
 				g_iDoDMapTimeOffset, g_iRestartRoundTimeOffset, g_iRoundRestartingOffset);
+
+			// Scoring-tick members for dodx_get_score_tick_time (see globals
+			// block). Entity-class offsets, so common.games only — the
+			// gamerules config carries no CControlPointMaster section.
+			if (g_pCommonConfig)
+			{
+				if (g_pCommonConfig->GetOffsetByClass("CControlPointMaster", "m_fGivePointsTime", &data))
+					g_iCPMGivePointsTimeOffset = data.fieldOffset;
+				if (g_pCommonConfig->GetOffsetByClass("CControlPointMaster", "m_iGivePointsDelay", &data))
+					g_iCPMGivePointsDelayOffset = data.fieldOffset;
+				if (g_pCommonConfig->GetOffsetByClass("CControlPointMaster", "m_bActive", &data))
+					g_iCPMActiveOffset = data.fieldOffset;
+			}
+			MF_Log("[DODX] scoring-tick offsets: fGivePointsTime=%d iGivePointsDelay=%d bActive=%d",
+				g_iCPMGivePointsTimeOffset, g_iCPMGivePointsDelayOffset, g_iCPMActiveOffset);
 		}
 	}
 
@@ -1747,6 +1783,11 @@ static void DODX_OnSV_ActivateServer(IVoidHookChain<int> *chain, int runPhysics)
 	g_lastCapturedTime = 0.0f;
 	for (int i = DODMAX_WEAPONS - DODMAX_CUSTOMWPNS; i < DODMAX_WEAPONS; i++)
 		weaponData[i].needcheck = false;
+
+	// KTP: the previous map's control-point master edict is freed by now, so the
+	// cached pointer must go with it — dodx_get_score_tick_time() re-finds it
+	// lazily on the new map.
+	g_pCPMasterEdict = nullptr;
 
 	DODX_ReadBSPMapInfo();
 

@@ -612,6 +612,14 @@ extern int g_iRestartRoundTimeOffset; // CDoDTeamPlay::m_flRestartRoundTime
 extern int g_iRoundRestartingOffset;  // CDoDTeamPlay::m_bRoundRestarting
 extern cvar_t *g_pcvarMpTimelimit;    // cached mp_timelimit
 
+// KTP: CControlPointMaster members for dodx_get_score_tick_time. Unlike the
+// CDoDTeamPlay members above, these offsets DIFFER BY PLATFORM — always resolve
+// through gamedata (see moduleconfig.cpp).
+extern int g_iCPMGivePointsTimeOffset;   // CControlPointMaster::m_fGivePointsTime
+extern int g_iCPMGivePointsDelayOffset;  // CControlPointMaster::m_iGivePointsDelay
+extern int g_iCPMActiveOffset;           // CControlPointMaster::m_bActive
+extern edict_t *g_pCPMasterEdict;        // cached per map, cleared on map change
+
 // Check if gamerules is available for score modification
 inline bool DODX_HasGameRules()
 {

@@ -439,6 +439,40 @@ native dodx_broadcast_team_score(team, score);
 native Float:dodx_get_round_time();
 
 /**
+ * Seconds until the map's next TERRITORIAL scoring tick — the periodic team
+ * point award for holding control points, read straight off the map's
+ * dod_control_point_master (CControlPointMaster::m_fGivePointsTime).
+ *
+ * The DoD client shows this clock NOWHERE: not the countdown, not the amount.
+ * Without this native an observer can only infer the phase by watching the
+ * score move, which costs a lock-on period at every half start and again after
+ * every round restart — a restart rebases the master's clock.
+ *
+ * The master gates its own scoring, so an inactive master reports unavailable
+ * rather than counting down to an award that will never land.
+ *
+ * @return  Seconds remaining as a float; -1.0 when unavailable (map has no
+ *          control-point master — e.g. a pure objective map, offsets
+ *          unresolved, master inactive, or an implausible read). Callers MUST
+ *          handle -1.0 by falling back to their own estimate.
+ */
+native Float:dodx_get_score_tick_time();
+
+/**
+ * The map's nominal territorial scoring period in seconds
+ * (CControlPointMaster::m_iGivePointsDelay).
+ *
+ * NOTE this is the configured delay, not the observed spacing: the master only
+ * awards on its own think, so real awards land slightly later than the delay
+ * (measured 30.50s against a delay of 30 on the KTP fleet). Use it as a sanity
+ * bound or a bootstrap hint — never as a phase, and never to extrapolate a
+ * countdown across more than one cycle.
+ *
+ * @return  Period in seconds; -1 when unavailable.
+ */
+native dodx_get_score_tick_period();
+
+/**
  * Set custom team name on scoreboard for all players on a team.
  * Sends TeamInfo message to all clients - may override "Allies"/"Axis" display.
  * Call this after players join teams to show custom names on scoreboard.
@@ -1112,3 +1146,17 @@ native dodx_get_aim_vis_stats(id, stats[6]);
  * @return  1 on success
  */
 native dodx_reset_aim_vis_stats(id);
+ * Test/diagnostic-only: log what dodx_get_score_tick_time() is currently
+ * seeing — whether a dod_control_point_master exists, whether it is active,
+ * its m_fGivePointsTime / m_iGivePointsDelay, and the derived remaining time.
+ *
+ * That native returns -1.0 on every failure path rather than a fabricated
+ * clock, which makes "no scoring countdown" indistinguishable from outside:
+ * no master entity, unresolved offsets, an inactive master and an implausible
+ * read all look the same. This says which. One `[DODX] scoretick` line per
+ * call. Read-only and safe on any map in any state.
+ * Production plugins MUST NOT call this.
+ *
+ * @return  1 if a master was found and dumped, 0 otherwise
+ */
+native dodx_test_dump_score_tick();

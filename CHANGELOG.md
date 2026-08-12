@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`dodx_get_score_tick_time()` / `dodx_get_score_tick_period()` — the territorial scoring clock.**
+  DoD awards periodic team points for holding control points from the map's single
+  `dod_control_point_master`, on that entity's own clock. **The DoD client shows this nowhere** —
+  not the countdown, not the amount — so it is the one piece of live match state a broadcast
+  overlay cannot obtain by watching the screen. The natives read
+  `CControlPointMaster::m_fGivePointsTime` (absolute gametime of the next award) and
+  `m_iGivePointsDelay` (nominal period), gated on `m_bActive`.
+
+  Closed-loop counterpart to `dodx_get_round_time`, and added for the same reason: without it a
+  consumer can only infer the phase by watching the score move, which costs a full lock-on period
+  at every half start **and again after every round restart**, because a restart rebases the
+  master's clock. Measured on a recorded 12MAN (`1777342963-NY1`, `dod_thunder2`): the observed
+  award spacing is a rock-stable **30.50s** against a delay of 30 — the master only awards on its
+  own 0.5s think — and an open-loop estimator anchored on observed awards is blind for ~130s at
+  each half start and ~95s after a restart, about 15% of a match.
+
+  `m_iGivePointsDelay` is therefore documented as the **nominal** period, not a phase: an
+  estimator that extrapolates from the cvar drifts 0.5s per tick.
+
+  No gamedata change: `entities.games/dod/offsets-ccontrolpointmaster.txt` already shipped these
+  three members and is already registered in `master.games.txt`. Nothing in DODX referenced
+  `CControlPointMaster` before this. **Unlike the `CDoDTeamPlay` members these offsets differ by
+  platform** (windows 420/424/416 vs linux 436/440/432), so they resolve through
+  `GetOffsetByClass` and are never hardcoded; both natives return `-1` on every failure path
+  (no master entity — e.g. a pure objective map — offsets unresolved, master inactive, or an
+  implausible read) rather than a fabricated clock.
+
+  The master edict is found with `FindEntityByClassname` (`pfnFindEntityByString`, the
+  extension-mode-safe walk — `pfnPEntityOfEntIndex` hangs during `OnPluginsLoaded` there), cached
+  per map, cleared in `DODX_OnSV_ActivateServer` alongside the other per-map resets, and
+  revalidated by `free`/`pvPrivateData`/classname on every read so a recycled edict slot cannot be
+  mistaken for the master.
+
+  **Additive to the `.inc`** — existing plugins compile unchanged; a plugin wanting these natives
+  must be rebuilt against this include set.
+
 ### Changed
 - **DODX CP-init diagnostic (`DODX_DEBUG_CP_INIT`) now logs `flag_id` and fires even when the
   reorder short-circuits.** Previously it sat *inside* the `bspCount == mObjects.count` gate, so on

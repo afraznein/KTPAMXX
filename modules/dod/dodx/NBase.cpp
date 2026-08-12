@@ -1120,6 +1120,144 @@ static cell AMX_NATIVE_CALL dodx_get_round_time(AMX *amx, cell *params)
 	return amx_ftoc(remaining);
 }
 
+// KTP: Resolve (and cache) the map's dod_control_point_master.
+//
+// A map has at most one. FindEntityByClassname wraps pfnFindEntityByString,
+// which is the extension-mode-safe way to walk entities (pfnPEntityOfEntIndex
+// hangs during OnPluginsLoaded there — see DODX_InitCPFromEntities). The cache
+// is cleared per map in DODX_OnSV_ActivateServer, so a freed edict is never
+// read; the revalidation below covers the rest.
+static edict_t *DODX_GetCPMaster()
+{
+	if (g_pCPMasterEdict)
+	{
+		// Revalidate: an edict can be freed and its slot reused without a map
+		// change. free==0 && pvPrivateData means it is still a live entity, and
+		// the classname check confirms the slot was not handed to something else.
+		if (!g_pCPMasterEdict->free && g_pCPMasterEdict->pvPrivateData
+			&& STRING(g_pCPMasterEdict->v.classname)
+			&& !strcmp(STRING(g_pCPMasterEdict->v.classname), "dod_control_point_master"))
+			return g_pCPMasterEdict;
+		g_pCPMasterEdict = nullptr;
+	}
+
+	edict_t *pEdict = FindEntityByClassname(NULL, "dod_control_point_master");
+	if (pEdict && !pEdict->free && pEdict->pvPrivateData)
+		g_pCPMasterEdict = pEdict;
+
+	return g_pCPMasterEdict;
+}
+
+// KTP: Seconds until the map's next TERRITORIAL scoring tick — the periodic
+// team-point award for holding control points, driven by
+// CControlPointMaster::m_fGivePointsTime.
+//
+// This is the closed-loop source for a broadcast overlay's scoring-tick
+// countdown. The DoD client shows this NOWHERE — not the countdown, not the
+// amount — so without it an observer can only infer the phase by watching the
+// score move, which costs a lock-on period at every half start and again after
+// every round restart (a restart rebases the master's clock).
+//
+// Returns seconds remaining as a float; -1.0 when unavailable (no master entity
+// on the map, offsets unresolved, master inactive, or an implausible read).
+// Never raises; callers must handle -1.0 by falling back.
+// native Float:dodx_get_score_tick_time();
+static cell AMX_NATIVE_CALL dodx_get_score_tick_time(AMX *amx, cell *params)
+{
+	static const float FAIL = -1.0f;
+
+	if (g_iCPMGivePointsTimeOffset < 0 || !gpGlobals)
+		return amx_ftoc(FAIL);
+
+	edict_t *pMaster = DODX_GetCPMaster();
+	if (!pMaster)
+		return amx_ftoc(FAIL);
+
+	char *pd = (char *)pMaster->pvPrivateData;
+
+	// The master gates its own scoring; an inactive master never awards, so a
+	// countdown against it would be a countdown to nothing.
+	if (g_iCPMActiveOffset >= 0 && !*(int *)(pd + g_iCPMActiveOffset))
+		return amx_ftoc(FAIL);
+
+	float target = *(float *)(pd + g_iCPMGivePointsTimeOffset);
+
+	// target is an absolute gametime in the near future. Anything negative, or
+	// further out than a generous period bound, means the read went wrong (a
+	// struct shift on a future dod.so). Fail soft — never report a made-up clock.
+	if (target < 0.0f || target > gpGlobals->time + 3600.0f)
+		return amx_ftoc(FAIL);
+
+	float remaining = target - gpGlobals->time;
+	if (remaining < 0.0f)
+		remaining = 0.0f;
+
+	return amx_ftoc(remaining);
+}
+
+// KTP: The map's territorial scoring PERIOD in seconds
+// (CControlPointMaster::m_iGivePointsDelay), or -1 when unavailable.
+//
+// Companion to dodx_get_score_tick_time. Note the engine's observed award
+// spacing runs slightly longer than this value (measured 30.50s against a
+// delay of 30 on the KTP fleet) because the master only awards on its own
+// think; treat this as the nominal period, not a phase.
+// native dodx_get_score_tick_period();
+static cell AMX_NATIVE_CALL dodx_get_score_tick_period(AMX *amx, cell *params)
+{
+	if (g_iCPMGivePointsDelayOffset < 0)
+		return -1;
+
+	edict_t *pMaster = DODX_GetCPMaster();
+	if (!pMaster)
+		return -1;
+
+	int delay = *(int *)((char *)pMaster->pvPrivateData + g_iCPMGivePointsDelayOffset);
+	if (delay <= 0 || delay > 3600)
+		return -1;
+
+	return delay;
+}
+
+// KTP: Test/diagnostic-only: explain what dodx_get_score_tick_time() is seeing.
+//
+// That native deliberately returns -1.0 on every failure path rather than a
+// fabricated clock, which makes "the scoring panel isn't showing" indivisible
+// from outside: no master entity, unresolved offsets, an inactive master and an
+// implausible read all look identical. This prints which one it is.
+// Read-only and safe on any map in any state. Production plugins MUST NOT call it.
+// native dodx_test_dump_score_tick();
+static cell AMX_NATIVE_CALL dodx_test_dump_score_tick(AMX *amx, cell *params)
+{
+	edict_t *pMaster = DODX_GetCPMaster();
+
+	if (!pMaster)
+	{
+		MF_Log("[DODX] scoretick: NO dod_control_point_master entity found "
+			"(offsets time=%d delay=%d active=%d)",
+			g_iCPMGivePointsTimeOffset, g_iCPMGivePointsDelayOffset, g_iCPMActiveOffset);
+		return 0;
+	}
+
+	if (g_iCPMGivePointsTimeOffset < 0)
+	{
+		MF_Log("[DODX] scoretick: master found but m_fGivePointsTime offset unresolved");
+		return 0;
+	}
+
+	char *pd = (char *)pMaster->pvPrivateData;
+	int active = (g_iCPMActiveOffset >= 0) ? *(int *)(pd + g_iCPMActiveOffset) : -1;
+	float target = *(float *)(pd + g_iCPMGivePointsTimeOffset);
+	int delay = (g_iCPMGivePointsDelayOffset >= 0)
+		? *(int *)(pd + g_iCPMGivePointsDelayOffset) : -1;
+
+	MF_Log("[DODX] scoretick: active=%d givePointsTime=%.2f delay=%d now=%.2f remaining=%.2f%s",
+		active, target, delay, gpGlobals->time, target - gpGlobals->time,
+		(active == 0) ? "  <- INACTIVE MASTER: native reports unavailable" : "");
+
+	return 1;
+}
+
 // KTP: Broadcast TeamScore message to all clients
 // This properly updates client scoreboards after modifying gamerules scores
 // native dodx_broadcast_team_score(team, score);
@@ -2225,6 +2363,11 @@ AMX_NATIVE_INFO base_Natives[] =
 	// KTP: Engine-authoritative half clock (closed-loop broadcast overlay time)
 	{"dodx_get_round_time", dodx_get_round_time},
 
+	// KTP: Engine-authoritative territorial scoring tick (closed-loop broadcast
+	// overlay countdown; the DoD client never shows this clock)
+	{"dodx_get_score_tick_time", dodx_get_score_tick_time},
+	{"dodx_get_score_tick_period", dodx_get_score_tick_period},
+
 	// KTP: Custom scoreboard team names
 	{"dodx_set_scoreboard_team_name", dodx_set_scoreboard_team_name},
 
@@ -2267,6 +2410,7 @@ AMX_NATIVE_INFO base_Natives[] =
 
 	// KTP: Round-timer diagnostics (test/diagnostic only — see impl comments)
 	{"dodx_test_dump_round_timers",          dodx_test_dump_round_timers},
+	{"dodx_test_dump_score_tick",            dodx_test_dump_score_tick},
 	{"dodx_test_scan_gamerules",             dodx_test_scan_gamerules},
 
 	// KTP: shadow-mode aim/movement counters (blind audit tier 2.4 / 2.6)
