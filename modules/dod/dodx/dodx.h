@@ -107,31 +107,18 @@ enum
 	#define STEAM_PDOFFSET_DEATHS   477         // Player deaths
 #endif
 
-// KTP: Ammo storage — `CBasePlayer::m_rgAmmo`, an int-offset into pvPrivateData.
+// KTP: `CBasePlayer::m_rgAmmo` as an int-offset into pvPrivateData. Measured in
+// dod_i386.so md5 4f4727b2390d3a0ed6f5ad862dd6d4be: AmmoInventory indexes it at
+// byte 0x474 (int 285, Linux = 280 + 5); SendAmmoUpdate pairs it with
+// m_rgAmmoLast at 0x4F4. Re-measure against that md5 before changing either.
 //
-// An ammo count is addressed by TWO independent numbers, and both used to be
-// hardcoded here:
-//   * the array base, a fixed property of the game DLL build;
-//   * the ammo-type index, which the DLL assigns at MAP LOAD in weapon-precache
-//     order (`AddAmmoNameToAmmoRegistry`) — so the same grenade sits at a
-//     different slot from map to map and no constant can be right for a pool.
-// The index is now resolved per map (see g_ammoIndexByWeapon below).
-//
-// The base is read out of the shipped dod_i386.so, md5
-// 4f4727b2390d3a0ed6f5ad862dd6d4be: `CBasePlayer::AmmoInventory` indexes
-// m_rgAmmo at byte 0x474 = int 285, and `SendAmmoUpdate` pairs it with
-// m_rgAmmoLast at 0x4F4 = int 317 (32 ints each). Linux is therefore 280 + 5,
-// which the old auto-detect defaulted to 4 and got wrong.
-//
-// m_rgAmmoLast is deliberately NOT written: SendAmmoUpdate diffs the two every
-// frame and emits AmmoX itself, so writing only m_rgAmmo makes the client HUD
-// self-correct on the right slot. Writing both is what suppressed that.
+// Never write m_rgAmmoLast — SendAmmoUpdate diffs the pair every frame and emits
+// the client's AmmoX from it, so writing both suppresses the HUD update.
 #define PDOFFSET_AMMO_BASE 280
 #define DODX_MAX_AMMO_SLOTS 32
 
 #if defined(__linux__) || defined(__APPLE__)
-	// Override via addons/ktpamx/configs/dodx.ini: pdata_offset = 4 or 5.
-	// Only for a future DoD build that shifts the struct — 5 is measured, not guessed.
+	// Override via dodx.ini `pdata_offset`, for a future DoD build that shifts it.
 	extern int g_iLinuxPdataOffsetAdjust;
 
 	// Independent adjust for SCORE/DEATHS offsets (above). NOT shared with

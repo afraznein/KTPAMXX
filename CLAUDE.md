@@ -70,10 +70,17 @@ Custom AMX Mod X fork that operates in extension mode (loaded directly by KTP-Re
 | `dodx_set_pl_teamname(id, szName[])` | Set player's team name in private data |
 
 ### Grenade Manipulation (v2.6.4+)
+
+The ammo slot is resolved **per map** (v2.7.29+) from the game DLL's `WeaponList`, because the DLL
+numbers ammo types in map precache order — a literal 9/11 addresses a different ammo type from one
+map to the next. Setting ammo no longer needs a follow-up `dodx_send_ammox`: the DLL emits its own
+`AmmoX` on the correct slot.
+
 | Native | Purpose |
 |--------|---------|
 | `dodx_set_grenade_ammo(id, type, count)` | Set grenade count (0-10) for player |
-| `dodx_get_grenade_ammo(id, type)` | Get current grenade count |
+| `dodx_get_grenade_ammo(id, type)` | Current count; 0 also means "slot not resolved yet", -1 is a bad argument |
+| `dodx_get_grenade_ammo_index(type)` | This map's ammo slot for that grenade, or -1. Use it instead of a literal slot |
 | `dodx_send_ammox(id, slot, count)` | Send AmmoX message to sync client HUD |
 | `dodx_give_grenade(id, type)` | Give a grenade weapon to player |
 

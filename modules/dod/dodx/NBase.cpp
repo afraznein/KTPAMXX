@@ -1221,12 +1221,10 @@ static cell AMX_NATIVE_CALL dodx_set_scoreboard_team_name(AMX *amx, cell *params
 	return count;
 }
 
-// KTP: Grenade ammo manipulation (ported from dodfun for extension mode)
-//
-// The ammo slot is resolved per map from the game DLL's own WeaponList, never
-// assumed: the DLL numbers ammo types in map precache order, so a constant slot
-// reads and writes a DIFFERENT ammo type's counter from one map to the next,
-// silently and with no failure path. Unresolved means refuse, not guess.
+// KTP: Grenade ammo manipulation (ported from dodfun for extension mode).
+// The slot is resolved per map, never assumed: the DLL numbers ammo types in
+// map precache order, so a constant addresses a DIFFERENT ammo type's counter
+// from one map to the next, silently and with no failure path.
 static bool DODX_IsGrenadeType(int grenadeType)
 {
 	// DODW_HANDGRENADE, DODW_STICKGRENADE, DODW_MILLS_BOMB
@@ -1279,9 +1277,7 @@ static cell AMX_NATIVE_CALL dodx_set_grenade_ammo(AMX *amx, cell *params)
 	if (!pAmmo)
 		return 0;
 
-	// m_rgAmmoLast is deliberately left alone: the DLL's SendAmmoUpdate diffs the
-	// two every frame and emits AmmoX on the right slot, so the client HUD
-	// self-corrects. Writing both is what made a manual dodx_send_ammox necessary.
+	// m_rgAmmo only — see dodx.h: touching m_rgAmmoLast suppresses the DLL's AmmoX.
 	*pAmmo = count;
 
 	return 1;
@@ -1434,10 +1430,8 @@ static cell AMX_NATIVE_CALL dodx_give_grenade(AMX *amx, cell *params)
 			weaponClass = "weapon_stickgrenade";
 			break;
 		case 36: // DODW_MILLS_BOMB
-			// The DLL links no weapon_mills_bomb — the Mills bomb is
-			// weapon_handgrenade with a British model, and CREATE_NAMED_ENTITY on
-			// the name that does not exist returned NULL, so every give for a
-			// British-allies map failed at the first branch.
+			// The DLL links no weapon_mills_bomb; the Mills bomb is
+			// weapon_handgrenade with a British model.
 			weaponClass = "weapon_handgrenade";
 			break;
 		default:
@@ -1540,9 +1534,7 @@ static cell AMX_NATIVE_CALL dodx_strip_grenade(AMX *amx, cell *params)
 }
 
 // dodx_debug_dump_ammo(id)
-// Dumps this map's resolved ammo registry and the player's whole m_rgAmmo array.
-// The old version scanned ints 0-175, a window that cannot reach m_rgAmmo at all,
-// so anything it matched on "value between 1 and 10" was a coincidence.
+// This map's resolved grenade slots plus the player's non-zero m_rgAmmo entries.
 static cell AMX_NATIVE_CALL dodx_debug_dump_ammo(AMX *amx, cell *params)
 {
 	int index = params[1];

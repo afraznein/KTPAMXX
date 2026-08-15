@@ -454,9 +454,10 @@ native dodx_set_scoreboard_team_name(team, const name[]);
 //
 // The game DLL numbers ammo types at map load, in weapon-precache order, so the
 // slot holding a given grenade differs from map to map. DODX resolves it per map
-// from the DLL's own WeaponList message. Until that message has been seen for the
-// current map these natives refuse rather than address a guessed slot — that is
-// what a "0"/"-1" return means most often in practice, not a bad argument.
+// from the DLL's own WeaponList message and from the ammo a successful
+// dodx_give_grenade credits. Until one of those has happened the ammo natives
+// refuse rather than address a guessed slot, which is a failure return that says
+// nothing about the arguments.
 
 /**
  * Set grenade ammo count for a player.

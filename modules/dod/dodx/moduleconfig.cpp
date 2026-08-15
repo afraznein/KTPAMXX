@@ -34,11 +34,9 @@ static IMessageManager* g_pMessageManager = nullptr;
 // addons/ktpamx/configs/dodx.ini: pdata_offset = 4 or 5.
 int g_iLinuxPdataOffsetAdjust = 5;
 
-// KTP 2026-05-21: SCORE/DEATHS pdata offsets need their own adjust independent
-// from the grenade adjust above. On Ubuntu 24.04 the grenade auto-detect
-// correctly promotes to +5, but disassembly of dod_i386.so md5 4f4727b2...
-// confirmed score/deaths live at +4 on the same binary. Two field families,
-// two different shifts. See dodx.h SCORE/DEATHS section + research note
+// KTP: SCORE/DEATHS need their own adjust — same binary, two field families,
+// two different shifts: m_rgAmmo sits at +5 and score/deaths at +4 in
+// dod_i386.so md5 4f4727b2... See dodx.h SCORE/DEATHS section + research note
 // KTPMatchHandler/research/OFFSETS_RESEARCH_2026-05-21.md.
 int g_iScoreDeathsOffsetAdjust = 4;
 #endif
@@ -186,10 +184,10 @@ void DODX_ObserveGrenadeAmmoIndex(int grenadeType, int slot)
 	// Two independent readings of the same registry disagreeing means one of the
 	// two mechanisms has stopped telling the truth — worth a line, not a silent
 	// overwrite. WeaponList is the earlier and broader source, so it wins.
-	static bool s_warned[DODMAX_WEAPONS] = { false };
-	if (!s_warned[grenadeType])
+	static int s_warnedEpoch = -1;
+	if (s_warnedEpoch != g_ammoRegistryEpoch)
 	{
-		s_warned[grenadeType] = true;
+		s_warnedEpoch = g_ammoRegistryEpoch;
 		MF_Log("[DODX] ammo slot for weapon %d: pickup probe says %d, WeaponList said %d — keeping %d",
 			grenadeType, slot, known, known);
 	}
@@ -894,8 +892,9 @@ void OnPluginsLoaded()
 	{
 #if defined(__linux__) || defined(__APPLE__)
 		// KTP: Load pdata offsets from addons/ktpamx/configs/dodx.ini if present.
-		// Read in OnPluginsLoaded because MF_BuildPathnameR needs the engine ready,
-		// and latched because this runs per map.
+		// Read in OnPluginsLoaded because MF_BuildPathnameR needs the engine ready.
+		// The latch replaces the old g_bPdataOffsetForced guard, which also gated
+		// the unrelated score_deaths_offset override.
 		static bool s_offsetConfigRead = false;
 		if (!s_offsetConfigRead)
 		{
@@ -1259,6 +1258,10 @@ static void DODX_OnPlayerPreThink(IVoidHookChain<edict_t *, float> *chain, edict
 		{
 			g_pFirstEdict = pEntity - tmpIndex;
 			g_bServerActive = true;
+			// The per-map reset this path stands in for. A carried-over ammo slot
+			// is worse than none: it reads as resolved, so the natives write
+			// another ammo type's counter and report success.
+			DODX_ClearAmmoRegistry();
 			for (int i = 1; i <= gpGlobals->maxClients; ++i)
 				GET_PLAYER_POINTER_I(i)->Init(i, g_pFirstEdict + i);
 			MF_Log("dodx: PreThink recovered g_pFirstEdict after SV_ActivateServer hook miss (player idx=%d)", tmpIndex);
