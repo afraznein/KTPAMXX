@@ -141,11 +141,14 @@ int gmsgWeaponList;  // KTP: per-map ammo-index registry
 // so it MUST be cleared per map — a carried-over index writes another ammo
 // type's counter with no error anywhere.
 int g_ammoIndexByWeapon[DODMAX_WEAPONS];
+int g_ammoRegistryEpoch = 0;
 
 void DODX_ClearAmmoRegistry()
 {
 	for (int i = 0; i < DODMAX_WEAPONS; ++i)
 		g_ammoIndexByWeapon[i] = -1;
+
+	++g_ammoRegistryEpoch;
 }
 
 int DODX_GrenadeAmmoIndex(int grenadeType)

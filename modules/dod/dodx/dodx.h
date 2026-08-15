@@ -150,6 +150,8 @@ enum
 // -1 while unknown. Learned from the WeaponList message, whose first field is
 // GetAmmoIndex(pszAmmo1) and whose seventh is the weapon id.
 extern int g_ammoIndexByWeapon[DODMAX_WEAPONS];
+// Bumped by every clear, so a per-map log latch has something to compare against.
+extern int g_ammoRegistryEpoch;
 void DODX_ClearAmmoRegistry();
 // -1 when the type is not a grenade or the map's WeaponList has not arrived yet.
 int DODX_GrenadeAmmoIndex(int grenadeType);

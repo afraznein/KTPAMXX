@@ -1239,10 +1239,21 @@ static int *DODX_GrenadeAmmoCell(CPlayer *pPlayer, int grenadeType, const char *
 	if (slot < 0)
 	{
 		if (!DODX_IsGrenadeType(grenadeType))
+		{
 			MF_Log("%s: invalid grenade type %d", nativeName, grenadeType);
+		}
 		else
-			MF_Log("%s: ammo slot for type %d unknown on this map (no WeaponList seen yet)",
-				nativeName, grenadeType);
+		{
+			// Practice mode refills on every explosion, so this would be per-throw
+			// noise; one line per map says the same thing.
+			static int s_warnedEpoch = -1;
+			if (s_warnedEpoch != g_ammoRegistryEpoch)
+			{
+				s_warnedEpoch = g_ammoRegistryEpoch;
+				MF_Log("%s: ammo slot for type %d unknown on this map (no WeaponList seen yet)",
+					nativeName, grenadeType);
+			}
+		}
 		return NULL;
 	}
 
