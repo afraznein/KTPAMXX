@@ -32,7 +32,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   ⚠️ **The DLL's set is authoritative and is not always every `dod_control_point` on the map.**
   `dod_merderet` spawns six and the master claims five; tracking the extra one shifted every index
-  after it.
+  after it. Side effect: `KTPScoreTracker`'s `check_all_cps_owned()` iterated all six on that map,
+  including one the DLL never flips, so capout detection could never fire there. It can now.
+
+  ⚠️ **A map with more than one `dod_control_point_master` is refused, not guessed at.** DoD supports
+  grouped masters — that is why `m_sMaster` and `m_szGroup` exist on both classes — and **3 of the 72
+  maps on the test tree ship two**: `dod_heutau`, `dod_overlord`, `dod_schwetz`. Taking the first
+  produces a *perfect* bijection over that master's own subset, so the commit gate passes and every
+  point the other master governs is silently dropped, with a log line identical to the legitimate
+  `dod_merderet` case. `mObjects` is one flat index space and cannot represent grouped masters, so
+  the resolver keeps the BSP order and logs why. Verified on `dod_schwetz` (12 CPs, 2 masters):
+  refused, order untouched. (`dod_heutau` and `dod_overlord` do not load on this tree at all — 512
+  precache limit and a missing sprite respectively, both reproduced identically with the stock
+  module, so unrelated.)
+
+- **`CObjective::SetObj` and `CObjective::InitObj` wrote the wrong cp id on the wire.** Both wrote
+  `obj[].index`, while `Client_SetObj` parses the wire id as a direct array subscript — so with
+  `index` defined as position + 1 every control point would land one slot out on the client. They now
+  write the position. Not reachable from the fleet today (no deployed plugin calls
+  `dodx_objective_set_data` or `dodx_objectives_reinit`), and it was equally wrong before this cut,
+  when `index` held `flag_id`.
 
 - **`InitObj` no longer reorders control points** (issue #11). Message field 3 is the DLL's *current*
   team, not the default owner, and the DLL has not applied default ownership when it sends this —
@@ -54,6 +73,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `controlpoints_init` fires a second time only when the resolve actually changes the order, so
   consumers must re-read there rather than caching from the first fire. Maps whose order was already
   correct now fire it once, where an `InitObj` reorder used to fire it twice.
+
+  🔻 **`KTPHudObserver` must drop its hardcoded CP remap in the same wave**, or it will double-permute
+  saints2 and donner. Its `init_cp_index_remap()` carries `g_cp_dodx_of_dll = [1,2,0,3,4]` for
+  `dod_saints2_b3e`/`_b2` and `[3,2,4,1,0]` for `dod_donner`. **Both are exactly what the resolver
+  reads out of the DLL** — the saints2 table was derived from 65 recorded production matches by three
+  independent statistical methods, the donner one from geometry and flagged in its own comment as
+  never confirmed from event data. Reading `m_iIndex` directly reproduces both, which confirms the
+  donner permutation and is a strong independent check on the mechanism; it also means the workaround
+  and the fix now cancel each other out.
 - **DODX CP-init diagnostic (`DODX_DEBUG_CP_INIT`) now logs `flag_id` and fires even when the
   reorder short-circuits.** Previously it sat *inside* the `bspCount == mObjects.count` gate, so on
   exactly the maps worth investigating — duplicate `point_index`, pseudo-CP count mismatch — it
