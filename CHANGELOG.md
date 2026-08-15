@@ -40,14 +40,14 @@ set.** A plugin calling `dodx_get_grenade_ammo_index` fails to load against the 
 2.7.27 — natives are resolved at load, and a missing one is a load failure, not a degraded mode.
 Both are `.new`-swapped at the same 03:00 restart, so this is orderable; it just has to be deliberate.
 
-**Shipping artifact — `dodx_ktp_i386.so` md5 `DODX_MD5_PLACEHOLDER`** (built 2026-08-15 from
-`COMMIT_PLACEHOLDER`, `build_linux.sh`, GLIBC 2.35 / Ubuntu 22.04).
+**Shipping artifact — `dodx_ktp_i386.so` md5 `863f81f79380225afd83b6bd82a1438e`** (built 2026-08-15
+from `de4579c9`, `build_linux.sh`, GLIBC 2.35 / Ubuntu 22.04).
 ⚠️ **Do not rebuild to re-verify** — AMXX bakes a per-minute build timestamp, so a rebuild churns this
 md5. Verify by this md5, never by the banner.
 
 > Core source is unchanged, but the core BINARY is not identical — `product.version` feeds
 > `support/generate_headers.py`, so the version bump alone changes `ktpamx_i386.so` (this build:
-> `CORE_MD5_PLACEHOLDER`). Only the DODX artifact is meant to ship here.
+> `0863fd7922af17ce01fe6c950a4ae23d`). Only the DODX artifact is meant to ship here.
 >
 > The `DODX_DEBUG_CP_INIT` diagnostic still under [Unreleased] rides along in source only — it is
 > compile-time-gated and absent from this build.
