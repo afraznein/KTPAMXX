@@ -135,11 +135,23 @@ int gmsgSetObj;    // KTP: CP tracking
 int gmsgDeathMsg;  // KTP: Suicide / world-kill detection (no Damage path)
 int gmsgWeaponList;  // KTP: per-map ammo-index registry
 
-// KTP: Ammo-type index the DLL assigned each weapon on this map. Process-wide,
-// so it MUST be cleared per map — a carried-over index writes another ammo
-// type's counter with no error anywhere.
+// KTP: Ammo-type index the DLL assigned each weapon on this map, or -1 until
+// observed. Process-wide, so it MUST be cleared per map — a carried-over index
+// would address another ammo type's counter with no error anywhere.
 int g_ammoIndexByWeapon[DODMAX_WEAPONS];
 int g_ammoRegistryEpoch = 0;
+
+// Where DoD's own W_Precache leaves the grenades. It precaches all 31 weapons
+// unconditionally in a fixed order — every nationality on every map — so these
+// are invariant, which is the opposite of what issue #15 assumed. Measured live
+// on six maps incl. dod_anzio and dod_harrington by reading AmmoInfoArray out of
+// the running DLL: 9/11 on all six. Used only until this map's WeaponList lands.
+static int DODX_DefaultGrenadeAmmoIndex(int weaponId)
+{
+	if (weaponId == 13) return 9;   // ammo_agrens
+	if (weaponId == 14) return 11;  // ammo_ggrens
+	return -1;
+}
 
 void DODX_ClearAmmoRegistry()
 {
@@ -149,35 +161,59 @@ void DODX_ClearAmmoRegistry()
 	++g_ammoRegistryEpoch;
 }
 
+// DODW_MILLS_BOMB is DODX's own id for the British hand grenade — the DLL links
+// no weapon_mills_bomb and registers no ammo type for it.
+static int DODX_NormalizeGrenadeType(int grenadeType)
+{
+	if (grenadeType == 36)
+		return 13;
+	if (grenadeType == 13 || grenadeType == 14)
+		return grenadeType;
+	return -1;
+}
+
 int DODX_GrenadeAmmoIndex(int grenadeType)
 {
-	// DODW_MILLS_BOMB is DODX's own id for the British hand grenade. The DLL
-	// links no weapon_mills_bomb entity and registers no separate ammo type —
-	// it is weapon_handgrenade wearing a different model.
-	if (grenadeType == 36)
-		grenadeType = 13;
-
-	if (grenadeType != 13 && grenadeType != 14)
+	int weaponId = DODX_NormalizeGrenadeType(grenadeType);
+	if (weaponId < 0)
 		return -1;
 
-	return g_ammoIndexByWeapon[grenadeType];
+	int observed = g_ammoIndexByWeapon[weaponId];
+	return observed >= 0 ? observed : DODX_DefaultGrenadeAmmoIndex(weaponId);
+}
+
+// The tripwire the 9/11 constants never had: if the precache order ever stops
+// being fixed, this is what says so instead of corrupting an ammo type in silence.
+void DODX_CheckAmmoIndexDrift(int weaponId, int slot)
+{
+	int expected = DODX_DefaultGrenadeAmmoIndex(weaponId);
+	if (expected < 0 || expected == slot)
+		return;
+
+	static int s_driftEpoch = -1;
+	if (s_driftEpoch == g_ammoRegistryEpoch)
+		return;
+
+	s_driftEpoch = g_ammoRegistryEpoch;
+	MF_Log("[DODX] weapon %d ammo slot is %d on this map, not the fixed-order %d — "
+		"W_Precache is no longer invariant, re-check the grenade natives",
+		weaponId, slot, expected);
 }
 
 void DODX_ObserveGrenadeAmmoIndex(int grenadeType, int slot)
 {
-	if (grenadeType == 36)
-		grenadeType = 13;
-
-	if ((grenadeType != 13 && grenadeType != 14) || slot < 0 || slot >= DODX_MAX_AMMO_SLOTS)
+	int weaponId = DODX_NormalizeGrenadeType(grenadeType);
+	if (weaponId < 0 || slot < 0 || slot >= DODX_MAX_AMMO_SLOTS)
 		return;
 
-	int known = g_ammoIndexByWeapon[grenadeType];
-	if (known == slot)
+	int observed = g_ammoIndexByWeapon[weaponId];
+	if (observed == slot)
 		return;
 
-	if (known < 0)
+	if (observed < 0)
 	{
-		g_ammoIndexByWeapon[grenadeType] = slot;
+		g_ammoIndexByWeapon[weaponId] = slot;
+		DODX_CheckAmmoIndexDrift(weaponId, slot);
 		return;
 	}
 
@@ -189,7 +225,7 @@ void DODX_ObserveGrenadeAmmoIndex(int grenadeType, int slot)
 	{
 		s_warnedEpoch = g_ammoRegistryEpoch;
 		MF_Log("[DODX] ammo slot for weapon %d: pickup probe says %d, WeaponList said %d — keeping %d",
-			grenadeType, slot, known, known);
+			weaponId, slot, observed, observed);
 	}
 }
 

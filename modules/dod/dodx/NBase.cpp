@@ -1236,22 +1236,7 @@ static int *DODX_GrenadeAmmoCell(CPlayer *pPlayer, int grenadeType, const char *
 	int slot = DODX_GrenadeAmmoIndex(grenadeType);
 	if (slot < 0)
 	{
-		if (!DODX_IsGrenadeType(grenadeType))
-		{
-			MF_Log("%s: invalid grenade type %d", nativeName, grenadeType);
-		}
-		else
-		{
-			// Practice mode refills on every explosion, so this would be per-throw
-			// noise; one line per map says the same thing.
-			static int s_warnedEpoch = -1;
-			if (s_warnedEpoch != g_ammoRegistryEpoch)
-			{
-				s_warnedEpoch = g_ammoRegistryEpoch;
-				MF_Log("%s: ammo slot for type %d unknown on this map (no WeaponList seen yet)",
-					nativeName, grenadeType);
-			}
-		}
+		MF_Log("%s: invalid grenade type %d", nativeName, grenadeType);
 		return NULL;
 	}
 
@@ -1284,7 +1269,7 @@ static cell AMX_NATIVE_CALL dodx_set_grenade_ammo(AMX *amx, cell *params)
 }
 
 // dodx_get_grenade_ammo(id, grenade_type)
-// Count held, 0 when the slot is not yet known, -1 on a bad argument.
+// Count held, or -1 on a bad argument.
 static cell AMX_NATIVE_CALL dodx_get_grenade_ammo(AMX *amx, cell *params)
 {
 	int index = params[1];
@@ -1296,20 +1281,15 @@ static cell AMX_NATIVE_CALL dodx_get_grenade_ammo(AMX *amx, cell *params)
 
 	int *pAmmo = DODX_GrenadeAmmoCell(pPlayer, params[2], "dodx_get_grenade_ammo");
 	if (!pAmmo)
-	{
-		// "Not known yet" must read as empty, not as an error: KTPGrenadeLoadout
-		// only calls dodx_give_grenade when this returns 0, and that give is what
-		// teaches DODX the slot when WeaponList has not arrived.
-		return DODX_IsGrenadeType(params[2]) ? 0 : -1;
-	}
+		return -1;
 
 	return *pAmmo;
 }
 
 // dodx_get_grenade_ammo_index(grenade_type)
-// The ammo slot this map assigned to that grenade, or -1 while unknown. Callers
-// that send their own AmmoX need this — a hardcoded 9/11 addresses whatever ammo
-// type happens to hold that slot today.
+// The ammo slot this map uses for that grenade, or -1 if it is not a grenade.
+// Callers that send their own AmmoX should take the slot from here rather than
+// repeating the constant.
 static cell AMX_NATIVE_CALL dodx_get_grenade_ammo_index(AMX *amx, cell *params)
 {
 	return DODX_GrenadeAmmoIndex(params[1]);

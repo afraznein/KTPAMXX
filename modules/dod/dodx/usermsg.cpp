@@ -419,7 +419,10 @@ void Client_WeaponList(void* mValue)
       int wpnId = *(int*)mValue;
       if (wpnId > 0 && wpnId < DODMAX_WEAPONS &&
           iAmmoIndex >= 0 && iAmmoIndex < DODX_MAX_AMMO_SLOTS)
+      {
         g_ammoIndexByWeapon[wpnId] = iAmmoIndex;
+        DODX_CheckAmmoIndexDrift(wpnId, iAmmoIndex);
+      }
       // Consumed: a later id must not pair with this weapon's index.
       iAmmoIndex = -1;
     }

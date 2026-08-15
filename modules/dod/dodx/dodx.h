@@ -134,16 +134,19 @@ enum
 #endif
 
 // Ammo-type index the game DLL assigned to each DODW_* weapon on THIS map, or
-// -1 while unknown. Learned from the WeaponList message, whose first field is
+// -1 while unobserved. Learned from the WeaponList message, whose first field is
 // GetAmmoIndex(pszAmmo1) and whose seventh is the weapon id.
 extern int g_ammoIndexByWeapon[DODMAX_WEAPONS];
 // Bumped by every clear, so a per-map log latch has something to compare against.
 extern int g_ammoRegistryEpoch;
 void DODX_ClearAmmoRegistry();
-// -1 when the type is not a grenade or the map's WeaponList has not arrived yet.
+// Observed slot, else DoD's fixed-precache-order default. -1 only for a type
+// that is not a grenade.
 int DODX_GrenadeAmmoIndex(int grenadeType);
-// Second source: the slot the DLL itself moved when a grenade pickup landed.
+// Second source: the slot the DLL itself credited when a grenade pickup landed.
 void DODX_ObserveGrenadeAmmoIndex(int grenadeType, int slot);
+// Logs once per map if an observed slot contradicts the fixed-order default.
+void DODX_CheckAmmoIndexDrift(int weaponId, int slot);
 
 // Weapons Structure
 struct weapon_t 

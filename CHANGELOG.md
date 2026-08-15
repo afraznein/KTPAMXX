@@ -53,34 +53,44 @@ md5. Verify by this md5, never by the banner.
 > compile-time-gated and absent from this build.
 
 ### Fixed
-- **Grenade ammo was addressed by two hardcoded numbers and both were wrong.** `dodx_set_grenade_ammo`,
-  `dodx_get_grenade_ammo` and `dodx_strip_grenade` read and wrote memory that was not the player's
-  grenade counter, silently, with no failure path — the `ret=-1` reports that scoped this work were
-  mostly `dodx_give_grenade` legitimately refusing a pickup, not the actual damage.
+- **The grenade natives were addressing the wrong memory, and the reason was the array base, not the
+  ammo index.** `dodx_set_grenade_ammo`, `dodx_get_grenade_ammo` and `dodx_strip_grenade` each
+  touched three int-offsets per grenade. Read against the shipped `dod_i386.so`
+  (md5 `4f4727b2390d3a0ed6f5ad862dd6d4be`, confirmed identical on **24/24** fleet instances):
 
-  **The index.** The game DLL numbers ammo types at map load, in weapon-precache order
-  (`AddAmmoNameToAmmoRegistry`), so the slot holding a grenade differs from map to map and no
-  constant can be right across a pool ([issue #15](https://github.com/afraznein/KTPAMXX/issues/15)).
-  DODX now takes it from the DLL's own `WeaponList` message, which reports
-  `GetAmmoIndex(pszAmmo1)` beside the weapon id, and clears the map's registry on every
-  `SV_ActivateServer` / `ServerDeactivate`. A grenade pickup gives a second, independent reading —
-  the DLL credits ammo to the slot it assigned — so the registry still resolves if that message
-  never lands, and a disagreement between the two logs once instead of racing.
+  - `CBasePlayer::AmmoInventory` indexes `m_rgAmmo` at byte `0x474` = **int 285** = 280 + 5, and
+    `SendAmmoUpdate` pairs it with `m_rgAmmoLast` at `0x4F4` = int 317. The old code's base was
+    `280 + g_iLinuxPdataOffsetAdjust` with the adjust **defaulting to 4** — one int low, so a write
+    meant for grenade slot 9 landed on slot **8** and a write meant for 11 landed on **10**. That
+    single off-by-one is the fleet-wide grenade failure. The base is now a measured constant;
+    `dodx.ini pdata_offset` survives as an override for a future DoD build.
+  - The **third** offset (base 59/61) has no ammo-indexed array anywhere near it in that DLL, so the
+    getter had been reading an unrelated field on *every* map. It is no longer written or read.
+  - `m_rgAmmoLast` is no longer written either. `SendAmmoUpdate` diffs the pair every frame and emits
+    the client's `AmmoX` from the difference, so writing both was suppressing the DLL's own HUD
+    update — which is why a manual `dodx_send_ammox` was needed at all.
 
-  **The base.** `CBasePlayer::AmmoInventory` in the shipped `dod_i386.so`
-  (md5 `4f4727b2390d3a0ed6f5ad862dd6d4be`, confirmed identical on 24/24 fleet instances) indexes
-  `m_rgAmmo` at byte `0x474` = int 285 = 280 + **5**, so the runtime auto-detector's default of +4
-  was one int low. The detector could not have done better: it scored candidate bases at an ammo
-  index that was itself wrong, so it could confirm either answer. It is gone, along with the
-  write-to-both-offsets phase; the base is a constant and `dodx.ini pdata_offset` remains as an
-  override for a future DoD build.
+  🔻 **The premise this work was scoped on — [issue #15](https://github.com/afraznein/KTPAMXX/issues/15),
+  "the ammo index is map-dependent" — is FALSE for DoD, and it matters that it is written down.** The
+  general GoldSrc mechanism is real (`AddAmmoNameToAmmoRegistry` numbers ammo types in precache
+  order), but DoD's `W_Precache()` is straight-line: it `memset`s `AmmoInfoArray`, zeroes
+  `giAmmoIndex`, then makes **31 unconditional** `UTIL_PrecacheOtherWeapon` calls covering every
+  nationality regardless of map, with its only branch far downstream on a non-weapon entity. So the
+  registry is invariant by construction. Measured, not argued: `AmmoInfoArray` read out of six
+  freshly-launched servers — `dod_anzio` (US allies) and `dod_harrington` (British allies) among them,
+  map identity confirmed by console `status`, not assumed — gives `ammo_agrens` = **9**,
+  `ammo_ggrens` = **11**, `giAmmoIndex` = 13 on all six. The hardcoded 9 and 11 were right all along.
+  ⚠️ The differential "anzio 62 / harrington 64" reading that founded #15 came from
+  `dodx_debug_dump_ammo`, which scanned ints **0-175** — a window that cannot reach `m_rgAmmo` at 285.
+  It was matching unrelated fields that happened to hold 1-10.
 
-  **The third offset addressed nothing.** Of the three ints the natives used to write per grenade,
-  one sat near int 55-66, where that DLL has no ammo-indexed array at all — so the getter was
-  reading an unrelated field on *every* map, not just some. Another was `m_rgAmmoLast`, and writing
-  it suppressed the DLL's own HUD update: `SendAmmoUpdate` diffs the pair every frame, so writing
-  `m_rgAmmo` alone now makes the client HUD self-correct on the right slot without a follow-up
-  `dodx_send_ammox`.
+  **The index is still resolved at runtime, deliberately.** Nothing now depends on the constant being
+  right: DODX reads the live slot from the DLL's own `WeaponList` (field 0 is `GetAmmoIndex(pszAmmo1)`,
+  field 6 the weapon id) and, independently, from the slot a successful `dodx_give_grenade` pickup
+  credits. The registry is cleared on every `SV_ActivateServer`, `ServerDeactivate` and on the
+  PreThink last-resort recovery path, and falls back to the fixed-order default until a reading
+  arrives, so an unresolved slot can never gate the natives off. A reading that contradicts the
+  default logs once per map — the tripwire the constants never had.
 
 - **`dodx_give_grenade(DODW_MILLS_BOMB)` could never succeed.** It asked `CREATE_NAMED_ENTITY` for
   `weapon_mills_bomb`, which the DLL does not link — the Mills bomb is `weapon_handgrenade` with a
@@ -89,19 +99,30 @@ md5. Verify by this md5, never by the banner.
 - **`dodx.ini score_deaths_offset` was unreachable once `pdata_offset` was set.** Both overrides sat
   inside a guard keyed on the pdata one. The config read is now latched on its own.
 
+- **`Client_WeaponList` cannot be desynchronised by a map change.** `DODX_OnMsgBegin` bails without
+  resetting `mState` while the server is inactive, and the core runs the per-field handlers anyway,
+  so the new handler checks `g_bServerActive` itself rather than trusting the field counter.
+
+### Removed
+- **The `pdata_offset` auto-detector** (`DODX_DetectPdataOffset`, `DODX_PdataWriteBoth`). It chose
+  between base +4 and +5 by scoring which one held a value between 1 and 10 **at a hardcoded ammo
+  index** — so it could confirm either answer, and its write-to-both phase corrupted whichever base
+  was wrong. Nothing replaces it: the base is measured.
+
 ### Added
-- **`dodx_get_grenade_ammo_index(grenade_type)`** — the ammo slot this map assigned, or -1 while
-  unknown. Callers that send their own `AmmoX` need it: a literal 9 or 11 addresses whatever ammo
-  type holds that slot on the current map. `KTPGrenadeLoadout` and `KTPPracticeMode` both still pass
-  literals and should be moved onto this native in their own cuts.
+- **`dodx_get_grenade_ammo_index(grenade_type)`** — the ammo slot in use for that grenade, so callers
+  sending their own `AmmoX` take it from the game DLL instead of repeating a literal.
+  `KTPGrenadeLoadout` (`AMMOSLOT_HANDGRENADE`/`AMMOSLOT_STICKGRENADE`) and `KTPPracticeMode` both
+  still pass literals and should move onto this native in their own cuts — with the DLL now emitting
+  its own correct `AmmoX`, a plugin's extra one is a client-side desync on whatever ammo type owns
+  that slot, and it will not self-correct until that type genuinely changes.
 
 ### Changed
-- **`dodx_debug_dump_ammo` now dumps the resolved registry and the whole `m_rgAmmo` array.** It used
-  to scan ints 0-175 for any value between 1 and 10 — a window that cannot reach `m_rgAmmo` at 285,
-  so every hit it ever reported was a coincidence in unrelated fields.
-- `dodx_get_grenade_ammo` returns -1 on a bad argument. An unresolved slot deliberately still reads
-  as **0**, because `KTPGrenadeLoadout` only calls `dodx_give_grenade` on a 0 — and that give is
-  what teaches DODX the slot when `WeaponList` has not arrived.
+- **`dodx_debug_dump_ammo` now dumps the resolved grenade slots and the player's non-zero `m_rgAmmo`
+  entries.** It used to scan ints 0-175 for any value between 1 and 10 — see above for what that
+  cost.
+- `dodx_get_grenade_ammo` returns **-1** rather than 0 on a bad argument, so an empty player is
+  distinguishable from a failed call.
 
 ## [2.7.27] - 2026-08-10
 
