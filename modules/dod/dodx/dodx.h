@@ -24,6 +24,11 @@
 // This avoids calling engine functions in extension mode hooks
 extern edict_t* g_pFirstEdict;
 
+// KTP: False across a map change. DODX's message-begin handler bails on it
+// WITHOUT resetting mState, and the core still runs the per-field handlers, so
+// a handler that trusts mState must check this itself.
+extern bool g_bServerActive;
+
 // KTP: Safe ENTINDEX that uses pointer arithmetic instead of engine function
 // This is safe to call during ReHLDS hooks when pfnIndexOfEdict may crash
 inline int ENTINDEX_SAFE(const edict_t *pEdict)

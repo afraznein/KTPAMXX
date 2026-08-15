@@ -403,9 +403,17 @@ void Client_Health_End(void* mValue)
 // stand in for it, because the DLL numbers ammo types in map precache order.
 void Client_WeaponList(void* mValue)
 {
-  static int iAmmoIndex;
+  static int iAmmoIndex = -1;
 
-  switch (mState++)
+  int field = mState++;
+
+  // mState is only ours if DODX_OnMsgBegin actually ran for this message; when
+  // it bails the field counter is the previous message's, and misreading it here
+  // would file a bogus slot for a bogus weapon.
+  if (!g_bServerActive)
+    return;
+
+  switch (field)
   {
   case 0:
     iAmmoIndex = *(int*)mValue;
@@ -417,6 +425,8 @@ void Client_WeaponList(void* mValue)
       if (wpnId > 0 && wpnId < DODMAX_WEAPONS &&
           iAmmoIndex >= 0 && iAmmoIndex < DODX_MAX_AMMO_SLOTS)
         g_ammoIndexByWeapon[wpnId] = iAmmoIndex;
+      // Consumed: a later id must not pair with this weapon's index.
+      iAmmoIndex = -1;
     }
     break;
   }
