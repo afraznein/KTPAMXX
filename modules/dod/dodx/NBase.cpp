@@ -1288,7 +1288,7 @@ static cell AMX_NATIVE_CALL dodx_set_grenade_ammo(AMX *amx, cell *params)
 }
 
 // dodx_get_grenade_ammo(id, grenade_type)
-// Returns the current count, or -1 when the slot is not resolvable
+// Count held, 0 when the slot is not yet known, -1 on a bad argument.
 static cell AMX_NATIVE_CALL dodx_get_grenade_ammo(AMX *amx, cell *params)
 {
 	int index = params[1];
@@ -1300,7 +1300,12 @@ static cell AMX_NATIVE_CALL dodx_get_grenade_ammo(AMX *amx, cell *params)
 
 	int *pAmmo = DODX_GrenadeAmmoCell(pPlayer, params[2], "dodx_get_grenade_ammo");
 	if (!pAmmo)
-		return -1;
+	{
+		// "Not known yet" must read as empty, not as an error: KTPGrenadeLoadout
+		// only calls dodx_give_grenade when this returns 0, and that give is what
+		// teaches DODX the slot when WeaponList has not arrived.
+		return DODX_IsGrenadeType(params[2]) ? 0 : -1;
+	}
 
 	return *pAmmo;
 }

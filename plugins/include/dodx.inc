@@ -483,10 +483,12 @@ native dodx_set_grenade_ammo(id, grenade_type, count);
  *
  * @param id            Player index
  * @param grenade_type  Grenade weapon ID: DODW_HANDGRENADE (13), DODW_STICKGRENADE (14), DODW_MILLS_BOMB (36)
- * @return              Current grenade count, or -1 on failure (invalid player
- *                      state, invalid grenade_type, or the map's ammo slot is
- *                      not yet known; logged, no abort). A count of 0 is a real
- *                      answer and is distinct from -1.
+ * @return              Current grenade count; 0 when the map's ammo slot is not
+ *                      yet known (indistinguishable from an empty player, and
+ *                      deliberately so — a caller that then calls
+ *                      dodx_give_grenade is what teaches DODX the slot);
+ *                      -1 on a bad argument (invalid player state or a
+ *                      grenade_type that is not a grenade), logged, no abort
  */
 native dodx_get_grenade_ammo(id, grenade_type);
 
