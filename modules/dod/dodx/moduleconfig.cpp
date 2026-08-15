@@ -162,6 +162,36 @@ int DODX_GrenadeAmmoIndex(int grenadeType)
 	return g_ammoIndexByWeapon[grenadeType];
 }
 
+void DODX_ObserveGrenadeAmmoIndex(int grenadeType, int slot)
+{
+	if (grenadeType == 36)
+		grenadeType = 13;
+
+	if ((grenadeType != 13 && grenadeType != 14) || slot < 0 || slot >= DODX_MAX_AMMO_SLOTS)
+		return;
+
+	int known = g_ammoIndexByWeapon[grenadeType];
+	if (known == slot)
+		return;
+
+	if (known < 0)
+	{
+		g_ammoIndexByWeapon[grenadeType] = slot;
+		return;
+	}
+
+	// Two independent readings of the same registry disagreeing means one of the
+	// two mechanisms has stopped telling the truth — worth a line, not a silent
+	// overwrite. WeaponList is the earlier and broader source, so it wins.
+	static bool s_warned[DODMAX_WEAPONS] = { false };
+	if (!s_warned[grenadeType])
+	{
+		s_warned[grenadeType] = true;
+		MF_Log("[DODX] ammo slot for weapon %d: pickup probe says %d, WeaponList said %d — keeping %d",
+			grenadeType, slot, known, known);
+	}
+}
+
 RankSystem g_rank;
 Grenades g_grenades;
 

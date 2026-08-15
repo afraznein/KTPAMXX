@@ -13,10 +13,11 @@
 //
 
 #include <stdarg.h>   // dump_append (round-timer diagnostic)
+#include <string.h>   // memcpy (grenade pickup ammo-slot probe)
 #include "amxxmodule.h"
 #include "dodx.h"
 
-/* Weapon names aren't send in WeaponList message in DoD */
+/* DoD's WeaponList carries no weapon name — only the ammo index and weapon id */
 weaponlist_s weaponlist[] =
 {
 	{ 0,     0,	  0,	false}, // 0,
@@ -1450,8 +1451,37 @@ static cell AMX_NATIVE_CALL dodx_give_grenade(AMX *amx, cell *params)
 	// would make the post-touch comparison always differ, leaking entities
 	int oldSolid = pWeapon->v.solid;
 
+	// A successful pickup makes the DLL credit ammo to the slot it assigned this
+	// weapon on this map — a second reading of the same registry, independent of
+	// WeaponList, so a grenade native still resolves if that message never lands.
+	int *pAmmoArray = pPlayer->pEdict->pvPrivateData
+		? (int*)pPlayer->pEdict->pvPrivateData + PDOFFSET_AMMO_ARRAY : NULL;
+	int ammoBefore[DODX_MAX_AMMO_SLOTS];
+	if (pAmmoArray)
+		memcpy(ammoBefore, pAmmoArray, sizeof(ammoBefore));
+
 	// Touch the player to pick it up using game DLL function
 	pGameDll->pfnTouch(pWeapon, pPlayer->pEdict);
+
+	if (pAmmoArray)
+	{
+		// Only an unambiguous single-slot rise identifies the slot; two movers
+		// means something else changed ammo in the same call, so learn nothing.
+		int moved = -1;
+		for (int i = 0; i < DODX_MAX_AMMO_SLOTS; i++)
+		{
+			if (pAmmoArray[i] <= ammoBefore[i])
+				continue;
+			if (moved >= 0)
+			{
+				moved = -1;
+				break;
+			}
+			moved = i;
+		}
+		if (moved >= 0)
+			DODX_ObserveGrenadeAmmoIndex(grenadeType, moved);
+	}
 
 	// If solid state changed, pickup was successful
 	// If not, entity wasn't picked up - remove it to avoid clutter

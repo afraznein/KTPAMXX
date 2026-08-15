@@ -148,6 +148,8 @@ extern int g_ammoIndexByWeapon[DODMAX_WEAPONS];
 void DODX_ClearAmmoRegistry();
 // -1 when the type is not a grenade or the map's WeaponList has not arrived yet.
 int DODX_GrenadeAmmoIndex(int grenadeType);
+// Second source: the slot the DLL itself moved when a grenade pickup landed.
+void DODX_ObserveGrenadeAmmoIndex(int grenadeType, int slot);
 
 // Weapons Structure
 struct weapon_t 
