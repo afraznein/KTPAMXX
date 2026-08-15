@@ -5,6 +5,7 @@ binary = AMXX.MetaModule(builder, 'dodx')
 
 binary.compiler.defines += [
   'HAVE_STDINT_H',
+  'DODX_PROBE_CP',
 ]
 
 binary.sources = [

@@ -546,6 +546,13 @@ void Client_InitObj(void* mValue)
 {
 	static int num;
 
+#ifdef DODX_PROBE_CP
+	// THROWAWAY: every field as it arrives, before any interpretation. The whole
+	// question on issue #11 is what the DLL actually puts in field 3.
+	MF_Log("[PROBE] InitObj field state=%d dest=%d int=%d float=%.2f",
+		mState, mDest, *(int*)mValue, *(float*)mValue);
+#endif
+
 	// No mDest filter — accept InitObj from any source:
 	// MSG_BROADCAST (0) during ServerActivate, MSG_ONE (1) on player connect,
 	// MSG_ALL (2) in some configurations. InitObj is global CP data that

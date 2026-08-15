@@ -66,6 +66,127 @@ static void DODX_ReadBSPMapInfo();
 void DODX_RegisterMessageHooks();
 static void DODX_InitCPFromEntities();
 
+#ifdef DODX_PROBE_CP
+// ===================== THROWAWAY INSTRUMENTATION — NEVER SHIP =====================
+// Answers one question: at which lifecycle point does the game DLL stamp control
+// point identity? Reads raw pdata at the byte offsets from
+// gamedata/common.games/entities.games/dod/offsets-ccontrolpoint(master).txt so
+// nothing here depends on pd_dcp, whose Linux padding is the thing under suspicion.
+#define PCP_MASTER      372   // m_sMaster      (string_t)
+#define PCP_TEAM        376   // m_iTeam
+#define PCP_MAINOBJ     384   // m_iMainObjective
+#define PCP_DEFOWNER    388   // m_iDefaultOwner
+#define PCP_INDEX       392   // m_iIndex
+#define PCP_POINTVAL    396   // m_iPointValue
+#define PCP_VISIBLE     2244  // m_bPointVisible
+#define PCP_POINTINDEX  2248  // m_iPointIndex
+
+#define PCPM_ARRAY      344   // CControlPoint*[20]
+#define PCPM_NUMPOINTS  424   // m_iNumPoints
+#define PCPM_FOUND      428   // FoundPoints
+#define PCPM_ACTIVE     432   // m_bActive
+
+static int g_probeFrame = -1;
+static bool g_probeFoundSeen = false;
+static bool g_probeIndexSeen = false;
+
+static inline int PCP_i(void *pd, int off) { return *(int *)((char *)pd + off); }
+
+static void DODX_ProbeCP(const char *phase)
+{
+	if (!gpGlobals)
+		return;
+
+	edict_t *pm = FindEntityByClassname(NULL, "dod_control_point_master");
+	if (pm && pm->pvPrivateData)
+	{
+		void *md = pm->pvPrivateData;
+		int n = PCP_i(md, PCPM_NUMPOINTS);
+		char buf[512];
+		int w = snprintf(buf, sizeof(buf), "[PROBE] %s t=%.3f MASTER found=%d num=%d active=%d arr=",
+			phase, gpGlobals->time, PCP_i(md, PCPM_FOUND), n, PCP_i(md, PCPM_ACTIVE));
+		for (int i = 0; i < 20 && i < 12 && w > 0 && w < (int)sizeof(buf) - 16; i++)
+			w += snprintf(buf + w, sizeof(buf) - w, "%p,", (void *)(intptr_t)PCP_i(md, PCPM_ARRAY + i * 4));
+		MF_Log("%s", buf);
+	}
+	else
+	{
+		MF_Log("[PROBE] %s t=%.3f MASTER absent", phase, gpGlobals->time);
+	}
+
+	int idx = 0;
+	edict_t *pe = NULL;
+	while ((pe = FindEntityByClassname(pe, "dod_control_point")) != NULL && idx < 12)
+	{
+		if (!pe->pvPrivateData) { idx++; continue; }
+		void *d = pe->pvPrivateData;
+		MF_Log("[PROBE] %s t=%.3f CP[%d] pd=%p ent=%d tn='%s' master=%d team=%d mainobj=%d "
+			"defowner=%d m_iIndex=%d pointval=%d visible=%d m_iPointIndex=%d org=(%.0f,%.0f)",
+			phase, gpGlobals->time, idx, d, ENTINDEX_SAFE(pe), STRING(pe->v.targetname),
+			PCP_i(d, PCP_MASTER), PCP_i(d, PCP_TEAM), PCP_i(d, PCP_MAINOBJ),
+			PCP_i(d, PCP_DEFOWNER), PCP_i(d, PCP_INDEX), PCP_i(d, PCP_POINTVAL),
+			PCP_i(d, PCP_VISIBLE), PCP_i(d, PCP_POINTINDEX),
+			pe->v.origin[0], pe->v.origin[1]);
+		idx++;
+	}
+	MF_Log("[PROBE] %s t=%.3f cp_entities=%d", phase, gpGlobals->time, idx);
+}
+
+// Per-frame driver. Logs on a schedule, plus the exact frame at which the master
+// latches FoundPoints and the exact frame at which any CP first carries a non-zero
+// m_iIndex — the two transitions the design hangs on.
+static void DODX_ProbeFrame()
+{
+	if (g_probeFrame < 0 || !gpGlobals)
+		return;
+	g_probeFrame++;
+
+	if (!g_probeFoundSeen)
+	{
+		edict_t *pm = FindEntityByClassname(NULL, "dod_control_point_master");
+		if (pm && pm->pvPrivateData && PCP_i(pm->pvPrivateData, PCPM_FOUND) != 0)
+		{
+			g_probeFoundSeen = true;
+			MF_Log("[PROBE] *** FoundPoints latched at frame %d", g_probeFrame);
+			DODX_ProbeCP("found-latch");
+		}
+	}
+
+	if (!g_probeIndexSeen)
+	{
+		edict_t *pe = NULL;
+		while ((pe = FindEntityByClassname(pe, "dod_control_point")) != NULL)
+		{
+			if (pe->pvPrivateData && PCP_i(pe->pvPrivateData, PCP_INDEX) != 0)
+			{
+				g_probeIndexSeen = true;
+				MF_Log("[PROBE] *** first non-zero m_iIndex at frame %d", g_probeFrame);
+				DODX_ProbeCP("index-stamp");
+				break;
+			}
+		}
+	}
+
+	switch (g_probeFrame)
+	{
+		case 1: case 2: case 3: case 5: case 10: case 25: case 50:
+		case 100: case 200: case 400: case 800: case 1600:
+		{
+			char ph[32];
+			snprintf(ph, sizeof(ph), "frame:%d", g_probeFrame);
+			DODX_ProbeCP(ph);
+			break;
+		}
+		default:
+			break;
+	}
+
+	if (g_probeFrame >= 1600)
+		g_probeFrame = -1;   // stop; the question is answered by now either way
+}
+// =================== END THROWAWAY INSTRUMENTATION ===================
+#endif
+
 funEventCall modMsgsEnd[MAX_REG_MSGS];
 funEventCall modMsgs[MAX_REG_MSGS];
 void (*function)(void*);
@@ -1477,13 +1598,34 @@ static void DODX_OnSV_ActivateServer(IVoidHookChain<int> *chain, int runPhysics)
 		}
 	}
 
+#ifdef DODX_PROBE_CP
+	DODX_ProbeCP("activate-pre");
+#endif
+
 	// Call original — game DLL's ServerActivate runs here, sending InitObj.
 	// Our DODX_OnInitObjMessage hook catches it and populates mObjects with
 	// the authoritative CP ordering that matches SetObj indices.
 	chain->callNext(runPhysics);
 
+#ifdef DODX_PROBE_CP
+	DODX_ProbeCP("activate-post");
+	g_probeFrame = 0;
+	g_probeFoundSeen = false;
+	g_probeIndexSeen = false;
+	if (MF_RegModuleFrameFunc)
+		MF_RegModuleFrameFunc(DODX_ProbeFrame);
+#endif
+
 	// Entity scan as fallback if InitObj wasn't intercepted
 	DODX_InitCPFromEntities();
+
+#ifdef DODX_PROBE_CP
+	// What the shipped path concluded, next to the raw truth above.
+	for (int i = 0; i < mObjects.count; i++)
+		MF_Log("[PROBE] scan-result CP[%d] index=%d owner=%d default_owner=%d pd=%p",
+			i, mObjects.obj[i].index, mObjects.obj[i].owner, mObjects.obj[i].default_owner,
+			mObjects.obj[i].pEdict ? mObjects.obj[i].pEdict->pvPrivateData : NULL);
+#endif
 }
 
 // KTP: SV_DropClient hook handler - replaces FN_ClientDisconnect
