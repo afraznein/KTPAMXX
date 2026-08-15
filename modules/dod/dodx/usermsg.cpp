@@ -391,6 +391,37 @@ void Client_Health_End(void* mValue)
 	}
 }
 
+// KTP: DoD's WeaponList carries no weapon-name string — the fields are
+// byte ammo1 index, byte max ammo1, byte ammo2 index, byte max ammo2, byte slot,
+// byte position, SHORT weapon id, byte flags, byte clip. Field 0 is the DLL's own
+// GetAmmoIndex(pszAmmo1), i.e. this map's live m_rgAmmo slot for that weapon, and
+// field 6 is the DODW_* id. Verified against dod_i386.so md5 4f4727b2...
+// (CBasePlayer::UpdateClientData), which sends one of these per registered weapon
+// the first time it builds a client's HUD.
+//
+// This is the whole ammo registry, reported by the game DLL: no constant can
+// stand in for it, because the DLL numbers ammo types in map precache order.
+void Client_WeaponList(void* mValue)
+{
+  static int iAmmoIndex;
+
+  switch (mState++)
+  {
+  case 0:
+    iAmmoIndex = *(int*)mValue;
+    break;
+
+  case 6:
+    {
+      int wpnId = *(int*)mValue;
+      if (wpnId > 0 && wpnId < DODMAX_WEAPONS &&
+          iAmmoIndex >= 0 && iAmmoIndex < DODX_MAX_AMMO_SLOTS)
+        g_ammoIndexByWeapon[wpnId] = iAmmoIndex;
+    }
+    break;
+  }
+}
+
 void Client_AmmoX(void* mValue)
 {
   static int iAmmo;

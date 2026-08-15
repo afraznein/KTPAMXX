@@ -1221,6 +1221,33 @@ static cell AMX_NATIVE_CALL dodx_set_scoreboard_team_name(AMX *amx, cell *params
 }
 
 // KTP: Grenade ammo manipulation (ported from dodfun for extension mode)
+//
+// The ammo slot is resolved per map from the game DLL's own WeaponList, never
+// assumed: the DLL numbers ammo types in map precache order, so a constant slot
+// reads and writes a DIFFERENT ammo type's counter from one map to the next,
+// silently and with no failure path. Unresolved means refuse, not guess.
+static bool DODX_IsGrenadeType(int grenadeType)
+{
+	// DODW_HANDGRENADE, DODW_STICKGRENADE, DODW_MILLS_BOMB
+	return grenadeType == 13 || grenadeType == 14 || grenadeType == 36;
+}
+
+static int *DODX_GrenadeAmmoCell(CPlayer *pPlayer, int grenadeType, const char *nativeName)
+{
+	int slot = DODX_GrenadeAmmoIndex(grenadeType);
+	if (slot < 0)
+	{
+		if (!DODX_IsGrenadeType(grenadeType))
+			MF_Log("%s: invalid grenade type %d", nativeName, grenadeType);
+		else
+			MF_Log("%s: ammo slot for type %d unknown on this map (no WeaponList seen yet)",
+				nativeName, grenadeType);
+		return NULL;
+	}
+
+	return (int*)pPlayer->pEdict->pvPrivateData + PDOFFSET_AMMO_ARRAY + slot;
+}
+
 // dodx_set_grenade_ammo(id, grenade_type, count)
 // grenade_type: DODW_HANDGRENADE (13), DODW_STICKGRENADE (14), DODW_MILLS_BOMB (36)
 static cell AMX_NATIVE_CALL dodx_set_grenade_ammo(AMX *amx, cell *params)
@@ -1232,50 +1259,24 @@ static cell AMX_NATIVE_CALL dodx_set_grenade_ammo(AMX *amx, cell *params)
 	if (!pPlayer->ingame || !pPlayer->pEdict || !pPlayer->pEdict->pvPrivateData)
 		return 0;
 
-	int grenadeType = params[2];
 	int count = params[3];
-
-	// Clamp count to reasonable range
 	if (count < 0) count = 0;
 	if (count > 10) count = 10;
 
-#if defined(__linux__) || defined(__APPLE__)
-	if (!g_bPdataOffsetDetected)
-	{
-		// Phase 1: Offset not yet determined. Write to BOTH +4 and +5 offsets
-		// to ensure the correct one gets the value. Then try to detect.
-		DODX_PdataWriteBoth(pPlayer->pEdict, grenadeType, count);
-		// Try to detect now (may defer if data is insufficient)
-		DODX_DetectPdataOffset(pPlayer->pEdict);
-		return 1;
-	}
-#endif
+	int *pAmmo = DODX_GrenadeAmmoCell(pPlayer, params[2], "dodx_set_grenade_ammo");
+	if (!pAmmo)
+		return 0;
 
-	switch (grenadeType)
-	{
-		case 13: // DODW_HANDGRENADE
-		case 36: // DODW_MILLS_BOMB (shares ammo pool with hand grenade)
-			*((int*)pPlayer->pEdict->pvPrivateData + PDOFFSET_AMMO_HANDGRENADE_1) = count;
-			*((int*)pPlayer->pEdict->pvPrivateData + PDOFFSET_AMMO_HANDGRENADE_2) = count;
-			*((int*)pPlayer->pEdict->pvPrivateData + PDOFFSET_AMMO_HANDGRENADE_3) = count;
-			break;
-
-		case 14: // DODW_STICKGRENADE
-			*((int*)pPlayer->pEdict->pvPrivateData + PDOFFSET_AMMO_STICKGRENADE_1) = count;
-			*((int*)pPlayer->pEdict->pvPrivateData + PDOFFSET_AMMO_STICKGRENADE_2) = count;
-			*((int*)pPlayer->pEdict->pvPrivateData + PDOFFSET_AMMO_STICKGRENADE_3) = count;
-			break;
-
-		default:
-			MF_Log("dodx_set_grenade_ammo: invalid grenade type %d", grenadeType);
-			return 0;
-	}
+	// m_rgAmmoLast is deliberately left alone: the DLL's SendAmmoUpdate diffs the
+	// two every frame and emits AmmoX on the right slot, so the client HUD
+	// self-corrects. Writing both is what made a manual dodx_send_ammox necessary.
+	*pAmmo = count;
 
 	return 1;
 }
 
 // dodx_get_grenade_ammo(id, grenade_type)
-// Returns current grenade count for the specified type
+// Returns the current count, or -1 when the slot is not resolvable
 static cell AMX_NATIVE_CALL dodx_get_grenade_ammo(AMX *amx, cell *params)
 {
 	int index = params[1];
@@ -1283,29 +1284,22 @@ static cell AMX_NATIVE_CALL dodx_get_grenade_ammo(AMX *amx, cell *params)
 	CPlayer* pPlayer = GET_PLAYER_POINTER_I(index);
 
 	if (!pPlayer->ingame || !pPlayer->pEdict || !pPlayer->pEdict->pvPrivateData)
-		return 0;
+		return -1;
 
-#if defined(__linux__) || defined(__APPLE__)
-	// Auto-detect pdata offset on first grenade operation
-	if (!g_bPdataOffsetDetected)
-		DODX_DetectPdataOffset(pPlayer->pEdict);
-#endif
+	int *pAmmo = DODX_GrenadeAmmoCell(pPlayer, params[2], "dodx_get_grenade_ammo");
+	if (!pAmmo)
+		return -1;
 
-	int grenadeType = params[2];
+	return *pAmmo;
+}
 
-	switch (grenadeType)
-	{
-		case 13: // DODW_HANDGRENADE
-		case 36: // DODW_MILLS_BOMB
-			return *((int*)pPlayer->pEdict->pvPrivateData + PDOFFSET_AMMO_HANDGRENADE_1);
-
-		case 14: // DODW_STICKGRENADE
-			return *((int*)pPlayer->pEdict->pvPrivateData + PDOFFSET_AMMO_STICKGRENADE_1);
-
-		default:
-			MF_Log("dodx_get_grenade_ammo: invalid grenade type %d", grenadeType);
-			return 0;
-	}
+// dodx_get_grenade_ammo_index(grenade_type)
+// The ammo slot this map assigned to that grenade, or -1 while unknown. Callers
+// that send their own AmmoX need this — a hardcoded 9/11 addresses whatever ammo
+// type happens to hold that slot today.
+static cell AMX_NATIVE_CALL dodx_get_grenade_ammo_index(AMX *amx, cell *params)
+{
+	return DODX_GrenadeAmmoIndex(params[1]);
 }
 
 // KTP: Noclip control (ported from fun module for extension mode)
@@ -1365,7 +1359,9 @@ static cell AMX_NATIVE_CALL dodx_debug_player_state(AMX *amx, cell *params)
 
 // KTP: Send AmmoX message to update client HUD
 // dodx_send_ammox(id, ammo_slot, count)
-// ammo_slot: 9 = hand grenade/mills bomb, 11 = stick grenade
+// ammo_slot is a raw ammo-type index and is NOT constant across maps — get the
+// grenade ones from dodx_get_grenade_ammo_index(). Setting ammo through
+// dodx_set_grenade_ammo already makes the DLL emit its own AmmoX.
 static cell AMX_NATIVE_CALL dodx_send_ammox(AMX *amx, cell *params)
 {
 	int index = params[1];
@@ -1421,7 +1417,11 @@ static cell AMX_NATIVE_CALL dodx_give_grenade(AMX *amx, cell *params)
 			weaponClass = "weapon_stickgrenade";
 			break;
 		case 36: // DODW_MILLS_BOMB
-			weaponClass = "weapon_mills_bomb";
+			// The DLL links no weapon_mills_bomb — the Mills bomb is
+			// weapon_handgrenade with a British model, and CREATE_NAMED_ENTITY on
+			// the name that does not exist returned NULL, so every give for a
+			// British-allies map failed at the first branch.
+			weaponClass = "weapon_handgrenade";
 			break;
 		default:
 			MF_LogError(amx, AMX_ERR_NATIVE, "dodx_give_grenade: invalid grenade type %d", grenadeType);
@@ -1476,35 +1476,27 @@ static cell AMX_NATIVE_CALL dodx_strip_grenade(AMX *amx, cell *params)
 	if (!pPlayer->pEdict || !pPlayer->pEdict->pvPrivateData)
 		return 0;
 
-	int grenadeType = params[2];
-
-	// Clear all ammo slots for this grenade type
-	switch (grenadeType)
+	// Keeps the documented abort-on-bad-type contract, which the shared helper
+	// downgrades to a log for the set/get pair.
+	if (!DODX_IsGrenadeType(params[2]))
 	{
-		case 13: // DODW_HANDGRENADE
-		case 36: // DODW_MILLS_BOMB
-			*((int*)pPlayer->pEdict->pvPrivateData + PDOFFSET_AMMO_HANDGRENADE_1) = 0;
-			*((int*)pPlayer->pEdict->pvPrivateData + PDOFFSET_AMMO_HANDGRENADE_2) = 0;
-			*((int*)pPlayer->pEdict->pvPrivateData + PDOFFSET_AMMO_HANDGRENADE_3) = 0;
-			break;
-
-		case 14: // DODW_STICKGRENADE
-			*((int*)pPlayer->pEdict->pvPrivateData + PDOFFSET_AMMO_STICKGRENADE_1) = 0;
-			*((int*)pPlayer->pEdict->pvPrivateData + PDOFFSET_AMMO_STICKGRENADE_2) = 0;
-			*((int*)pPlayer->pEdict->pvPrivateData + PDOFFSET_AMMO_STICKGRENADE_3) = 0;
-			break;
-
-		default:
-			MF_LogError(amx, AMX_ERR_NATIVE, "dodx_strip_grenade: invalid grenade type %d", grenadeType);
-			return 0;
+		MF_LogError(amx, AMX_ERR_NATIVE, "dodx_strip_grenade: invalid grenade type %d", params[2]);
+		return 0;
 	}
+
+	int *pAmmo = DODX_GrenadeAmmoCell(pPlayer, params[2], "dodx_strip_grenade");
+	if (!pAmmo)
+		return 0;
+
+	*pAmmo = 0;
 
 	return 1;
 }
 
 // dodx_debug_dump_ammo(id)
-// Debug function to dump potential ammo offset values
-// Scans for values 1-10 which could be grenade/ammo counts
+// Dumps this map's resolved ammo registry and the player's whole m_rgAmmo array.
+// The old version scanned ints 0-175, a window that cannot reach m_rgAmmo at all,
+// so anything it matched on "value between 1 and 10" was a coincidence.
 static cell AMX_NATIVE_CALL dodx_debug_dump_ammo(AMX *amx, cell *params)
 {
 	int index = params[1];
@@ -1514,31 +1506,16 @@ static cell AMX_NATIVE_CALL dodx_debug_dump_ammo(AMX *amx, cell *params)
 	if (!pPlayer->pEdict || !pPlayer->pEdict->pvPrivateData)
 		return 0;
 
-	int* pData = (int*)pPlayer->pEdict->pvPrivateData;
+	const int *pAmmo = (const int*)pPlayer->pEdict->pvPrivateData + PDOFFSET_AMMO_ARRAY;
 
-#if defined(__linux__) || defined(__APPLE__)
-	// Show current offset adjustment
-	MF_Log("[DODX DEBUG] Player %d - Runtime offset adjustment: +%d (detected=%s)",
-		index, g_iLinuxPdataOffsetAdjust, g_bPdataOffsetDetected ? "yes" : "no");
-	MF_Log("[DODX DEBUG] Expected offsets: HG1=%d HG2=%d HG3=%d SG1=%d",
-		PDOFFSET_AMMO_HANDGRENADE_1, PDOFFSET_AMMO_HANDGRENADE_2,
-		PDOFFSET_AMMO_HANDGRENADE_3, PDOFFSET_AMMO_STICKGRENADE_1);
-#endif
+	MF_Log("[DODX DEBUG] Player %d - m_rgAmmo at int-offset %d; grenade slots this map: hand=%d stick=%d mills=%d",
+		index, PDOFFSET_AMMO_ARRAY,
+		DODX_GrenadeAmmoIndex(13), DODX_GrenadeAmmoIndex(14), DODX_GrenadeAmmoIndex(36));
 
-	// Scan within safe bounds of DoD player private data (~175 ints / 700 bytes)
-	MF_Log("[DODX DEBUG] Player %d - Scanning for values 1-10 (grenade counts):", index);
-
-	// Scan offsets 0-175 (700 bytes) - safe range for DoD player private data
-	for (int i = 0; i <= 175; i++) {
-		int val = pData[i];
-		if (val >= 1 && val <= 10) {
-			const char* marker = "";
-			if (i == PDOFFSET_AMMO_HANDGRENADE_1) marker = " <-- HANDGRENADE_1 (expected)";
-			else if (i == PDOFFSET_AMMO_HANDGRENADE_2) marker = " <-- HANDGRENADE_2 (expected)";
-			else if (i == PDOFFSET_AMMO_HANDGRENADE_3) marker = " <-- HANDGRENADE_3 (expected)";
-			else if (i == PDOFFSET_AMMO_STICKGRENADE_1) marker = " <-- STICKGRENADE_1 (expected)";
-			MF_Log("[DODX DEBUG]   [%d] = %d%s", i, val, marker);
-		}
+	for (int i = 0; i < DODX_MAX_AMMO_SLOTS; i++)
+	{
+		if (pAmmo[i] != 0)
+			MF_Log("[DODX DEBUG]   m_rgAmmo[%d] = %d", i, pAmmo[i]);
 	}
 
 	return 1;
@@ -2134,6 +2111,7 @@ AMX_NATIVE_INFO base_Natives[] =
 	// KTP: Grenade ammo manipulation (extension mode compatible)
 	{"dodx_set_grenade_ammo", dodx_set_grenade_ammo},
 	{"dodx_get_grenade_ammo", dodx_get_grenade_ammo},
+	{"dodx_get_grenade_ammo_index", dodx_get_grenade_ammo_index},
 
 	// KTP: Noclip control (extension mode compatible)
 	{"dodx_set_user_noclip", dodx_set_user_noclip},

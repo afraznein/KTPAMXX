@@ -451,6 +451,12 @@ native Float:dodx_get_round_time();
 native dodx_set_scoreboard_team_name(team, const name[]);
 
 // =============== KTP: Grenade Ammo Manipulation ===============
+//
+// The game DLL numbers ammo types at map load, in weapon-precache order, so the
+// slot holding a given grenade differs from map to map. DODX resolves it per map
+// from the DLL's own WeaponList message. Until that message has been seen for the
+// current map these natives refuse rather than address a guessed slot — that is
+// what a "0"/"-1" return means most often in practice, not a bad argument.
 
 /**
  * Set grenade ammo count for a player.
@@ -460,11 +466,14 @@ native dodx_set_scoreboard_team_name(team, const name[]);
  * @param id            Player index
  * @param grenade_type  Grenade weapon ID: DODW_HANDGRENADE (13), DODW_STICKGRENADE (14), DODW_MILLS_BOMB (36)
  * @param count         Number of grenades to set (0-10)
- * @return              1 on success, 0 on failure (invalid player state or
- *                      invalid grenade_type; logged, no abort)
+ * @return              1 on success, 0 on failure (invalid player state,
+ *                      invalid grenade_type, or the map's ammo slot is not yet
+ *                      known; logged, no abort)
  *
  * @note DODW_HANDGRENADE and DODW_MILLS_BOMB share the same ammo pool (Allies grenades)
  * @note DODW_STICKGRENADE is the Axis grenade type
+ * @note The client HUD updates itself — the game DLL emits its own AmmoX once the
+ *       count changes, on the correct slot. A follow-up dodx_send_ammox is not needed.
  * @note Call this in dod_client_spawn forward with a short delay for best results
  */
 native dodx_set_grenade_ammo(id, grenade_type, count);
@@ -474,10 +483,23 @@ native dodx_set_grenade_ammo(id, grenade_type, count);
  *
  * @param id            Player index
  * @param grenade_type  Grenade weapon ID: DODW_HANDGRENADE (13), DODW_STICKGRENADE (14), DODW_MILLS_BOMB (36)
- * @return              Current grenade count, or 0 on failure (invalid
- *                      grenade_type logs and returns 0, no abort)
+ * @return              Current grenade count, or -1 on failure (invalid player
+ *                      state, invalid grenade_type, or the map's ammo slot is
+ *                      not yet known; logged, no abort). A count of 0 is a real
+ *                      answer and is distinct from -1.
  */
 native dodx_get_grenade_ammo(id, grenade_type);
+
+/**
+ * Ammo-type index this map assigned to a grenade type.
+ * Needed only by callers that send their own AmmoX — a literal 9/11 addresses
+ * whatever ammo type happens to hold that slot on the current map.
+ *
+ * @param grenade_type  Grenade weapon ID: DODW_HANDGRENADE (13), DODW_STICKGRENADE (14), DODW_MILLS_BOMB (36)
+ * @return              Ammo slot (0-31), or -1 if grenade_type is not a grenade
+ *                      or the map's WeaponList has not been seen yet
+ */
+native dodx_get_grenade_ammo_index(grenade_type);
 
 /**
  * Set player noclip mode.
@@ -510,7 +532,8 @@ native dodx_debug_player_state(id);
  * Use this after modifying grenade ammo to sync the client HUD.
  *
  * @param id         Player index
- * @param ammo_slot  Ammo slot ID: 9 = hand grenade/mills bomb, 11 = stick grenade
+ * @param ammo_slot  Raw ammo-type index. NOT constant across maps — take the
+ *                   grenade ones from dodx_get_grenade_ammo_index()
  * @param count      Ammo count to display (0-254)
  * @return           1 on success, 0 on failure (AmmoX not registered logs
  *                   and returns 0, no abort)
@@ -542,7 +565,8 @@ native dodx_give_grenade(id, grenade_type);
  *
  * @param id            Player index
  * @param grenade_type  Grenade weapon ID: DODW_HANDGRENADE (13), DODW_STICKGRENADE (14), DODW_MILLS_BOMB (36)
- * @return              1 on success, 0 on failure
+ * @return              1 on success, 0 on failure (invalid player state, or the
+ *                      map's ammo slot is not yet known; logged, no abort)
  * @error               Invalid grenade_type raises a native error that
  *                      aborts the calling public — the 0 return is not
  *                      observable for that case.
@@ -550,8 +574,8 @@ native dodx_give_grenade(id, grenade_type);
 native dodx_strip_grenade(id, grenade_type);
 
 /**
- * Debug: Dump potential ammo offset values to server log.
- * Use this to find correct ammo offsets on different OS versions.
+ * Debug: Dump this map's resolved grenade ammo slots and the player's whole
+ * m_rgAmmo array (non-zero entries only) to the server log.
  *
  * @param id  Player index
  * @return    1 on success
