@@ -35,6 +35,11 @@ for a bad argument, so a plugin that wants either must be rebuilt against this i
 Numbered 2.7.29 rather than 2.7.28 because 2.7.28 is already claimed by the unmerged
 `tier2/weapon-fire-aim-error` cut; reusing it would put two different binaries behind one version.
 
+⚠️ **Ordering: the module must activate no later than any plugin recompiled against this include
+set.** A plugin calling `dodx_get_grenade_ammo_index` fails to load against the fleet's live dodx
+2.7.27 — natives are resolved at load, and a missing one is a load failure, not a degraded mode.
+Both are `.new`-swapped at the same 03:00 restart, so this is orderable; it just has to be deliberate.
+
 **Shipping artifact — `dodx_ktp_i386.so` md5 `DODX_MD5_PLACEHOLDER`** (built 2026-08-15 from
 `COMMIT_PLACEHOLDER`, `build_linux.sh`, GLIBC 2.35 / Ubuntu 22.04).
 ⚠️ **Do not rebuild to re-verify** — AMXX bakes a per-minute build timestamp, so a rebuild churns this
