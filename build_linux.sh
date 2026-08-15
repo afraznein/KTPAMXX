@@ -104,24 +104,50 @@ if [ ! -d "$HLSDK" ]; then
     exit 1
 fi
 
-# Clean previous build folder
+# Clean previous build folder. The `|| true` means a wipe that fails is silent,
+# so obj-linux may still hold the PREVIOUS build -- hence the freshness gate below
+# rather than a bare -f test.
 echo "Cleaning previous build..."
 rm -rf obj-linux 2>/dev/null || true
+
+# Reference mtime: an artifact older than this is not from this run.
+BUILD_STAMP="$(mktemp)"
+trap 'rm -f "$BUILD_STAMP"' EXIT
 
 # Configure build
 # --no-plugins: Skip plugin compilation (plugins are platform-independent, compile on Windows instead)
 echo "Configuring build..."
 python3 configure.py --enable-optimize --no-mysql --no-plugins
 
+# Resolve ambuild up front -- an empty $(which ambuild) makes `python3` read stdin
+# and exit 0 without building anything.
+AMBUILD="$(which ambuild)"
+if [ -z "$AMBUILD" ]; then
+    echo "ERROR: ambuild not found on PATH after activating $VENV_DIR"
+    exit 1
+fi
+
 # Build
 echo "Building KTP AMX..."
 cd obj-linux
-python3 $(which ambuild)
+set +e
+python3 "$AMBUILD"
+BUILD_RC=$?
+set -e
 cd ..
 
-# Check if build succeeded
+if [ "$BUILD_RC" -ne 0 ]; then
+    echo ""
+    echo "========================================"
+    echo "BUILD FAILED! (ambuild exit $BUILD_RC)"
+    echo "========================================"
+    echo "Nothing has been staged."
+    exit 1
+fi
+
+# Check if build succeeded -- on the ARTIFACT, and on it being ours.
 BINARY_PATH="obj-linux/packages/base/addons/ktpamx/dlls/ktpamx_i386.so"
-if [ -f "$BINARY_PATH" ]; then
+if [ -f "$BINARY_PATH" ] && [ "$BINARY_PATH" -nt "$BUILD_STAMP" ]; then
     echo ""
     echo "========================================"
     echo "BUILD SUCCESS!"
@@ -130,9 +156,10 @@ if [ -f "$BINARY_PATH" ]; then
     ls -lh "$BINARY_PATH"
     echo ""
 
-    # Deploy to staging folder for easy VPS upload
-    # This is a Windows path accessed via WSL
-    DEPLOY_DIR="/mnt/n/Nein_/KTP Git Projects/KTP DoD Server/serverfiles"
+    # Deploy to staging folder for easy VPS upload. Overridable so a test run can
+    # stage somewhere harmless instead of over an md5-pinned artifact.
+    # This is a Windows path accessed via WSL.
+    DEPLOY_DIR="${KTP_STAGING_DIR:-/mnt/n/Nein_/KTP Git Projects/KTP DoD Server/serverfiles}"
     if [ -d "$DEPLOY_DIR" ]; then
         if [ -n "${KTP_NO_STAGE:-}" ]; then
             echo "Staging SKIPPED (KTP_NO_STAGE set)."
@@ -142,15 +169,25 @@ if [ -f "$BINARY_PATH" ]; then
 
             # Deploy main AMXX binary
             mkdir -p "$DEPLOY_DIR/dod/addons/ktpamx/dlls"
-            cp "$BINARY_PATH" "$DEPLOY_DIR/dod/addons/ktpamx/dlls/"
-            echo "  -> Copied ktpamx_i386.so"
+            if ! cp "$BINARY_PATH" "$DEPLOY_DIR/dod/addons/ktpamx/dlls/"; then
+                echo "ERROR: failed to copy $BINARY_PATH into the staging tree."
+                exit 1
+            fi
+            echo "  -> Copied ktpamx_i386.so    (md5 $(md5sum "$BINARY_PATH" | cut -d' ' -f1))"
 
-            # Deploy DODX module if built
+            # Deploy DODX module if built. The two halves ship separately and have
+            # drifted apart before -- a dodx older than this run is the previous
+            # build, so skip it loudly rather than stage a stale module.
             DODX_PATH="obj-linux/packages/dod/addons/ktpamx/modules/dodx_ktp_i386.so"
-            if [ -f "$DODX_PATH" ]; then
+            if [ -f "$DODX_PATH" ] && [ "$DODX_PATH" -nt "$BUILD_STAMP" ]; then
                 mkdir -p "$DEPLOY_DIR/dod/addons/ktpamx/modules"
-                cp "$DODX_PATH" "$DEPLOY_DIR/dod/addons/ktpamx/modules/"
-                echo "  -> Copied dodx_ktp_i386.so"
+                if ! cp "$DODX_PATH" "$DEPLOY_DIR/dod/addons/ktpamx/modules/"; then
+                    echo "ERROR: failed to copy $DODX_PATH into the staging tree."
+                    exit 1
+                fi
+                echo "  -> Copied dodx_ktp_i386.so  (md5 $(md5sum "$DODX_PATH" | cut -d' ' -f1))"
+            elif [ -f "$DODX_PATH" ]; then
+                echo "  !! SKIPPED dodx_ktp_i386.so -- predates this run, not staging a stale module."
             fi
 
             # Deploy stats_logging plugin if it exists
@@ -174,6 +211,12 @@ else
     echo "========================================"
     echo "BUILD FAILED!"
     echo "========================================"
-    echo "Check the output above for errors"
+    if [ -f "$BINARY_PATH" ]; then
+        echo "$BINARY_PATH exists but predates this run -- the compile did not"
+        echo "produce it. Refusing to stage a stale artifact."
+    else
+        echo "No ktpamx_i386.so was produced. Check the output above for errors."
+    fi
+    echo "Nothing has been staged."
     exit 1
 fi
