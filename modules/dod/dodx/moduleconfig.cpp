@@ -83,7 +83,7 @@ edict_t* g_pFirstEdict = nullptr;
 
 // KTP: Server active flag - prevents message processing during map changes
 bool g_bServerActive = false;
-bool g_cpOrderingFinalized = false;  // KTP: Set true once Client_InitObj has reordered mObjects to match DLL's SetObj id space.
+bool g_cpOrderingFinalized = false;  // KTP: Set once mObjects is known to be in the DLL's SetObj id order. Nothing may reorder after it.
 
 // (g_bCPFromInitObj was removed — entity scan + BSP reorder is the sole CP ordering path)
 
@@ -2053,7 +2053,7 @@ static void DODX_InitCPFromEntities()
 	MF_Log("[DODX] CP entity scan starting");
 
 	mObjects.Clear();
-	g_cpOrderingFinalized = false;  // KTP: Allow first matching InitObj to reorder mObjects to DLL order
+	g_cpOrderingFinalized = false;  // KTP: This map's order is provisional until the DLL resolve confirms it
 
 	// Use FindEntityByClassname instead of GETEDICT loop — pfnPEntityOfEntIndex
 	// hangs during OnPluginsLoaded in extension mode, but pfnFindEntityByString is safe.
@@ -2340,6 +2340,19 @@ static void DODX_ArmCPIdentityResolve()
 	g_cpResolveDeadline  = (gpGlobals ? gpGlobals->time : 0.0f) + CP_SECONDS_TO_WAIT;
 }
 
+// Every failure retries until the map's deadline, then reports once. The whole stamp
+// landed in a single frame on all four maps measured, but treating one bad read as
+// final would give up permanently on a map a retry would have resolved.
+static void DODX_CPResolveFailed(const char *why)
+{
+	if (!gpGlobals || gpGlobals->time <= g_cpResolveDeadline)
+		return;
+
+	g_cpIdentityGaveUp = true;
+	MF_Log("[DODX] CP identity: %s after %.0fs — keeping BSP/entity-scan order "
+		"(CP indices may not match the DLL on this map)", why, CP_SECONDS_TO_WAIT);
+}
+
 // Reorder mObjects into the DLL's own CP index space, once the DLL has one.
 //
 // Identity is the CControlPoint object pointer, which is the edict's pvPrivateData —
@@ -2360,23 +2373,15 @@ static void DODX_ResolveCPIdentityFromDLL()
 
 	if (!md || DODX_RawInt(md, CPM_OFF_FOUND) == 0)
 	{
-		if (gpGlobals->time > g_cpResolveDeadline)
-		{
-			g_cpIdentityGaveUp = true;
-			MF_Log("[DODX] CP identity: %s within %.0fs — keeping BSP/entity-scan order "
-				"(CP indices may not match the DLL on this map)",
-				md ? "master never claimed its points" : "no dod_control_point_master",
-				CP_SECONDS_TO_WAIT);
-		}
+		DODX_CPResolveFailed(md ? "master never claimed its points"
+		                        : "no dod_control_point_master on the map");
 		return;
 	}
 
 	int n = DODX_RawInt(md, CPM_OFF_NUMPOINTS);
 	if (n <= 0 || n > 12)
 	{
-		g_cpIdentityGaveUp = true;
-		MF_Log("[DODX] CP identity: master reports %d points — out of range, keeping "
-			"BSP/entity-scan order", n);
+		DODX_CPResolveFailed("master reported a point count out of range");
 		return;
 	}
 
@@ -2418,9 +2423,7 @@ static void DODX_ResolveCPIdentityFromDLL()
 	// we already have, because it looks authoritative.
 	if (matched != n)
 	{
-		g_cpIdentityGaveUp = true;
-		MF_Log("[DODX] CP identity: master claims %d points but only %d resolved to a "
-			"distinct index — keeping BSP/entity-scan order", n, matched);
+		DODX_CPResolveFailed("the master's points did not resolve to distinct indices");
 		return;
 	}
 
