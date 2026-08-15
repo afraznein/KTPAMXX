@@ -7,7 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Control point identity now comes from the game DLL instead of the BSP** (issues #5, #8, #11).
+  The entity scan runs before the DLL has stamped anything: `FoundPoints`, `m_iNumPoints`,
+  `m_bActive`, the whole `CControlPointMaster::ControlPointArray` and every `CControlPoint::m_iIndex`
+  are zero at `SV_ActivateServer` and land together **2.0s of game time later**, when the master
+  claims its points. Measured by raw pdata dump on a throwaway scratch server across `dod_anzio`,
+  `dod_jagd`, `dod_saints2_b3e` and `dod_merderet`, on a cold boot and on a changelevel. The trigger
+  is game time, not frames — frame 103 at ticrate 60 on boot, frame 58 after a changelevel, both at
+  `t=3.000` — so the new resolver polls `FoundPoints` rather than counting frames.
+
+  Ordering therefore had to be inferred from BSP `point_index`, which **25 of 97 shipped maps do not
+  carry**. On `dod_saints2_b3e` all five points read `-1`, the reorder short-circuits, and CP order
+  falls back to entity-scan order — so `SetObj(0)` ("allied 1st captured") landed on `flagmid`.
+
+  `DODX_ResolveCPIdentityFromDLL` now reorders `mObjects` from the master's `ControlPointArray`,
+  keyed on the `CControlPoint*` matched against the edict's `pvPrivateData` — exact pointer identity,
+  not a heuristic, which is what makes it work where all three candidate keys fail (`point_index`
+  absent, `targetname` collides — `dod_merderet` has two entities both named `flag 5` — and `flag_id`
+  is 0 this early). It commits only on a complete bijection, retries until a 30s deadline, and leaves
+  the existing order alone otherwise. Verified live: `dod_anzio`/`dod_jagd` report *order already
+  correct* (no regression where the BSP path worked), `dod_saints2_b3e` reorders to a distinct 0..4,
+  and `dod_merderet` follows the DLL down from 6 tracked points to the 5 the master actually claims.
+
+  ⚠️ **The DLL's set is authoritative and is not always every `dod_control_point` on the map.**
+  `dod_merderet` spawns six and the master claims five; tracking the extra one shifted every index
+  after it.
+
+- **`InitObj` no longer reorders control points** (issue #11). Message field 3 is the DLL's *current*
+  team, not the default owner, and the DLL has not applied default ownership when it sends this —
+  measured on `dod_jagd`, where pdata `m_iDefaultOwner` reads 1/1/2 while field 3 arrives as 0 for
+  all three. The reorder branch wrote that 0 into both `default_owner` and `owner`, so every control
+  point read neutral until the first capture, wiping the BSP-seeded defaults for the whole first
+  round. The branch is deleted rather than patched: it also needed `newCount == mObjects.count`,
+  which fails on `dod_merderet`, and on `dod_saints2_b3e` the parse desynchronises and reads a CP's
+  icon field as the count. The DLL-master resolve covers every map instead.
+
 ### Changed
+- **`objinfo_t::index` has one meaning now: the 1-based control point number, always equal to the
+  array position + 1**, from the first frame of the map. It previously meant three different things
+  (raw pdata `flag_id` from the entity scan, 1-based `point_index` after the BSP reorder, and the
+  DLL message value after an `InitObj` reorder). It is no longer sourced from `pd_dcp` at all — the
+  seed read 0 for every CP that early anyway, measured — so array position is always the DLL's
+  `SetObj` cp_index. Unchanged on every map where the BSP reorder already worked; on saints2-class
+  maps it moves from a meaningless value to a correct one.
+- `controlpoints_init` fires a second time only when the resolve actually changes the order, so
+  consumers must re-read there rather than caching from the first fire. Maps whose order was already
+  correct now fire it once, where an `InitObj` reorder used to fire it twice.
 - **DODX CP-init diagnostic (`DODX_DEBUG_CP_INIT`) now logs `flag_id` and fires even when the
   reorder short-circuits.** Previously it sat *inside* the `bspCount == mObjects.count` gate, so on
   exactly the maps worth investigating — duplicate `point_index`, pseudo-CP count mismatch — it
