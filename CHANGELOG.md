@@ -118,12 +118,14 @@ skips the give and then writes ammo to a player with no grenade entity. 1.0.12 g
 DODX-only delta over 2.7.27. **The `.inc` changed** — one native added
 (`dodx_get_grenade_ammo_index`) and `dodx_get_grenade_ammo`'s failure return changed from 0 to -1
 for a bad argument, so a plugin that wants either must be rebuilt against this include set.
-Numbered 2.7.29 rather than 2.7.28 because 2.7.28 is already claimed by the unmerged
-`tier2/weapon-fire-aim-error` cut; reusing it would put two different binaries behind one version.
+Numbered 2.7.29 rather than 2.7.28 because 2.7.28 is already claimed by the
+`tier2/weapon-fire-aim-error` cut, which was already live on the fleet by then; reusing it would put
+two different binaries behind one version.
 
 ⚠️ **Ordering: the module must activate no later than any plugin recompiled against this include
 set.** A plugin calling `dodx_get_grenade_ammo_index` fails to load against the fleet's live dodx
-2.7.27 — natives are resolved at load, and a missing one is a load failure, not a degraded mode.
+2.7.28 (`fca6648909887e6298e1b81e8679002f`) — natives are resolved at load, and a missing one is a
+load failure, not a degraded mode.
 Both are `.new`-swapped at the same 03:00 restart, so this is orderable; it just has to be deliberate.
 
 🔻 **RETIRED — do not deploy `863f81f79380225afd83b6bd82a1438e`.** It was built 2026-08-15 from
@@ -227,6 +229,15 @@ control and both `dodx_get_trigger_stats` (2.5, header-only by design) and a non
 negative controls — a probe answering the same way for everything is broken, not informative.
 ⚠️ **Do not rebuild to re-verify** — a rebuild churns the md5 and you would stage a binary nobody
 reviewed. Verify by md5, never by the banner.
+
+🔻 **THE FLEET DOES NOT RUN `181e1ad1…` — corrected 2026-08-16.** That build is on **0 of 24**
+instances. The 2.7.28 artifact that actually shipped is **`fca6648909887e6298e1b81e8679002f`**, built
+from **`ef6e9fa5`** — four commits past the `d76104f7` pinned above, the delta being Jimmy's PR #16
+(`dodx_get_score_tick_time`, two commits) plus a `KTP_NO_STAGE` honour in `build_linux.sh` and the
+changelog pin itself. Established by ancestry — `git merge-base --is-ancestor d76104f7 ef6e9fa5`
+succeeds while the reverse fails, so the probe discriminates — and by fleet md5 on 24/24. The pin
+above is a superseded pre-merge build: **do not deploy it, and do not "correct" the live hash to
+match this section.**
 
 > **Core source is unchanged, but the core BINARY is not identical** — `product.version` feeds
 > `support/generate_headers.py`, so the version bump alone changes `ktpamx_i386.so`. Only the DODX
