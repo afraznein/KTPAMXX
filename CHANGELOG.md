@@ -39,8 +39,22 @@ number that names two differently-based binaries is exactly the trap that 2.7.29
 include set.** A plugin calling `dodx_get_grenade_ammo_index` fails to load against the fleet's live
 dodx, and natives resolve at load.
 
-**Shipping artifact — `dodx_ktp_i386.so` md5 pinned in a follow-up commit** (the build bakes the git
-SHA, so the hash cannot exist in the commit it describes).
+**Shipping artifact — `dodx_ktp_i386.so` md5 `ac8d4e393e5fcca3679a6d63fa28bdaa`** (built 2026-08-16 from
+`8ce853c1`, `build_linux.sh` with `KTP_NO_STAGE=1`, GLIBC 2.35 / Ubuntu 22.04; the module self-reports `2.7.31.5620`).
+⚠️ **Do not rebuild to re-verify** — AMXX bakes a per-minute build timestamp, so a rebuild churns this
+md5. Verify by this md5, never by the banner.
+
+> Core source is unchanged, but the core BINARY is not identical — `product.version` feeds
+> `support/generate_headers.py`, so the version bump alone changes `ktpamx_i386.so` (this build:
+> `56bb05906aed3bf0310aa59dfef1b3a6`). It is a byproduct. **Only the DODX artifact ships**; the fleet core stays
+> 2.7.27 (`8b06d8a24eef8313034ec5283f63fbcb`).
+
+⚠️ **Pair this with `KTPGrenadeLoadout` 1.0.12 in the SAME 03:00 swap.** The fleet-live 1.0.11
+gates its `dodx_give_grenade` call on `currentCount == 0`, and this cut changes
+`dodx_get_grenade_ammo`'s failure return from 0 to **-1** — so on any path where the getter
+cannot read (notably a first spawn before that player's first PreThink sets `ingame`), 1.0.11
+skips the give and then writes ammo to a player with no grenade entity. 1.0.12 gates on
+`<= 0`. `KTPPracticeMode` does not call the getter and can follow separately.
 
 ### Added
 - **`dodx_get_score_tick_time()` / `dodx_get_score_tick_period()` — the territorial scoring clock.**
@@ -112,8 +126,11 @@ set.** A plugin calling `dodx_get_grenade_ammo_index` fails to load against the 
 2.7.27 — natives are resolved at load, and a missing one is a load failure, not a degraded mode.
 Both are `.new`-swapped at the same 03:00 restart, so this is orderable; it just has to be deliberate.
 
-**Shipping artifact — `dodx_ktp_i386.so` md5 `863f81f79380225afd83b6bd82a1438e`** (built 2026-08-15
-from `de4579c9`, `build_linux.sh`, GLIBC 2.35 / Ubuntu 22.04).
+🔻 **RETIRED — do not deploy `863f81f79380225afd83b6bd82a1438e`.** It was built 2026-08-15 from
+`de4579c9`, this branch alone, so it carries no `dodx_get_shot_geom`. Live KTPMatchHandler calls
+that native unconditionally and natives resolve at load, so the artifact is a plugin **load
+failure** on 24/24. The work in this section ships in **2.7.31** instead, on a base that has both
+halves.
 ⚠️ **Do not rebuild to re-verify** — AMXX bakes a per-minute build timestamp, so a rebuild churns this
 md5. Verify by this md5, never by the banner.
 
