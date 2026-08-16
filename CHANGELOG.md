@@ -64,6 +64,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `DODX_ReadBSPPointIndices` to `DODX_ReadBSPControlPoints`, and a textually clean merge produced a
   loop iterating an array nothing populated.
 
+## [2.7.30] - 2026-08-16
+
+**Re-cut of the live DODX from the correct base. No module source change** — this exists because
+2.7.29 was cut from the wrong branch and would have failed plugin load fleet-wide.
+
+**DODX-only. The core does NOT ship.** Core stays 2.7.27 (`8b06d8a24eef8313034ec5283f63fbcb`). The
+core binary changes anyway because `product.version` feeds `support/generate_headers.py` — that is a
+byproduct, exactly as in the 2.7.23, 2.7.26, 2.7.27 and 2.7.28 DODX-only cuts, and it is not a release.
+
+### Why the base had to change, not just the build
+
+2.7.29 was cut from `fix/dodx-runtime-ammo-index`, which carries **zero** `dodx_get_shot_geom`.
+Live `KTPMatchHandler` 0.10.161 calls that native **unconditionally** and installs no
+`set_native_filter`. Natives resolve at load, so a missing one sets `ps_bad_load` — a **load
+failure on 24/24, not a degraded mode**. Rebuilding 2.7.29 produces a fresh binary still missing the
+native; only a different base fixes it.
+
+That branch **also** carries zero `dodx_get_score_tick_time`, where the live lineage has it — it was
+cut before PR #16 merged, so shipping it would have silently reverted a merged PR as well.
+
+### Base, established by measurement
+
+Built from `tier2/weapon-fire-aim-error` @ `16464b57`. The live artifact self-reports
+`2.7.28.5607`, and the build number is the commit count: `ef6e9fa5` on this branch counts **5607**.
+That identifies the live binary's exact commit **by measurement rather than by any document**, and
+places it on this branch, two commits back.
+
+Those two commits are why the cut is taken from the tip rather than from `ef6e9fa5`:
+
+- `1ba3e88c` restores a `/**` opener the PR-16 merge dropped. At `ef6e9fa5` the include **does not
+  parse** — amxxpc fails at `dodx.inc(1149)`. Every grep-shaped check passes there, because the
+  natives are all present and registered; only a compile catches it.
+- `16464b57` gates staging on a fresh artifact, so a failed build can no longer stage the previous
+  binary.
+
+Neither touches C++ under `modules/`, so the module delta over live is the version string alone.
+
+### Do not reuse the number 2.7.29
+
+It named a differently-based binary. This cut is 2.7.30 so the two can never be confused by version
+alone.
+
 ## [2.7.28] - 2026-08-11
 
 DODX-only delta over 2.7.27. **The `.inc` DID change** (three natives added) — additive only, so
