@@ -485,6 +485,13 @@ native dodx_get_score_tick_period();
 native dodx_set_scoreboard_team_name(team, const name[]);
 
 // =============== KTP: Grenade Ammo Manipulation ===============
+//
+// Grenade ammo lives in CBasePlayer::m_rgAmmo at an ammo-type index the game DLL
+// assigns during map precache. DoD precaches every weapon of every nationality in
+// a fixed order, so that index is the same on every map — but DODX no longer
+// assumes it: it reads the live value from the DLL's WeaponList message and from
+// the ammo a successful dodx_give_grenade credits, and logs if either ever
+// disagrees with the expected one. Nothing here needs the caller's help.
 
 /**
  * Set grenade ammo count for a player.
@@ -499,6 +506,8 @@ native dodx_set_scoreboard_team_name(team, const name[]);
  *
  * @note DODW_HANDGRENADE and DODW_MILLS_BOMB share the same ammo pool (Allies grenades)
  * @note DODW_STICKGRENADE is the Axis grenade type
+ * @note The client HUD updates itself — the game DLL emits its own AmmoX once the
+ *       count changes, on the correct slot. A follow-up dodx_send_ammox is not needed.
  * @note Call this in dod_client_spawn forward with a short delay for best results
  */
 native dodx_set_grenade_ammo(id, grenade_type, count);
@@ -508,10 +517,22 @@ native dodx_set_grenade_ammo(id, grenade_type, count);
  *
  * @param id            Player index
  * @param grenade_type  Grenade weapon ID: DODW_HANDGRENADE (13), DODW_STICKGRENADE (14), DODW_MILLS_BOMB (36)
- * @return              Current grenade count, or 0 on failure (invalid
- *                      grenade_type logs and returns 0, no abort)
+ * @return              Current grenade count, or -1 on failure (invalid player
+ *                      state or a grenade_type that is not a grenade; logged,
+ *                      no abort). Changed from 0 in 2.7.29 so that an empty
+ *                      player is distinguishable from a failed call.
  */
 native dodx_get_grenade_ammo(id, grenade_type);
+
+/**
+ * Ammo-type index in use for a grenade type on this map.
+ * Needed by callers that send their own AmmoX, so the slot comes from the game
+ * DLL rather than from a literal repeated in every plugin.
+ *
+ * @param grenade_type  Grenade weapon ID: DODW_HANDGRENADE (13), DODW_STICKGRENADE (14), DODW_MILLS_BOMB (36)
+ * @return              Ammo slot (0-31), or -1 if grenade_type is not a grenade
+ */
+native dodx_get_grenade_ammo_index(grenade_type);
 
 /**
  * Set player noclip mode.
@@ -544,7 +565,8 @@ native dodx_debug_player_state(id);
  * Use this after modifying grenade ammo to sync the client HUD.
  *
  * @param id         Player index
- * @param ammo_slot  Ammo slot ID: 9 = hand grenade/mills bomb, 11 = stick grenade
+ * @param ammo_slot  Raw ammo-type index — take the grenade ones from
+ *                   dodx_get_grenade_ammo_index() rather than repeating a literal
  * @param count      Ammo count to display (0-254)
  * @return           1 on success, 0 on failure (AmmoX not registered logs
  *                   and returns 0, no abort)
@@ -576,7 +598,8 @@ native dodx_give_grenade(id, grenade_type);
  *
  * @param id            Player index
  * @param grenade_type  Grenade weapon ID: DODW_HANDGRENADE (13), DODW_STICKGRENADE (14), DODW_MILLS_BOMB (36)
- * @return              1 on success, 0 on failure
+ * @return              1 on success, 0 on failure (no edict or no private data;
+ *                      note it does NOT check `ingame`)
  * @error               Invalid grenade_type raises a native error that
  *                      aborts the calling public — the 0 return is not
  *                      observable for that case.
@@ -584,8 +607,8 @@ native dodx_give_grenade(id, grenade_type);
 native dodx_strip_grenade(id, grenade_type);
 
 /**
- * Debug: Dump potential ammo offset values to server log.
- * Use this to find correct ammo offsets on different OS versions.
+ * Debug: Dump this map's resolved grenade ammo slots and the player's whole
+ * m_rgAmmo array (non-zero entries only) to the server log.
  *
  * @param id  Player index
  * @return    1 on success

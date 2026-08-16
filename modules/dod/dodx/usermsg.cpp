@@ -391,6 +391,45 @@ void Client_Health_End(void* mValue)
 	}
 }
 
+// KTP: DoD's WeaponList carries no weapon-name string. Fields, read out of
+// CBasePlayer::UpdateClientData in dod_i386.so md5 4f4727b2...: ammo1 index,
+// max ammo1, ammo2 index, max ammo2, slot, position, SHORT weapon id, flags,
+// clip. Field 0 is the DLL's own GetAmmoIndex(pszAmmo1) — this map's live
+// m_rgAmmo slot — and field 6 is the DODW_* id.
+void Client_WeaponList(void* mValue)
+{
+  static int iAmmoIndex = -1;
+
+  int field = mState++;
+
+  // mState is only ours if DODX_OnMsgBegin actually ran for this message; when
+  // it bails the field counter is the previous message's, and misreading it here
+  // would file a bogus slot for a bogus weapon.
+  if (!g_bServerActive)
+    return;
+
+  switch (field)
+  {
+  case 0:
+    iAmmoIndex = *(int*)mValue;
+    break;
+
+  case 6:
+    {
+      int wpnId = *(int*)mValue;
+      if (wpnId > 0 && wpnId < DODMAX_WEAPONS &&
+          iAmmoIndex >= 0 && iAmmoIndex < DODX_MAX_AMMO_SLOTS)
+      {
+        g_ammoIndexByWeapon[wpnId] = iAmmoIndex;
+        DODX_CheckAmmoIndexDrift(wpnId, iAmmoIndex);
+      }
+      // Consumed: a later id must not pair with this weapon's index.
+      iAmmoIndex = -1;
+    }
+    break;
+  }
+}
+
 void Client_AmmoX(void* mValue)
 {
   static int iAmmo;

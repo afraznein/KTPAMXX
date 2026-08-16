@@ -27,20 +27,16 @@ static IRehldsHookchains* g_pRehldsHookchains = nullptr;
 static IMessageManager* g_pMessageManager = nullptr;
 
 #if defined(__linux__) || defined(__APPLE__)
-// KTP: Runtime pdata offset adjustment for grenade ammo
-// Ubuntu 22.04 and older: +5
-// Ubuntu 24.04 and newer: +4
-// Can be forced via addons/ktpamx/configs/dodx.ini: pdata_offset = 4 or 5
-// If not set, auto-detection is attempted on first grenade operation
-int g_iLinuxPdataOffsetAdjust = 4;  // Default to +4 (24.04)
-bool g_bPdataOffsetDetected = false;
-bool g_bPdataOffsetForced = false;  // True if set via config file
+// KTP: m_rgAmmo base adjust. +5 is measured off dod_i386.so md5 4f4727b2...
+// (AmmoInventory indexes byte 0x474 = int 285 = 280 + 5), not auto-detected —
+// the old detector scored candidate offsets at a hardcoded ammo index that was
+// itself wrong, so it could confirm either answer. Override via
+// addons/ktpamx/configs/dodx.ini: pdata_offset = 4 or 5.
+int g_iLinuxPdataOffsetAdjust = 5;
 
-// KTP 2026-05-21: SCORE/DEATHS pdata offsets need their own adjust independent
-// from the grenade adjust above. On Ubuntu 24.04 the grenade auto-detect
-// correctly promotes to +5, but disassembly of dod_i386.so md5 4f4727b2...
-// confirmed score/deaths live at +4 on the same binary. Two field families,
-// two different shifts. See dodx.h SCORE/DEATHS section + research note
+// KTP: SCORE/DEATHS need their own adjust — same binary, two field families,
+// two different shifts: m_rgAmmo sits at +5 and score/deaths at +4 in
+// dod_i386.so md5 4f4727b2... See dodx.h SCORE/DEATHS section + research note
 // KTPMatchHandler/research/OFFSETS_RESEARCH_2026-05-21.md.
 int g_iScoreDeathsOffsetAdjust = 4;
 #endif
@@ -137,6 +133,101 @@ int gmsgTeamInfo;  // KTP: For scoreboard team name refresh
 int gmsgInitObj;   // KTP: CP tracking
 int gmsgSetObj;    // KTP: CP tracking
 int gmsgDeathMsg;  // KTP: Suicide / world-kill detection (no Damage path)
+int gmsgWeaponList;  // KTP: per-map ammo-index registry
+
+// KTP: Ammo-type index the DLL assigned each weapon on this map, or -1 until
+// observed. Process-wide, so it MUST be cleared per map — a carried-over index
+// would address another ammo type's counter with no error anywhere.
+int g_ammoIndexByWeapon[DODMAX_WEAPONS];
+int g_ammoRegistryEpoch = 0;
+
+// Where DoD's own W_Precache leaves the grenades. It precaches all 31 weapons
+// unconditionally in a fixed order — every nationality on every map — so these
+// are invariant, which is the opposite of what issue #15 assumed. Measured live
+// on six maps incl. dod_anzio and dod_harrington by reading AmmoInfoArray out of
+// the running DLL: 9/11 on all six. Used only until this map's WeaponList lands.
+static int DODX_DefaultGrenadeAmmoIndex(int weaponId)
+{
+	if (weaponId == 13) return 9;   // ammo_agrens
+	if (weaponId == 14) return 11;  // ammo_ggrens
+	return -1;
+}
+
+void DODX_ClearAmmoRegistry()
+{
+	for (int i = 0; i < DODMAX_WEAPONS; ++i)
+		g_ammoIndexByWeapon[i] = -1;
+
+	++g_ammoRegistryEpoch;
+}
+
+// DODW_MILLS_BOMB is DODX's own id for the British hand grenade — the DLL links
+// no weapon_mills_bomb and registers no ammo type for it.
+static int DODX_NormalizeGrenadeType(int grenadeType)
+{
+	if (grenadeType == 36)
+		return 13;
+	if (grenadeType == 13 || grenadeType == 14)
+		return grenadeType;
+	return -1;
+}
+
+int DODX_GrenadeAmmoIndex(int grenadeType)
+{
+	int weaponId = DODX_NormalizeGrenadeType(grenadeType);
+	if (weaponId < 0)
+		return -1;
+
+	int observed = g_ammoIndexByWeapon[weaponId];
+	return observed >= 0 ? observed : DODX_DefaultGrenadeAmmoIndex(weaponId);
+}
+
+// The tripwire the 9/11 constants never had: if the precache order ever stops
+// being fixed, this is what says so instead of corrupting an ammo type in silence.
+void DODX_CheckAmmoIndexDrift(int weaponId, int slot)
+{
+	int expected = DODX_DefaultGrenadeAmmoIndex(weaponId);
+	if (expected < 0 || expected == slot)
+		return;
+
+	static int s_driftEpoch = -1;
+	if (s_driftEpoch == g_ammoRegistryEpoch)
+		return;
+
+	s_driftEpoch = g_ammoRegistryEpoch;
+	MF_Log("[DODX] weapon %d ammo slot is %d on this map, not the fixed-order %d — "
+		"W_Precache is no longer invariant, re-check the grenade natives",
+		weaponId, slot, expected);
+}
+
+void DODX_ObserveGrenadeAmmoIndex(int grenadeType, int slot)
+{
+	int weaponId = DODX_NormalizeGrenadeType(grenadeType);
+	if (weaponId < 0 || slot < 0 || slot >= DODX_MAX_AMMO_SLOTS)
+		return;
+
+	int observed = g_ammoIndexByWeapon[weaponId];
+	if (observed == slot)
+		return;
+
+	if (observed < 0)
+	{
+		g_ammoIndexByWeapon[weaponId] = slot;
+		DODX_CheckAmmoIndexDrift(weaponId, slot);
+		return;
+	}
+
+	// Two independent readings of the same registry disagreeing means one of the
+	// two mechanisms has stopped telling the truth — worth a line, not a silent
+	// overwrite. WeaponList is the earlier and broader source, so it wins.
+	static int s_warnedEpoch = -1;
+	if (s_warnedEpoch != g_ammoRegistryEpoch)
+	{
+		s_warnedEpoch = g_ammoRegistryEpoch;
+		MF_Log("[DODX] ammo slot for weapon %d: pickup probe says %d, WeaponList said %d — keeping %d",
+			weaponId, slot, observed, observed);
+	}
+}
 
 RankSystem g_rank;
 Grenades g_grenades;
@@ -236,6 +327,7 @@ g_user_msg[] =
 	{ "InitObj",	&gmsgInitObj,			Client_InitObj,			false },  // KTP: CP tracking
 	{ "SetObj",		&gmsgSetObj,			Client_SetObj,			false },  // KTP: CP tracking
 	{ "DeathMsg",	&gmsgDeathMsg,			Client_DeathMsg,		false },  // KTP: Suicide path
+	{ "WeaponList",	&gmsgWeaponList,		Client_WeaponList,		false },  // KTP: ammo-index registry
 	{ 0,0,0,false }
 };
 
@@ -379,6 +471,7 @@ void ServerDeactivate()
 	mObjects.Clear();
 	g_lastCapturedCP = -1;
 	g_lastCapturedTime = 0.0f;
+	DODX_ClearAmmoRegistry();
 
 	RETURN_META(MRES_IGNORED);
 }
@@ -646,6 +739,9 @@ void OnAmxxAttach()
 	MF_AddNatives( base_Natives );
 	MF_AddNatives( cp_Natives );
 
+	// Zero-init would read as "ammo slot 0", a real slot; unknown must be -1.
+	DODX_ClearAmmoRegistry();
+
 	// KTP: Check if running in extension mode (without Metamod)
 	if (MF_IsExtensionMode && MF_IsExtensionMode())
 	{
@@ -867,12 +963,15 @@ void OnPluginsLoaded()
 	if (g_bExtensionMode)
 	{
 #if defined(__linux__) || defined(__APPLE__)
-		// KTP: Load pdata offset from config file if present
-		// Config file: addons/ktpamx/configs/dodx.ini
-		// Format: pdata_offset = 4  (or 5)
-		// NOTE: Must be done in OnPluginsLoaded because MF_BuildPathnameR needs engine ready
-		if (!g_bPdataOffsetForced)
+		// KTP: Load pdata offsets from addons/ktpamx/configs/dodx.ini if present.
+		// Read in OnPluginsLoaded because MF_BuildPathnameR needs the engine ready.
+		// The latch replaces the old g_bPdataOffsetForced guard, which also gated
+		// the unrelated score_deaths_offset override.
+		static bool s_offsetConfigRead = false;
+		if (!s_offsetConfigRead)
 		{
+			s_offsetConfigRead = true;
+
 			char configPath[256];
 			MF_BuildPathnameR(configPath, sizeof(configPath), "addons/ktpamx/configs/dodx.ini");
 			FILE* fp = fopen(configPath, "r");
@@ -892,8 +991,6 @@ void OnPluginsLoaded()
 						if (offset == 4 || offset == 5)
 						{
 							g_iLinuxPdataOffsetAdjust = offset;
-							g_bPdataOffsetForced = true;
-							g_bPdataOffsetDetected = true;  // Skip auto-detection
 							MF_PrintSrvConsole("[DODX] Pdata offset forced to +%d via config file\n", offset);
 						}
 						else
@@ -923,11 +1020,8 @@ void OnPluginsLoaded()
 				fclose(fp);
 			}
 
-			if (!g_bPdataOffsetForced)
-			{
-				MF_PrintSrvConsole("[DODX] Using default pdata offset +%d (auto-detect on first grenade op)\n", g_iLinuxPdataOffsetAdjust);
-			}
-			MF_PrintSrvConsole("[DODX] Using score/deaths offset +%d (no auto-detect; override via score_deaths_offset in dodx.ini)\n", g_iScoreDeathsOffsetAdjust);
+			MF_PrintSrvConsole("[DODX] Using m_rgAmmo pdata offset +%d (override via pdata_offset in dodx.ini)\n", g_iLinuxPdataOffsetAdjust);
+			MF_PrintSrvConsole("[DODX] Using score/deaths offset +%d (override via score_deaths_offset in dodx.ini)\n", g_iScoreDeathsOffsetAdjust);
 		}
 #endif
 
@@ -1528,6 +1622,10 @@ static void DODX_OnPlayerPreThink(IVoidHookChain<edict_t *, float> *chain, edict
 		{
 			g_pFirstEdict = pEntity - tmpIndex;
 			g_bServerActive = true;
+			// The per-map reset this path stands in for. A carried-over ammo slot
+			// is worse than none: it reads as resolved, so the natives write
+			// another ammo type's counter and report success.
+			DODX_ClearAmmoRegistry();
 			for (int i = 1; i <= gpGlobals->maxClients; ++i)
 			{
 				GET_PLAYER_POINTER_I(i)->Init(i, g_pFirstEdict + i);
@@ -1788,6 +1886,9 @@ static void DODX_OnSV_ActivateServer(IVoidHookChain<int> *chain, int runPhysics)
 	// cached pointer must go with it — dodx_get_score_tick_time() re-finds it
 	// lazily on the new map.
 	g_pCPMasterEdict = nullptr;
+
+	// Ammo indices are assigned by this map's precache order, so last map's are wrong.
+	DODX_ClearAmmoRegistry();
 
 	DODX_ReadBSPMapInfo();
 
@@ -2746,116 +2847,3 @@ static void DODX_CleanupExtensionHooks()
 	g_pMessageManager = nullptr;
 }
 
-#if defined(__linux__) || defined(__APPLE__)
-// KTP: Runtime detection of pdata offset for grenade ammo
-// Uses a two-phase write-then-verify approach:
-//
-// Phase 1 (first grenade set): Write the requested count to BOTH +4 and +5 offsets.
-//   This ensures the correct offset gets the right value regardless of which is right.
-//   The wrong offset writes to harmless padding/unused fields.
-//   Returns the offset to use for phase 1 writes (0 = special "write both" mode).
-//
-// Phase 2 (second grenade set): Read back from both offsets. The game DLL's spawn
-//   logic runs between phase 1 and phase 2 (or the phase 1 write itself persists at
-//   the correct offset). The offset whose values survived is the correct one.
-//
-// This avoids the timing problem where pdata isn't initialized at first spawn.
-
-// Phase 1: Write to both offsets, mark pending verification
-void DODX_PdataWriteBoth(edict_t* pEdict, int grenadeType, int count)
-{
-	if (!pEdict || !pEdict->pvPrivateData)
-		return;
-
-	int* pData = (int*)pEdict->pvPrivateData;
-
-	int base1, base2, base3;
-	if (grenadeType == 13 || grenadeType == 36) // DODW_HANDGRENADE / MILLS_BOMB
-	{
-		base1 = PDOFFSET_BASE_HANDGRENADE_1;
-		base2 = PDOFFSET_BASE_HANDGRENADE_2;
-		base3 = PDOFFSET_BASE_HANDGRENADE_3;
-	}
-	else if (grenadeType == 14) // DODW_STICKGRENADE
-	{
-		base1 = PDOFFSET_BASE_STICKGRENADE_1;
-		base2 = PDOFFSET_BASE_STICKGRENADE_2;
-		base3 = PDOFFSET_BASE_STICKGRENADE_3;
-	}
-	else
-		return;
-
-	// Write to +4 offsets
-	pData[base1 + 4] = count;
-	pData[base2 + 4] = count;
-	pData[base3 + 4] = count;
-
-	// Write to +5 offsets
-	pData[base1 + 5] = count;
-	pData[base2 + 5] = count;
-	pData[base3 + 5] = count;
-
-	static bool s_loggedPhase1 = false;
-	if (!s_loggedPhase1)
-	{
-		MF_PrintSrvConsole("[DODX] Pdata Phase 1: Writing grenades to both +4 and +5 offsets for auto-detection\n");
-		s_loggedPhase1 = true;
-	}
-}
-
-// Phase 2: Verify which offset is correct by reading back values
-void DODX_DetectPdataOffset(edict_t* pEdict)
-{
-	if (g_bPdataOffsetDetected || !pEdict || !pEdict->pvPrivateData)
-		return;
-
-	int* pData = (int*)pEdict->pvPrivateData;
-
-	// Probe ALL grenade families (hand, stick, mills) — not just handgrenades.
-	// If the first set_grenade_ammo call was for stickgrenades, only stick offsets
-	// were written in Phase 1. Probing only handgrenade offsets would read
-	// uninitialized data and fail detection.
-	static const int bases[][3] = {
-		{ PDOFFSET_BASE_HANDGRENADE_1,  PDOFFSET_BASE_HANDGRENADE_2,  PDOFFSET_BASE_HANDGRENADE_3  },
-		{ PDOFFSET_BASE_STICKGRENADE_1, PDOFFSET_BASE_STICKGRENADE_2, PDOFFSET_BASE_STICKGRENADE_3 },
-	};
-
-	int score4 = 0, score5 = 0;
-	for (int fam = 0; fam < 2; fam++)
-	{
-		for (int loc = 0; loc < 3; loc++)
-		{
-			int v4 = pData[bases[fam][loc] + 4];
-			int v5 = pData[bases[fam][loc] + 5];
-			if (v4 >= 1 && v4 <= 10) score4++;
-			if (v5 >= 1 && v5 <= 10) score5++;
-		}
-	}
-
-	if (score5 > score4 && score5 >= 2)
-	{
-		g_iLinuxPdataOffsetAdjust = 5;
-		g_bPdataOffsetDetected = true;
-		MF_PrintSrvConsole("[DODX] Auto-detected pdata offset +5 (score +5=%d vs +4=%d out of 6)\n", score5, score4);
-	}
-	else if (score4 > score5 && score4 >= 2)
-	{
-		g_iLinuxPdataOffsetAdjust = 4;
-		g_bPdataOffsetDetected = true;
-		MF_PrintSrvConsole("[DODX] Auto-detected pdata offset +4 (score +4=%d vs +5=%d out of 6)\n", score4, score5);
-	}
-	else if (score4 == score5 && score4 >= 2)
-	{
-		// Tied with sufficient data - default to +4
-		g_iLinuxPdataOffsetAdjust = 4;
-		g_bPdataOffsetDetected = true;
-		MF_PrintSrvConsole("[DODX] Auto-detected pdata offset +4 (tied %d/%d, defaulting to +4)\n", score4, score5);
-	}
-	else
-	{
-		// Not enough data yet - defer detection, try again on next operation
-		// Do NOT set g_bPdataOffsetDetected - will retry on next grenade op
-		return;
-	}
-}
-#endif

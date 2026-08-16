@@ -29,6 +29,11 @@ extern edict_t* g_pFirstEdict;
 // consumer can tell "nothing suspicious" from "nothing recorded".
 extern bool g_ktpPackRecorderLive;
 
+// KTP: False across a map change. DODX's message-begin handler bails on it
+// WITHOUT resetting mState, and the core still runs the per-field handlers, so
+// a handler that trusts mState must check this itself.
+extern bool g_bServerActive;
+
 // KTP: Safe ENTINDEX that uses pointer arithmetic instead of engine function
 // This is safe to call during ReHLDS hooks when pfnIndexOfEdict may crash
 inline int ENTINDEX_SAFE(const edict_t *pEdict)
@@ -107,60 +112,46 @@ enum
 	#define STEAM_PDOFFSET_DEATHS   477         // Player deaths
 #endif
 
-// KTP: Grenade ammo offsets (ported from dodfun for extension mode)
-// Each grenade type has 3 offsets that need to be set together
+// KTP: `CBasePlayer::m_rgAmmo` as an int-offset into pvPrivateData. Measured in
+// dod_i386.so md5 4f4727b2390d3a0ed6f5ad862dd6d4be: AmmoInventory indexes it at
+// byte 0x474 (int 285, Linux = 280 + 5); SendAmmoUpdate pairs it with
+// m_rgAmmoLast at 0x4F4. Re-measure against that md5 before changing either.
 //
-// Linux offset adjustment varies by OS version:
-//   Ubuntu 22.04 and older: +5
-//   Ubuntu 24.04 and newer: +4
-// Runtime detection is used to automatically determine the correct offset.
-//
-// Base offsets (without adjustment):
-#define PDOFFSET_BASE_HANDGRENADE_1  59
-#define PDOFFSET_BASE_HANDGRENADE_2  289
-#define PDOFFSET_BASE_HANDGRENADE_3  321
-#define PDOFFSET_BASE_STICKGRENADE_1 61
-#define PDOFFSET_BASE_STICKGRENADE_2 291
-#define PDOFFSET_BASE_STICKGRENADE_3 323
+// Never write m_rgAmmoLast — SendAmmoUpdate diffs the pair every frame and emits
+// the client's AmmoX from it, so writing both suppresses the HUD update.
+#define PDOFFSET_AMMO_BASE 280
+#define DODX_MAX_AMMO_SLOTS 32
 
 #if defined(__linux__) || defined(__APPLE__)
-	// Runtime offset adjustment - detected at first player spawn
-	// Default to +4 (Ubuntu 24.04), will be auto-detected
-	// Can be forced via addons/ktpamx/configs/dodx.ini: pdata_offset = 4 or 5
+	// Override via dodx.ini `pdata_offset`, for a future DoD build that shifts it.
 	extern int g_iLinuxPdataOffsetAdjust;
-	extern bool g_bPdataOffsetDetected;
-	extern bool g_bPdataOffsetForced;
 
 	// Independent adjust for SCORE/DEATHS offsets (above). NOT shared with
-	// the grenade adjust — they sit in different struct regions and can shift
-	// by different amounts between Ubuntu builds. Currently no auto-detect
-	// (the 2026-05-21 spike showed the grenade auto-detect heuristic gives
-	// false positives on this field family). Fixed at +4 for 24.04 baremetal
-	// fleet; override via dodx.ini `score_deaths_offset = N` if a future
-	// Ubuntu bump shifts the layout.
+	// the ammo adjust — they sit in different struct regions and can shift
+	// by different amounts between Ubuntu builds. Fixed at +4 for the 24.04
+	// baremetal fleet; override via dodx.ini `score_deaths_offset = N` if a
+	// future Ubuntu bump shifts the layout.
 	extern int g_iScoreDeathsOffsetAdjust;
 
-	// Phase 1: Write to both +4 and +5 offsets when offset is unknown
-	void DODX_PdataWriteBoth(edict_t* pEdict, int grenadeType, int count);
-	// Phase 2: Detect correct offset by scoring which has valid values
-	void DODX_DetectPdataOffset(edict_t* pEdict);
-
-	// Macros that use runtime offset adjustment
-	#define PDOFFSET_AMMO_HANDGRENADE_1  (PDOFFSET_BASE_HANDGRENADE_1 + g_iLinuxPdataOffsetAdjust)
-	#define PDOFFSET_AMMO_HANDGRENADE_2  (PDOFFSET_BASE_HANDGRENADE_2 + g_iLinuxPdataOffsetAdjust)
-	#define PDOFFSET_AMMO_HANDGRENADE_3  (PDOFFSET_BASE_HANDGRENADE_3 + g_iLinuxPdataOffsetAdjust)
-	#define PDOFFSET_AMMO_STICKGRENADE_1 (PDOFFSET_BASE_STICKGRENADE_1 + g_iLinuxPdataOffsetAdjust)
-	#define PDOFFSET_AMMO_STICKGRENADE_2 (PDOFFSET_BASE_STICKGRENADE_2 + g_iLinuxPdataOffsetAdjust)
-	#define PDOFFSET_AMMO_STICKGRENADE_3 (PDOFFSET_BASE_STICKGRENADE_3 + g_iLinuxPdataOffsetAdjust)
+	#define PDOFFSET_AMMO_ARRAY (PDOFFSET_AMMO_BASE + g_iLinuxPdataOffsetAdjust)
 #else
-	// Windows: no adjustment needed
-	#define PDOFFSET_AMMO_HANDGRENADE_1  PDOFFSET_BASE_HANDGRENADE_1
-	#define PDOFFSET_AMMO_HANDGRENADE_2  PDOFFSET_BASE_HANDGRENADE_2
-	#define PDOFFSET_AMMO_HANDGRENADE_3  PDOFFSET_BASE_HANDGRENADE_3
-	#define PDOFFSET_AMMO_STICKGRENADE_1 PDOFFSET_BASE_STICKGRENADE_1
-	#define PDOFFSET_AMMO_STICKGRENADE_2 PDOFFSET_BASE_STICKGRENADE_2
-	#define PDOFFSET_AMMO_STICKGRENADE_3 PDOFFSET_BASE_STICKGRENADE_3
+	#define PDOFFSET_AMMO_ARRAY PDOFFSET_AMMO_BASE
 #endif
+
+// Ammo-type index the game DLL assigned to each DODW_* weapon on THIS map, or
+// -1 while unobserved. Learned from the WeaponList message, whose first field is
+// GetAmmoIndex(pszAmmo1) and whose seventh is the weapon id.
+extern int g_ammoIndexByWeapon[DODMAX_WEAPONS];
+// Bumped by every clear, so a per-map log latch has something to compare against.
+extern int g_ammoRegistryEpoch;
+void DODX_ClearAmmoRegistry();
+// Observed slot, else DoD's fixed-precache-order default. -1 only for a type
+// that is not a grenade.
+int DODX_GrenadeAmmoIndex(int grenadeType);
+// Second source: the slot the DLL itself credited when a grenade pickup landed.
+void DODX_ObserveGrenadeAmmoIndex(int grenadeType, int slot);
+// Logs once per map if an observed slot contradicts the fixed-order default.
+void DODX_CheckAmmoIndexDrift(int weaponId, int slot);
 
 // Weapons Structure
 struct weapon_t 
@@ -456,6 +447,7 @@ void Client_PStatus(void*);
 void Client_InitObj(void*);
 void Client_SetObj(void*);
 void Client_DeathMsg(void*);  // KTP: Suicide / world-kill detection
+void Client_WeaponList(void*);  // KTP: per-map ammo-index registry
 
 typedef void (*funEventCall)(void*);
 
@@ -482,6 +474,7 @@ extern int gmsgTeamInfo;  // KTP: For scoreboard team name refresh
 extern int gmsgInitObj;   // KTP: CP tracking
 extern int gmsgSetObj;    // KTP: CP tracking
 extern int gmsgDeathMsg;  // KTP: Suicide / world-kill detection (no Damage path)
+extern int gmsgWeaponList;  // KTP: per-map ammo-index registry
 
 extern int iFDamage;
 extern int iFDeath;

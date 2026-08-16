@@ -70,10 +70,18 @@ Custom AMX Mod X fork that operates in extension mode (loaded directly by KTP-Re
 | `dodx_set_pl_teamname(id, szName[])` | Set player's team name in private data |
 
 ### Grenade Manipulation (v2.6.4+)
+
+Ammo lives in `CBasePlayer::m_rgAmmo` (int-offset **285** on Linux, byte `0x474`, measured in
+`dod_i386.so` md5 `4f4727b2…`) at an ammo-type index. As of v2.7.29 DODX reads that index live from
+the DLL's `WeaponList` and from what a `dodx_give_grenade` pickup credits, rather than hardcoding it,
+and logs if either disagrees with DoD's fixed precache order. Setting ammo no longer needs a
+follow-up `dodx_send_ammox` — the DLL emits its own `AmmoX` on the right slot.
+
 | Native | Purpose |
 |--------|---------|
 | `dodx_set_grenade_ammo(id, type, count)` | Set grenade count (0-10) for player |
-| `dodx_get_grenade_ammo(id, type)` | Get current grenade count |
+| `dodx_get_grenade_ammo(id, type)` | Current count, or -1 on a bad argument |
+| `dodx_get_grenade_ammo_index(type)` | The ammo slot in use for that grenade. Use it instead of a literal |
 | `dodx_send_ammox(id, slot, count)` | Send AmmoX message to sync client HUD |
 | `dodx_give_grenade(id, type)` | Give a grenade weapon to player |
 

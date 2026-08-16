@@ -72,7 +72,7 @@ The DODX stats module includes extensive KTP-specific natives:
 
 **HLStatsX Integration:** `dodx_flush_all_stats`, `dodx_reset_all_stats`, `dodx_set_match_id`, `dodx_get_match_id`, `dodx_set_stats_paused`, `dodx_set_pl_teamname`
 
-**Grenade Manipulation:** `dodx_set_grenade_ammo`, `dodx_get_grenade_ammo`, `dodx_send_ammox`, `dodx_give_grenade`, `dodx_strip_grenade`
+**Grenade Manipulation:** `dodx_set_grenade_ammo`, `dodx_get_grenade_ammo`, `dodx_get_grenade_ammo_index`, `dodx_send_ammox`, `dodx_give_grenade`, `dodx_strip_grenade`
 
 **Player Manipulation:** `dodx_set_user_noclip`, `dodx_set_user_class`, `dodx_set_user_team`, `dodx_get/set_user_origin`, `dodx_get/set_user_angles`
 
