@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.31] - 2026-08-16
+
+**DODX only. The core module is NOT part of this cut** — it stays 2.7.27
+(`8b06d8a24eef8313034ec5283f63fbcb`). Bumping `product.version` rebuilds the core binary as a
+byproduct; that binary is not a release and must not be staged.
+
+**Base: a merge, not a rebase.** `tier2/weapon-fire-aim-error` (`16464b57`, which carries the live
+fleet base `ef6e9fa5` plus Jimmy's PR #16 scoring clock and the tier-2 shot-geometry sensors) merged
+with `fix/dodx-runtime-ammo-index` (`4c48f60a`, nine commits resolving the grenade ammo slot per
+map). The two branches **diverged from master, neither lagged the other**, and **neither is
+shippable alone**:
+
+- The ammo branch has no `dodx_get_shot_geom`. Live `KTPMatchHandler` calls it unconditionally, and
+  natives resolve at load — a cut without it is a plugin **load failure**, not a degraded mode.
+- The tier-2 branch has none of the ammo work, which is what `KTPGrenadeLoadout` and
+  `KTPPracticeMode` are blocked behind.
+
+Post-merge check on a number that moves if a conflict was resolved wrong: `base_Natives` is **81** =
+master's 74 + tier-2's 6 + the ammo branch's 1, no duplicate entries; `cp_Natives` 6 and
+`stats_Natives` 16 unchanged.
+
+🔻 **2.7.30 (`9e549d84010ba058a080092a86c77dcd`) is RETIRED — built, never shipped, do not deploy
+it.** It was cut from `tier2/weapon-fire-aim-error` alone, so it is functionally identical to the
+fleet's live 2.7.28: the only files that changed between the two are `build_linux.sh` and a two-line
+doc-block opener in `plugins/include/dodx.inc`, with **zero** C++ under `modules/`. A new md5
+carrying no change. This cut is numbered **2.7.31** rather than reusing 2.7.30 because a version
+number that names two differently-based binaries is exactly the trap that 2.7.29 already fell into.
+
+⚠️ **Activation order: the module must activate no later than any plugin rebuilt against this
+include set.** A plugin calling `dodx_get_grenade_ammo_index` fails to load against the fleet's live
+dodx, and natives resolve at load.
+
+**Shipping artifact — `dodx_ktp_i386.so` md5 pinned in a follow-up commit** (the build bakes the git
+SHA, so the hash cannot exist in the commit it describes).
+
 ### Added
 - **`dodx_get_score_tick_time()` / `dodx_get_score_tick_period()` — the territorial scoring clock.**
   DoD awards periodic team points for holding control points from the map's single

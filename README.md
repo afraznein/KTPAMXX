@@ -68,6 +68,10 @@ The DODX stats module includes extensive KTP-specific natives:
 
 **Score Management:** `dodx_set_team_score`, `dodx_get_team_score`, `dodx_broadcast_team_score`, `dodx_set_scoreboard_team_name`, `dodx_has_gamerules`, `dodx_get_round_time`
 
+**Match Clocks:** `dodx_get_score_tick_time`, `dodx_get_score_tick_period` — the territorial scoring clock read off `dod_control_point_master`. `dodx_get_score_tick_period` is the **nominal** delay, not a phase.
+
+**Aim Geometry (measure-only):** `dodx_get_shot_geom`, `dodx_get_aim_vis_stats`, `dodx_reset_aim_vis_stats`
+
 **Score Persistence:** `dodx_set_user_deaths`, `dodx_get_user_deaths`, `dodx_set_user_score`, `dodx_get_user_score`, `dodx_get_observed_deaths`, `dodx_broadcast_scoreboard`
 
 **HLStatsX Integration:** `dodx_flush_all_stats`, `dodx_reset_all_stats`, `dodx_set_match_id`, `dodx_get_match_id`, `dodx_set_stats_paused`, `dodx_set_pl_teamname`
