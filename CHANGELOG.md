@@ -69,6 +69,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 **Re-cut of the live DODX from the correct base. No module source change** — this exists because
 2.7.29 was cut from the wrong branch and would have failed plugin load fleet-wide.
 
+**Shipping artifact — `dodx_ktp_i386.so` md5 `9e549d84010ba058a080092a86c77dcd`** (built 2026-08-16
+from `fd0cb996`, `build_linux.sh`, GLIBC 2.35 / gcc 11.4, `-m32`). Bakes `AMXX_VERSION_STRING
+"2.7.30.5610"` and `AMXX_BUILD_CSET "fd0cb996"`, so the binary names its own commit.
+⚠️ **Do not rebuild to re-verify** — a rebuild churns the md5 and you would stage a binary nobody
+reviewed. Verify by md5, never by the banner.
+
+Natives verified **registered in the module's `AMX_NATIVE_INFO` table**, not merely present as
+strings — the table symbols (`base_Natives`, `cp_Natives`, `stats_Natives`) were walked as
+`{const char*, fn}` pairs, yielding 101 registered names. `dodx_get_shot_geom` and
+`dodx_get_score_tick_time` are both in that set. Controls: `dodx_give_grenade` and
+`dodx_get_aim_stats` present, `dodx_get_trigger_stats` (header-only by design) and a nonsense name
+both absent — a probe answering the same way for everything is broken, not informative.
+
+> **Core source is unchanged, but the core BINARY is not identical** — `product.version` feeds
+> `support/generate_headers.py`, so the version bump alone changes `ktpamx_i386.so`
+> (`03fd35bd7245c45c36eaf24424056052`). It is a byproduct and **must not be waved**; core stays
+> 2.7.27 `8b06d8a24eef8313034ec5283f63fbcb`.
+
+⚠️ **Build-environment trap, hit twice on this cut.** `.gitattributes` sets `* text=auto`, so any
+checkout under a git whose `core.autocrlf` is true — including WSL root's `/root/.gitconfig` — lands
+`build_linux.sh` with CRLF, and it dies on `$'\r': command not found` before doing anything.
+`git status` still reads **clean**, because git normalizes back to LF on comparison. Set
+`core.autocrlf false` + `core.eol lf` and re-checkout.
+
+⚠️ **`build_linux.sh` still exits 0 on a failed build**, in a path introduced by `16464b57` itself:
+`set -e` combined with `trap 'rm -f "$BUILD_STAMP"' EXIT` means the EXIT trap's successful `rm`
+supplies the script's status. A configure-time failure produces no verdict line at all and exit 0.
+**Gate on the log verdict and the artifact mtime, never on the exit code.**
+
+⚠️ A `git worktree` cannot build this repo: `support/Versioning` opens `.git/HEAD` as a path, and in
+a worktree `.git` is a **file**. Use a clone.
+
 **DODX-only. The core does NOT ship.** Core stays 2.7.27 (`8b06d8a24eef8313034ec5283f63fbcb`). The
 core binary changes anyway because `product.version` feeds `support/generate_headers.py` — that is a
 byproduct, exactly as in the 2.7.23, 2.7.26, 2.7.27 and 2.7.28 DODX-only cuts, and it is not a release.
