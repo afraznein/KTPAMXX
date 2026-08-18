@@ -5,7 +5,104 @@ All notable changes to KTP AMX will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.32] - unreleased
+
+**A RE-CUT of 2.7.31, not a rebuild of it.** 2.7.31 and `main` were developed in
+parallel and neither contained the other:
+
+- 2.7.31 carries the tier-2 sensors (`dodx_get_shot_geom` and friends) and the
+  per-map ammo registry. `main` has none of it -- `main`'s `product.version` was
+  still **2.7.27**, a full release behind the fleet's live 2.7.28.
+- `main` carries the `pd_dcp` fix: the Linux/Apple `CControlPoint` layout is one
+  `int` short, so every control-point pdata read returned its neighbour. 2.7.31
+  does not have it.
+
+Merging them touches `dodx.h` and `moduleconfig.cpp`, so the compiled module
+changes and **2.7.31's pinned `ac8d4e393e5fcca3679a6d63fa28bdaa` no longer
+describes this tree.** A pin that survives a base change is a pin that lies, so
+the version moves rather than the md5 being silently reused.
+
+⚠️ **No md5 is pinned here yet.** The shipping artifact is whichever build is
+actually reviewed and staged; pinning one from a verification build would create
+a second binary wearing the same version number, which is the trap 2.7.29 and
+2.7.30 already fell into.
+
+⚠️ **Activation order still applies:** the module must activate no later than any
+plugin rebuilt against it. `KTPMatchHandler` 0.10.166 calls `dodx_get_shot_geom`
+unconditionally and natives resolve at load, so a plugin ahead of the module is a
+load failure, not a degraded mode.
+
+Merge conflict resolution: one hunk in this file, both sides kept. `dodx.h` and
+`moduleconfig.cpp` merged cleanly.
+
 ## [Unreleased]
+
+## [Unreleased]
+
+**These entries are now part of the 2.7.32 re-cut below-the-line, not of 2.7.31.**
+The `main` fixes and the 2.7.31 cut were developed in parallel and neither shipped
+with the other; merging them changes the compiled module, so 2.7.31's pinned md5
+no longer describes this tree. See the 2.7.32 note.
+
+### Fixed
+- **A newly started capture can no longer be missed by cap-break candidate
+  selection** (`ktp_stats_capture.inc`, `stats_logging.sma` 1.15.5 ->
+  1.15.6). Selection previously read the last 0.2-second cached capping team,
+  so a kill between capture start and the next poll queued nothing even when
+  the victim was on the active point. It now reads the live area state; the
+  delayed poll still requires the capping team's in-zone count to fall before
+  emitting a break.
+
+- **`pd_dcp` was one `int` short on Linux/Apple, so every control-point pdata read returned its
+  NEIGHBOUR.** The Linux `CControlPoint` layout carries FIVE extra ints before `owner`, not four.
+  With four, every field from `owner` down sat 4 bytes early:
+
+  | field | struct (was) | gamedata | actually returned |
+  |---|---|---|---|
+  | `owner` | 372 | `m_iTeam` 376 | the int below it — **0 for every CP, on every map** |
+  | `default_owner` | 384 | `m_iDefaultOwner` 388 | — |
+  | `flag_id` | 388 | `m_iIndex` 392 | **`m_iDefaultOwner`** (0/1/2, not an index) |
+  | `pointvalue` | 392 | `m_iPointValue` 396 | **`m_iIndex`** |
+  | `points_for_player` | 396 | `m_iCapPoints` 400 | — |
+  | `points_for_team` | 400 | `m_iTeamPoints` 404 | — |
+
+  Windows was already byte-perfect, which is why this only ever surfaced in production.
+  One added `int` aligns all six against the shipped
+  `entities.games/dod/offsets-ccontrolpoint.txt`.
+
+  **Derived twice, independently.** From the published offsets above; and empirically from 65
+  recorded prod matches, where `flag_id` was predicted exactly by each BSP's
+  `point_default_owner` sequence on two maps — i.e. it was returning default ownership, not an
+  index (`DoD-hud-observer/docs/dodx-cp-index-space-findings.md`).
+
+  **Verified live in extension mode** on two maps chosen to disagree, via
+  `dodx_objective_get_data`:
+
+  ```
+  dod_anzio   (all-neutral defaults)
+    index=1..5  owner=0,0,0,0,0  default=0,0,0,0,0
+  dod_flash    (default-owned)
+    index=1..5  owner=1,1,0,2,2  default=1,1,0,2,2   <- the map's real layout
+  ```
+
+  Before the fix `CP_owner` read `0` for every CP on both, and `CP_index` returned the
+  default-owner value — on anzio that is `0` for all five, so every CP claimed to be index 0.
+  `m_iIndex` is 1-based, consistent with `SetObj` sending `cp_index = point_index - 1`.
+
+  **What this fixes for consumers:** `CP_index` becomes the DLL's real index rather than an
+  owner value, `CP_owner`/`CP_default_owner` become real at map load instead of neutral-for-all,
+  and `points_for_player`/`points_for_team` stop being read off-by-one. This is the exact
+  identity drift behind issues #5 and #8 — CP names attaching to the wrong flags on maps with no
+  usable `point_index` (`dod_donner`, `dod_saints2_*`, `dod_merderet`).
+
+  **Note for anyone chasing the territorial award:** `m_iPointValue` reads **0 on every CP** on
+  both maps tested, so the recurring award is NOT stored there — the correction makes the field
+  readable, not useful. `m_iCapPoints`/`m_iTeamPoints` do carry per-flag values (anzio 1,2,1,2,1;
+  flash all 1). Deliberately not chased here.
+
+  No gamedata change. `mObjects` seeding is left exactly as-is: the BSP `point_default_owner`
+  pass still overwrites `owner`/`default_owner` after the scan, so this narrows the blast radius
+  to making the pdata fallback correct rather than re-plumbing CP init.
 
 ## [2.7.31] - 2026-08-16
 
@@ -57,6 +154,213 @@ skips the give and then writes ammo to a player with no grenade entity. 1.0.12 g
 `<= 0`. `KTPPracticeMode` does not call the getter and can follow separately.
 
 ### Added
+- **The compile-only Lane B core now tracks DODX weapon counters for bots.**
+  `KTP_LANE_B_FAKECLIENTS` both registers fake clients as AMXX players and
+  enables DODX's bot counter path in extension mode. Without the second half,
+  `ignoreBots()` discarded every bot shot and `get_user_wstats()` returned no
+  weapons even though the match produced kills. Ordinary builds do not define
+  the flag and retain the existing production bot exclusion.
+
+- **Lane B can cover StatsMe weapon statistics with its all-bot roster**
+  (`stats_logging.sma` 1.15.3 -> 1.15.4). A build carrying the compile-time
+  `KTP_LANE_B_BOT_WEAPONSTATS` flag permits bots through `dod_stats_flush`,
+  but only while both `sv_lan 1` and `ktp_testmatch_enabled 1` are active.
+  Normal production builds do not define the flag and retain the existing bot
+  exclusion. This lets the ephemeral match exercise the real DODX counters,
+  `weaponstats`/`weaponstats2` log format, HLStatsX parser, and
+  `hlstats_Events_Statsme` writes without weakening fleet behavior.
+
+### Fixed
+- **An off-point kill can no longer steal a later cap break**
+  (`ktp_stats_capture.inc`, `stats_logging.sma` 1.15.4 -> 1.15.5). A victim
+  must now be within 512 horizontal units of the closest point their team is
+  actively capturing before the killer enters that point's break queue. The
+  area API exposes only aggregate team counts, so proximity is the available
+  per-player discriminator. Lane B validates 300-unit on-point and 900-unit
+  off-point cases on `dod_anzio`; revalidate this provisional radius when bot
+  waypoints make additional match maps testable.
+
+- **Projectile killers could be credited with assisting their own kill**
+  (`ktp_stats_capture.inc`, `stats_logging.sma` 1.15.2 -> 1.15.3). DODX can
+  deliver a missing or degraded `client_death` killer for projectile kills
+  even though the preceding `client_damage` forward identified the final
+  attacker correctly. Assist attribution now tracks that most recent enemy
+  attacker per victim and excludes it alongside the death callback's killer.
+  The state is cleared on spawn, death, and slot reuse so it cannot leak
+  between lives or players.
+
+- **Flag positions (`KTP_FLAG_POSITION`) never reached the game log**
+  (`ktp_stats_capture.inc`, `stats_logging.sma` 1.15.1 -> 1.15.2). Every
+  Lane B run since the feature was added produced zero
+  `ktp_flag_positions` rows, silently — no error anywhere. Root-caused
+  with a diagnostic build (log_amx() calls before/after every step of
+  `controlpoints_init()` and inside `ksc_emit_flag_position()`), not
+  guessed: the forward fires with entirely correct data (right flag
+  count, right names, right owners, right x/y — all confirmed live) and
+  `log_message()` returns normally, but nothing it writes ever reaches
+  the game log at that exact point in map load, while `log_amx()` calls
+  made in the same forward at the same moment land fine. Same class of
+  early-init unreliability under ReHLDS extension mode that
+  `stats_logging.sma`'s own `plugin_cfg`-not-`plugin_init` comment
+  documents for `set_task` (~10% failure rate) — `log_message()` just
+  happens to be the thing that's unready this time instead.
+  Fixed the same way: don't call the unreliable-this-early thing
+  synchronously from `controlpoints_init()` at all. Flag data
+  (name/owner/count) is still gathered there — those reads were never
+  the problem — but the actual `ksc_emit_flag_position()` calls are now
+  queued via a one-shot `set_task(1.0, ...)` and run from a new
+  `ksc_flag_positions_task()` slightly later, by which point every other
+  early-init marker in this codebase is already reliable.
+
+### Changed
+- **Position broadcast interval, 30s -> 5s** (`ktp_stats_capture.inc`,
+  `stats_logging.sma` 1.15.0 -> 1.15.1). Operator call: at 30+ deaths/half
+  over a 20-minute half, 30s left too few samples per life for
+  positional/"holding" analysis to be useful. Still a reasoned-not-measured
+  value — at a full ~17-player roster this adds ~204 rows/min, under the
+  damage ledger's existing 1,100-1,500 rows/match direct-INSERT volume, so
+  not a new dominant source, but real EPS impact (specifically the
+  `KSC_BUF_MAX_ENTRIES` buffer's `[KTP-STATS] dropped` counter) still needs
+  validating on a live Lane B run before this is trusted in production —
+  same as `KSC_LAST_FLAG_RADIUS`'s own precedent. Game-thread cost of the
+  task itself is not a concern at any of these intervals: it only reads
+  cheap native state for connected/alive players and buffers, with no
+  synchronous I/O in the task itself (that's deferred to the existing 5s
+  flush task).
+
+### Added
+- **Periodic roster-position broadcast** (`ktp_stats_capture.inc`,
+  `stats_logging.sma` 1.14.0 -> 1.15.0). Every `KSC_POSITION_BROADCAST_SECS`
+  (originally 30s, since raised to 5s — see the constant's own comment),
+  one `position_sample` marker per connected, alive player:
+  team, `(x, y, z)`, and `game_time`. Raw facts only, on purpose — no
+  "is this player holding forward territory" or "is this a solo cap"
+  judgment happens here; that classification belongs entirely in the query
+  layer, reading this data plus `ktp_flag_positions`. Same data feeds two
+  deliberately-deferred consumers: positional/"holding" stats and (later)
+  ninja-cap detection — see KTPInfrastructure's
+  `tests/e2e_stats/NEXT_PHASES.md`.
+  - Flat and unconditional, not event-triggered, so it can't bias toward
+    moments something else already judged interesting — same principle the
+    ninja-cap deferral was parked on.
+  - Dead players are skipped — no meaningful map position between death and
+    respawn.
+  - Live-verified via a short Lane B run (2026-08-13): 129 real samples
+    landed with correct team/position/game_time and correct `match_id`/
+    `half` gating (`NULL`/0 during warmup and halftime, tagged during live
+    play) — matching `ktp_damage_events`'s established gating exactly.
+  - **Bug caught by that same live run, not by compilation**: the task
+    callback was declared `stock` instead of `public`. It compiled clean
+    (`stock` doesn't error) and registered via `set_task` without error, but
+    silently never fired — `set_task`'s name-based dispatch only reaches
+    `public` functions, matching `ksc_flush_task`/`ksc_zone_poll_task`.
+    Zero samples in a full 4-minute run was the tell; fixed and re-verified
+    before this was considered done.
+
+- **Break context, flag positions, and last-flag-defense for HLStatsX**
+  (`ktp_stats_capture.inc`, `stats_logging.sma` 1.13.0 -> 1.14.0).
+  - `flag_position` — static per-flag `(x, y)` from `CP_origin_x`/`CP_origin_y`,
+    fired once per `controlpoints_init()` (every map load, including
+    warmup/halftime reloads — harmless, the daemon side upserts on
+    `(server, map, flag_index)`). Unbuffered, matching `KTP_MATCH_*`'s shape
+    rather than the ring buffer — rare events, nothing to batch.
+  - `break_context` — a follow-up marker on every `cap_break`, same
+    buffer-then-daemon-UPDATE technique `frag_context` uses: `contester_count`
+    (the capping team's in-zone count just before the break — how big the
+    push being repelled was), `time_remaining` (`CA_time_remaining` at break
+    time — lower is more "clutch"), `is_capout` (did this break save the
+    defending team from dropping to zero flags — they own exactly one, this
+    one, right now).
+  - `frag_context` gains `k_position`/`v_position` (killer/victim position at
+    the kill, previously not captured on ordinary frags — only on
+    assists/breaks) and `is_last_flag_defense`. **Deliberately keys off KILL
+    POSITION relative to the defended flag, not the break queue** — a
+    defender who kills a would-be ninja before they start capping is
+    defending just as much, and the break queue structurally cannot see a
+    kill that never touched a capture zone. `KSC_LAST_FLAG_RADIUS` (1000
+    units, 2D) is a starting estimate, not a measured one — validate with
+    staged defense kills at known distances before trusting it.
+  - Shares the `ksc_team_flag_count()` test between `is_capout` (on breaks)
+    and `is_last_flag_defense` (on kills) — both are really the same
+    question ("does this team own exactly one flag right now") asked at two
+    different event types, per the operator's correction that a defense kill
+    is not only visible through a completed break.
+  - Needs matching `hlstats.pl` handlers and three new/extended tables,
+    shipped alongside in KTPHLStatsX.
+
+- **Per-hit damage ledger for HLStatsX** (`ktp_stats_capture.inc`). Every
+  `client_damage` hit — enemy, team, and self alike — now emits a `damage`
+  marker: attacker, victim, weapon, raw damage, a **capped** damage value,
+  hitplace, and `game_time`. No new hook; extends the `client_damage`
+  forward already hooked here for assist attribution, which is why
+  `wpnindex`/`hitplace` are no longer `#pragma unused`.
+
+  **Damage is capped at 100** (`KSC_DAMAGE_CAP`) in a second column alongside
+  the raw value. DoD's raw per-hit damage is the nominal weapon value with
+  multipliers applied (headshot, wallbang) and is not clamped to a player's
+  actual 0-100 HP pool — a single hit can log 400+. Un-capped, that number
+  says "how strong this weapon+hitzone combo is on paper," not "how much
+  this hit mattered," which is the wrong quantity for a per-player stat.
+  Same convention CS2 uses. Raw is kept alongside it — nothing is discarded —
+  but any KTPR-facing consumer should read the capped column.
+
+  `game_time` (`get_gametime()`, seconds since map start) stands in for
+  "tick" from the original phase spec — AMXX exposes no raw network tick
+  counter to Pawn. Documented as a substitution, not claimed as something it
+  isn't.
+
+  **`KSC_BUF_MAX_ENTRIES` raised 48 -> 128.** ~1,100-1,500 hits/match (a
+  prior live audit) dwarfs the ~150-400 kills/match that sized the shared
+  capture buffer before frag_context and this landed on the same buffer.
+  Needs the same empirical drop-line check the line-length budget got in the
+  prior unit — see `KTPR_DEPLOYMENT_PLAN.md` Unit 6 for the run.
+
+  Needs a matching daemon table and handler, shipped alongside in
+  KTPHLStatsX. **Not** queued through the daemon's generic `recordEvent`
+  batching (that machinery is built around `hlstats_Events_*` tables with a
+  config-driven column set) — this is a standalone table with a direct
+  per-event `INSERT`, matching how the `KTP_MATCH_*` markers and
+  `frag_context` are already handled rather than the stock event tables. If
+  per-event `INSERT` volume ever proves a real cost at fleet scale, it can be
+  batched later — flagged as a known simplification, not assumed fine.
+
+- **Frag context for HLStatsX** (`ktp_stats_capture.inc`, `stats_logging.sma`
+  1.12.0 -> 1.13.0). Every kill now carries killer/victim prone state
+  (`dod_get_pronestate`), scope state (tracked live from the `dod_client_scope`
+  forward — DODX has no getter), and clip/ammo (`dod_get_user_weapon`) for
+  both participants, plus headshot.
+
+  This **retires** `stats_logging.sma`'s old dedicated `headshot_kill` marker
+  (headshot-only, its own log line) in favour of a single `frag_context`
+  marker fired on every kill. Both use the identical technique — buffer a
+  marker after the kill, daemon flushes and UPDATEs the just-inserted Frags
+  row by `(killerId, victimId, weapon)` — so this is one queued line and one
+  daemon UPDATE per kill instead of two, not a parallel mechanism. No TK
+  exclusion, matching the marker it replaces, which fired on any headshot
+  regardless of TK.
+
+  Clip/ammo reflect the participant's **current** weapon at the moment of the
+  kill line, not necessarily the weapon that scored it (that's `wpnindex`,
+  read separately) — verified live: a grenade kill's `k_clip`/`k_ammo` showed
+  real rifle values because the killer had already switched back by the time
+  `client_death` fired. Land as `-1 -1` only if the read fails (in practice, a
+  narrow disconnect race), matching the pattern positions already established
+  of omitting rather than fabricating a reading. **Not** a melee/grenade
+  indicator — a knife kill returns real `0 0` from the engine, confirmed live,
+  which is a different thing from `-1 -1` and must not be conflated with it.
+  Prone state is stored raw (0 standing, 1 going prone/MG teardown, 2 setting
+  up an MG while down), not collapsed to a bool.
+
+  Needs matching `hlstats_Events_Frags` columns and a daemon handler for the
+  new `frag_context` line, shipped alongside in KTPHLStatsX. The old
+  `headshot_kill` daemon branch is left in place as dead code (harmless) —
+  nothing emits that line anymore, but nothing needs it removed either.
+
+  **Upstream-file edit**, flagged per the fork-delta rule: `stats_logging.sma`'s
+  `client_death` now does nothing but dispatch into `ksc_on_death`. Behaviour
+  for assists and cap-break candidate queuing is unchanged; the removed code
+  is exactly the old headshot-only block, folded into the new marker.
+
 - **`dodx_get_score_tick_time()` / `dodx_get_score_tick_period()` — the territorial scoring clock.**
   DoD awards periodic team points for holding control points from the map's single
   `dod_control_point_master`, on that entity's own clock. **The DoD client shows this nowhere** —
@@ -593,6 +897,69 @@ flags now read their real owner.
 ⚠️ **Behavioural note from the rebase:** the BSP parse moved from `mObjects.count > 1` to
 `> 0`, since the ownership seed must run on a single-CP map too. Same number of read sites, one
 slightly wider condition, and it runs at map load rather than in the frame loop.
+
+- **Positions on the assist and cap-break lines** (`ktp_stats_capture.inc`).
+  DoD has never recorded positional data -- `pos_x/y/z` is NULL on every DoD
+  event row. `dodx_get_user_origin` is now read at emit time and attached as the
+  `assister_position`/`victim_position` (assists) and `position` (breaks)
+  properties.
+
+  **No daemon change needed**: `doEvent_PlayerAction` and
+  `doEvent_PlayerPlayerAction` already parse exactly those property names into
+  the event row's `pos_*`/`vpos_*` columns -- the capability was there the whole
+  time with nothing emitting it. Rounded to integers, and the property is
+  omitted entirely (rather than written as `0 0 0`) if the origin read fails, so
+  a failure can't masquerade as the map origin.
+
+  This is also what makes the break rows useful later: the `(flag "...")` name
+  is discarded by the daemon, so position is how the query layer will work out
+  which point a break happened on.
+
+- **Cap-break capture for HLStatsX** (`ktp_stats_capture.inc`). A break --
+  killing an enemy standing on a point their team is capturing -- is the only
+  way to stop capture progress in DoD, and has never been recorded outside the
+  HUD observer. Ports KTPHudObserver's queue-and-confirm detection: a kill on a
+  contested point queues a candidate, and a 0.5s zone poll credits it when the
+  capping team's in-zone count actually drops. It cannot be decided at kill
+  time -- the engine applies the dead player's zone decrement 0.2-2.5s late, and
+  the one-shot snapshot that predates the queue caught under 20% of real breaks.
+
+  Simplified vs. the original: this works entirely in dodx objective/area index
+  space. KTPHudObserver carries a DLL-index <-> dodx-index remap with hardcoded
+  per-map exceptions because it also consumes `dod_control_point_captured`
+  (DLL-indexed). Detecting a completed capture from `CA_owning_team` instead
+  drops that hook, the remap, and its map-specific special cases entirely.
+
+  Needs an `hlstats_Actions` row (`code='cap_break'`, `for_PlayerActions='1'`),
+  shipped alongside in KTPHLStatsX. The `(flag "...")` property on the line is
+  log-only for now -- `doEvent_PlayerAction` discards unrecognised properties,
+  so which point was broken is not persisted until the break-context phase.
+
+- **Assist capture for HLStatsX** (`plugins/dod/ktp_stats_capture.inc`, new;
+  `stats_logging.sma` 1.11.0 -> 1.12.0). DoD assists have never existed in
+  HLStatsX: the engine logs no damage events, so the daemon has no way to derive
+  them, and `hlstats_Events_PlayerPlayerActions` has sat empty since the table
+  was created. This ports the attribution rule already proven in production by
+  KTPHudObserver -- a third party who dealt >= 50 enemy damage to the victim
+  since their last spawn -- onto a `client_damage` hook here, and emits a
+  `triggered "assist" against` line on death for the daemon's existing
+  player-vs-player action path to record.
+
+  Requires a matching `hlstats_Actions` seed row (`game='dod'`, `code='assist'`,
+  `for_PlayerPlayerActions='1'`) or the daemon parses the line and silently
+  drops it -- the same failure mode that lost every LAN capture event. Shipped
+  alongside in KTPHLStatsX.
+
+  New capture is self-contained in its own include (shares no state with
+  `stats_logging.sma`), buffers on its own ring with a drop-counter rather than
+  flushing inline like the stock buffer does -- postthink is the wrong place for
+  a synchronous write -- and is gated on a new `ktp_stats_capture` cvar so it can
+  be switched off live without a redeploy.
+
+  > **Upstream-file edit**, flagged per the fork-delta rule: `stats_logging.sma`
+  > gains the `#include`, five call-outs (init/cfg/end, death, disconnect) and
+  > the version bump. No existing logic changed; the assist call is placed ahead
+  > of the headshot-only early return so it runs for every death.
 
 ## [2.7.25] - 2026-08-08
 

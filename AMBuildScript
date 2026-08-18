@@ -155,6 +155,20 @@ class AMXXConfig(object):
       'AMXX_USE_VERSIONLIB',
     ]
 
+    # KTP Lane B TEST BUILD opt-in. Off unless the environment variable is set,
+    # so an ordinary build — including the production Docker build — is
+    # unchanged and the fleet cannot inherit this by accident.
+    #
+    #   KTP_LANE_B_FAKECLIENTS=1 python3 configure.py ...
+    #
+    # Makes AMXX register fake clients (bots) as players in ReHLDS extension
+    # mode. Without it is_user_connected() is false for every bot, which is
+    # what blocks bot-driven testing of any AMXX-level plugin logic. See
+    # KTPInfrastructure/tests/e2e_stats/PHASE0_FINDINGS.md.
+    if os.environ.get('KTP_LANE_B_FAKECLIENTS'):
+      cxx.defines += ['KTP_LANE_B_FAKECLIENTS']
+      print('*** KTP LANE B TEST BUILD: fake clients register as players — NOT FOR PRODUCTION ***')
+
     if self.use_auto_versioning():
       cxx.defines += ['AMXX_GENERATED_BUILD']
       cxx.includes += [os.path.join(builder.buildPath, 'includes')]

@@ -1035,8 +1035,20 @@ void OnPluginsLoaded()
 		g_map.Init();
 
 		// KTP: Player init disabled - pfnPEntityOfEntIndex causes hang in OnPluginsLoaded
-		// Players will be initialized on-demand when messages arrive
+		// Players will be initialized on-demand when messages arrive.
+#if defined(KTP_LANE_B_FAKECLIENTS)
+		// Lane B's compile-only core already registers fake clients as AMXX
+		// players. DODX must also retain their shot/hit counters or
+		// get_user_wstats() has nothing to flush at match end. Extension mode
+		// deliberately does not register dodstats_rankbots, so the normal NULL
+		// fallback below is always false. This define is supplied only by the
+		// isolated Lane B build; ordinary/preprod production artifacts do not
+		// define it and preserve the existing bot exclusion.
+		rankBots = true;
+		MF_PrintSrvConsole("[DODX] Lane B test build: bot weapon counters enabled\n");
+#else
 		rankBots = dodstats_rankbots ? ((int)dodstats_rankbots->value ? true : false) : false;
+#endif
 
 		// KTP: Look up message IDs using MF_GetUserMsgId (provided by KTPAMXX)
 		if (MF_GetUserMsgId)

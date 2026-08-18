@@ -204,11 +204,33 @@ struct pd_dcp {
 	int iunk_36; // pointer entvars_t*
 	int unknown_block2[52];
 	int iunk_89; // pointer entvars_t*
+// KTP: the Linux/Apple CControlPoint layout carries FIVE extra ints here, not
+// four. With four, every field from `owner` down was read 4 bytes early, so each
+// one returned its NEIGHBOUR:
+//
+//   field          struct (was)  gamedata  actually returned
+//   owner                   372       376  the int below it — 0 for every CP
+//   default_owner           384       388  —
+//   flag_id                 388       392  m_iDefaultOwner  (0/1/2, not an index)
+//   pointvalue              392       396  m_iIndex         (0..N-1, not a value)
+//   points_for_player       396       400  —
+//   points_for_team         400       404  —
+//
+// Offsets from gamedata/common.games/entities.games/dod/offsets-ccontrolpoint.txt
+// (m_iTeam 376, m_iDefaultOwner 388, m_iIndex 392, m_iPointValue 396,
+// m_iCapPoints 400, m_iTeamPoints 404). Windows was already byte-perfect, which
+// is why this only ever showed up in production. One added int aligns all six.
+//
+// Derived twice, independently: from the published offsets above, and
+// empirically from recorded prod matches, where `flag_id` was predicted exactly
+// by each BSP's point_default_owner sequence on two maps
+// (DoD-hud-observer docs/dodx-cp-index-space-findings.md).
 #if defined (__linux__) || defined (__APPLE__)
 	int iunk_extra1;
 	int iunk_extra2;
 	int iunk_extra3;
 	int iunk_extra4;
+	int iunk_extra5;
 #endif
 	int owner; // 90
 	int iunk_91;

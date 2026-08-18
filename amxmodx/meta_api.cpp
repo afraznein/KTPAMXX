@@ -1817,6 +1817,67 @@ void SV_ClientUserInfoChanged_RH(IRehldsHook_SV_ClientUserInfoChanged *chain, IG
 		return;
 
 	CPlayer *pPlayer = GET_PLAYER_POINTER_I(index);
+
+#if defined(KTP_LANE_B_FAKECLIENTS)
+	// ========================= TEST BUILD ONLY =========================
+	// Register fake clients (bots) as AMXX players in extension mode.
+	//
+	// NOT FOR PRODUCTION. Guarded by a compile-time define that is set only by
+	// the Lane B test build; a normal build of this file is byte-for-byte
+	// unchanged, so the fleet cannot inherit this by deploy accident. Same
+	// containment shape as KTPMatchHandler's -DKTP_TEST_MODE.
+	//
+	// Why it is needed: in extension mode AMXX never registers a bot as a
+	// player, so `is_user_connected()` is false for every bot and
+	// `get_players()` returns 0 while the engine has a full server. Measured
+	// with 6 bots demonstrably fighting and capturing. Every emit path in
+	// KTPAMXX/plugins/dod/ktp_stats_capture.inc is gated on that native
+	// (ksc_on_death, the assist loop, ksc_emit_break, ksc_origin_str), so the
+	// stats-capture work cannot be tested against bots without this.
+	//
+	// Note DODX is unaffected either way: it keeps its own player array keyed
+	// off FL_FAKECLIENT, which is why its forwards fire for bots while AMXX
+	// sees nobody. The comment this replaces claimed "DODX extension hooks
+	// handle bot connect/putinserver elsewhere" — true of DODX's tracking, but
+	// not of AMXX's player list, and that distinction is the whole gap.
+	//
+	// This mirrors the Metamod path's C_ClientUserInfoChanged_Post
+	// `else if (pPlayer->IsBot())` branch. It must run BEFORE the
+	// initialized/ingame guard below: a bot is neither, so that guard returns
+	// first and the FL_FAKECLIENT check further down is never even reached.
+	if (pPlayer && !pPlayer->ingame && (pEntity->v.flags & FL_FAKECLIENT))
+	{
+		char *botinfo = GET_INFOKEYBUFFER(pEntity);
+		const char *botname = botinfo ? INFOKEY_VALUE(botinfo, "name") : "";
+
+		pPlayer->Connect(botname ? botname : "", "127.0.0.1");
+		executeForwards(FF_ClientConnect, static_cast<cell>(pPlayer->index));
+
+		const char *authid = GETPLAYERAUTHID(pEntity);
+		pPlayer->Authorize(authid);
+		if (g_auth_funcs.size())
+		{
+			List<AUTHORIZEFUNC>::iterator iter, end = g_auth_funcs.end();
+			AUTHORIZEFUNC fn;
+			for (iter = g_auth_funcs.begin(); iter != end; iter++)
+			{
+				fn = (*iter);
+				fn(pPlayer->index, authid);
+			}
+		}
+		executeForwards(FF_ClientAuthorized, static_cast<cell>(pPlayer->index), authid);
+
+		// Natives like get_user_team() read pEdict; the extension-mode
+		// SV_Spawn_f path sets it explicitly for the same reason.
+		pPlayer->pEdict = pEntity;
+
+		pPlayer->PutInServer();
+		++g_players_num;
+		executeForwards(FF_ClientPutInServer, static_cast<cell>(pPlayer->index));
+	}
+	// =================== END TEST BUILD ONLY ===========================
+#endif
+
 	// Match the C_ClientCvarChanged guard below — plugin handlers assume a fully
 	// connected player; firing FF_ClientInfoChanged before initialized + ingame are
 	// both true leads to undefined behaviour in plugin code.
@@ -1827,6 +1888,8 @@ void SV_ClientUserInfoChanged_RH(IRehldsHook_SV_ClientUserInfoChanged *chain, IG
 	// Note: unlike the Metamod path's C_ClientUserInfoChanged_Post, we do not need
 	// the `else if (pPlayer->IsBot())` Connect-emulation branch here — DODX extension
 	// hooks handle bot connect/putinserver elsewhere (see extension_mode_no_fakemeta.md).
+	// (A Lane B test build adds exactly that branch above, behind
+	// KTP_LANE_B_FAKECLIENTS.)
 	if (pEntity->v.flags & FL_FAKECLIENT)
 		return;
 

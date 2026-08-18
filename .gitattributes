@@ -22,3 +22,9 @@
 # Compiled Object files
 *.o binary
 *.obj binary
+
+# Shell scripts must stay LF regardless of platform. `* text=auto` above does not
+# pin the checkout eol, so on a Windows clone build_linux.sh can materialize CRLF
+# and then bash dies with `$'': command not found` before it does anything --
+# which reads as a broken build script rather than a line-ending problem.
+*.sh text eol=lf
