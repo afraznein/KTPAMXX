@@ -1716,6 +1716,9 @@ static cell AMX_NATIVE_CALL dodx_debug_dump_ammo(AMX *amx, cell *params)
 // Fires the `dod_client_weapon_fire` forward. params[3] is already a Pawn
 // Float cell — pass it through unchanged (production site amx_ftoc's a raw
 // C++ float; here it's pre-encoded, so re-encoding would corrupt it).
+// A synthetic dispatch whose handler calls dodx_get_shot_geom can consume a
+// LIVE capture if the weapon id matches — one more reason production plugins
+// must never call this.
 static cell AMX_NATIVE_CALL dodx_test_dispatch_weapon_fire(AMX *amx, cell *params)
 {
 	if (iFWeaponFire == -1)
@@ -2184,6 +2187,57 @@ static cell AMX_NATIVE_CALL dodx_get_aim_window(AMX *amx, cell *params)
 	return 1;
 }
 
+// KTP: read the geometry of the shot the caller's dod_client_weapon_fire forward is
+// reporting. Measurements only -- no threshold is applied here and none should be
+// added; the consumer decides what the numbers mean.
+//
+// Every guard failure returns 0 so the caller records NULL. Returning a stale or
+// substitute value instead would attribute one shot's geometry to another -- in this
+// system that is fabricated evidence against a real person, the single worst outcome.
+// The guards, in order:
+//   - stash empty or already consumed (a stash reports at most one shot);
+//   - stash stamped by a different usercmd than the one this read sits in (see
+//     KTPShotGeom.h for why the pairing key is a cmd ordinal, not gametime) --
+//     consumed on failure, because cmdSeq only grows and it can never match later;
+//   - the forward's weapon id differs from what the shooter held at trace time --
+//     NOT consumed, because the stash may still belong to a dispatch that has not
+//     read yet (a grenade forward probing ahead of the rifle's own read).
+//
+// out[] = { err_micro_deg, range_units, tgt_angvel_milli_deg_per_s, sight_gap_ms,
+//           hitgroup, start_off_units }
+static cell AMX_NATIVE_CALL dodx_get_shot_geom(AMX *amx, cell *params)
+{
+	int index = params[1];
+	CHECK_PLAYER(index);
+
+	CPlayer *pPlayer = GET_PLAYER_POINTER_I(index);
+	if (!pPlayer->ingame || !pPlayer->pEdict || pPlayer->pEdict->free)
+		return 0;
+
+	KTPShotGeom &sg = pPlayer->ktpShot;
+
+	if (sg.geomSeq == 0)
+		return 0;
+	if (sg.geomSeq != sg.cmdSeq)
+	{
+		sg.consume();
+		return 0;
+	}
+	if ((int)params[2] != sg.geomWeapon)
+		return 0;
+
+	cell *out = MF_GetAmxAddr(amx, params[3]);
+	out[0] = sg.errUdeg;
+	out[1] = sg.rangeUnits;
+	out[2] = sg.tgtAngVelMdps;
+	out[3] = sg.sightGapMs;
+	out[4] = sg.hitgroup;
+	out[5] = sg.startOffUnits;
+
+	sg.consume();
+	return 1;
+}
+
 // KTP: clear a player's counters after a successful flush. Separate from the read so
 // a failed POST does not silently discard the window that justified it.
 static cell AMX_NATIVE_CALL dodx_reset_aim_stats(AMX *amx, cell *params)
@@ -2194,6 +2248,49 @@ static cell AMX_NATIVE_CALL dodx_reset_aim_stats(AMX *amx, cell *params)
 	// ResetCounters, not Reset: the read natives exclude the in-progress window because
 	// it will be reported once it closes, and wiping it here would make that false.
 	GET_PLAYER_POINTER_I(index)->ktpAim.ResetCounters();
+	return 1;
+}
+
+// KTP: read the tier-2.7 aim-vs-transmission counters. Measurements only -- no
+// threshold is applied here and none should be added; KTPPackVis.h carries the
+// direction and unknown-state rules a consumer must honour.
+//
+// out[] = { samples_known, samples_unpacked, samples_unknown,
+//           window_ms_sum, window_ms_max, recorder_live }
+static cell AMX_NATIVE_CALL dodx_get_aim_vis_stats(AMX *amx, cell *params)
+{
+	int index = params[1];
+	CHECK_PLAYER(index);
+
+	// Zeroed even on the failure return: a caller that mishandles the 0 must
+	// read zeros, not whatever its own buffer held -- stale cells here are the
+	// fabrication direction.
+	cell *out = MF_GetAmxAddr(amx, params[2]);
+	for (int i = 0; i < 6; ++i)
+		out[i] = 0;
+
+	CPlayer *pPlayer = GET_PLAYER_POINTER_I(index);
+	if (!pPlayer->ingame || !pPlayer->pEdict || pPlayer->pEdict->free)
+		return 0;
+
+	const KTPPackVis &v = pPlayer->ktpVis;
+	out[0] = v.samplesKnown;
+	out[1] = v.samplesUnpacked;
+	out[2] = v.samplesUnknown;
+	out[3] = v.windowMsSum;
+	out[4] = v.windowMsMax;
+	out[5] = g_ktpPackRecorderLive ? 1 : 0;
+	return 1;
+}
+
+// KTP: clear the tier-2.7 counters. Separate from the read for the same reason
+// as the aim stats: a failed flush must not silently discard what justified it.
+static cell AMX_NATIVE_CALL dodx_reset_aim_vis_stats(AMX *amx, cell *params)
+{
+	int index = params[1];
+	CHECK_PLAYER(index);
+
+	GET_PLAYER_POINTER_I(index)->ktpVis.reset();
 	return 1;
 }
 
@@ -2320,6 +2417,13 @@ AMX_NATIVE_INFO base_Natives[] =
 	{"dodx_get_aim_stats",                   dodx_get_aim_stats},
 	{"dodx_get_aim_window",                  dodx_get_aim_window},
 	{"dodx_reset_aim_stats",                 dodx_reset_aim_stats},
+
+	// KTP: per-shot aim geometry (blind audit tier 2.3)
+	{"dodx_get_shot_geom",                   dodx_get_shot_geom},
+
+	// KTP: aim-vs-transmission counters (blind audit tier 2.7)
+	{"dodx_get_aim_vis_stats",               dodx_get_aim_vis_stats},
+	{"dodx_reset_aim_vis_stats",             dodx_reset_aim_vis_stats},
 
 	///*******************
 	{ NULL, NULL }

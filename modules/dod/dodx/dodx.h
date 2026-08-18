@@ -24,6 +24,11 @@
 // This avoids calling engine functions in extension mode hooks
 extern edict_t* g_pFirstEdict;
 
+// KTP: whether the tier-2.7 pack recorder hook is registered (moduleconfig.cpp).
+// Down means the sampler answers unknown; the read native reports it so a
+// consumer can tell "nothing suspicious" from "nothing recorded".
+extern bool g_ktpPackRecorderLive;
+
 // KTP: Safe ENTINDEX that uses pointer arithmetic instead of engine function
 // This is safe to call during ReHLDS hooks when pfnIndexOfEdict may crash
 inline int ENTINDEX_SAFE(const edict_t *pEdict)

@@ -17,6 +17,8 @@
 
 #include "CRank.h"
 #include "KTPAimAccum.h"
+#include "KTPShotGeom.h"
+#include "KTPPackVis.h"
 
 #define DODMAX_CUSTOMWPNS	5	// custom weapons
 #define DODMAX_WEAPONS		(42 + DODMAX_CUSTOMWPNS)
@@ -66,6 +68,16 @@ class CPlayer
 		// KTP: shadow-mode aim/movement counters, fed once per usercmd from
 		// SV_PlayerRunPreThink. Measure-only -- nothing here reaches a verdict.
 		KTPAimStats ktpAim;
+
+		// KTP: per-shot aim geometry stash, written by the TraceLine capture and
+		// read once by dodx_get_shot_geom. Reset lives in moduleconfig.cpp (the
+		// extension-mode connect/disconnect/map paths), not in Init()/Disconnect(),
+		// because capture and read exist only in extension mode.
+		KTPShotGeom ktpShot;
+
+		// KTP: aim-vs-transmission counters, sampled beside the shot capture.
+		// Same lifecycle rule as ktpShot: resets live in moduleconfig.cpp.
+		KTPPackVis ktpVis;
 
 		edict_t* pEdict;
 		int index;
