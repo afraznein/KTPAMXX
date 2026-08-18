@@ -37,8 +37,6 @@ Merge conflict resolution: one hunk in this file, both sides kept. `dodx.h` and
 
 ## [Unreleased]
 
-## [Unreleased]
-
 **These entries are now part of the 2.7.32 re-cut below-the-line, not of 2.7.31.**
 The `main` fixes and the 2.7.31 cut were developed in parallel and neither shipped
 with the other; merging them changes the compiled module, so 2.7.31's pinned md5
