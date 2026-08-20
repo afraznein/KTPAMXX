@@ -61,14 +61,22 @@ echo ""
 # Set up Python virtual environment for AMBuild
 VENV_DIR="$HOME/.ambuild-venv"
 echo "Checking for AMBuild virtual environment..."
-if [ ! -f "$VENV_DIR/bin/activate" ]; then
+
+# A truncated activate sources cleanly and sets nothing, so test the result, not the file.
+activate_venv() {
+    [ -f "$VENV_DIR/bin/activate" ] || return 1
+    unset VIRTUAL_ENV
+    # shellcheck disable=SC1091
+    . "$VENV_DIR/bin/activate"
+    [ -n "$VIRTUAL_ENV" ]
+}
+
+if ! activate_venv; then
     echo "Creating virtual environment at $VENV_DIR..."
     rm -rf "$VENV_DIR"
     python3 -m venv "$VENV_DIR"
+    activate_venv || { echo "ERROR: $VENV_DIR did not activate after rebuild"; exit 1; }
 fi
-
-# Activate virtual environment
-source "$VENV_DIR/bin/activate"
 
 # Install AMBuild if not present
 echo "Checking for AMBuild..."
