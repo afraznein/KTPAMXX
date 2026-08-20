@@ -21,7 +21,7 @@
 // header for why.
 #include "ktp_stats_capture"
 
-#define PLUGIN_VERSION "1.15.6"
+#define PLUGIN_VERSION "1.16.0"
 
 // KTP: Buffered logging to avoid synchronous file I/O during postthink.
 // client_death fires inside SV_RunCmd postthink phase — a single log_message()
@@ -67,6 +67,21 @@ public plugin_end() {
   ksc_flush()
 }
 
+// KTPMatchHandler snapshots multi-forward consumers when it creates these
+// forwards. Deploy/reload both plugins via a full HLDS/AMXX process restart;
+// late-loading only stats_logging intentionally leaves capture fail-closed.
+public ktp_match_start(const matchId[], const map[], matchType, half) {
+  ksc_on_match_start(matchId, half)
+}
+
+public ktp_half_end(const matchId[], const map[], matchType, half, team1Score, team2Score) {
+  ksc_on_match_context_end(matchId)
+}
+
+public ktp_match_end(const matchId[], const map[], matchType, team1Score, team2Score) {
+  ksc_on_match_context_end(matchId)
+}
+
 // KTP: Append a formatted log line to the memory buffer instead of writing to disk.
 // If the buffer is full, flush immediately to avoid data loss.
 stock buffer_log(const line[]) {
@@ -96,6 +111,12 @@ stock flush_log_buffer() {
 // Called by dodx_flush_all_stats() native to log pending stats for a player
 // This allows flushing warmup stats before match starts
 public dod_stats_flush(id) {
+  // KTP: MatchHandler calls this before clearing the DODX match context.
+  // Drain private capture first -- even when the slot is disconnected, a bot,
+  // or stats are paused -- so a buffered life boundary cannot arrive at the
+  // daemon after KTP_MATCH_END / the context clear and lose its attribution.
+  ksc_flush()
+
   if ( !is_user_connected(id) || !isDSMActive() )
     return PLUGIN_CONTINUE
 
@@ -178,8 +199,14 @@ public client_disconnected(id) {
   remove_task( id )
   g_pingSum[ id ] = g_pingCount[ id ] = 0
 
-  // KTP: drop this slot's assist state so the next player to occupy it can't
-  // inherit pending credit.
+  // KTP: A live disconnect is a physical life end. Emit it while the engine
+  // still exposes this slot's player identity, before clearing recycled-slot
+  // state. This deliberately runs before the bot/stats-pause early return:
+  // physical life boundaries must not disappear while DODX scoring is paused.
+  ksc_on_disconnect(id)
+
+  // KTP: drop this slot's capture state so the next player to occupy it can't
+  // inherit pending credit or an open life.
   ksc_clear_player(id)
 
   if ( is_user_bot(id) || !isDSMActive() )

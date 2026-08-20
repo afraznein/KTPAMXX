@@ -106,6 +106,7 @@ build_linux.sh
 # Operational deploy/diagnostic scripts may hold prod creds — public repo.
 # Shell hook scripts (*.sh) stay tracked; one-off Python tooling does not.
 scripts/*.py
+!scripts/test_stats_life_boundaries.py
 
 # Build output directories
 obj-linux/
