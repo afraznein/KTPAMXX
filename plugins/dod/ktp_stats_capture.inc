@@ -1,6 +1,7 @@
 // KTP Stats Capture -- extra per-match stats logged for KTPHLStatsX.
 //
-// Scope today: assists, cap breaks, assist/break positions, frag context
+// Scope today: assists, durable private life boundaries, cap breaks,
+// assist/break positions, frag context
 // (prone/scope/ammo/headshot at kill), the per-hit damage ledger, static
 // flag positions, flag-ownership changes, break context
 // (contester count/time remaining/capout),
@@ -27,10 +28,14 @@
 // firing it unconditionally with headshot as one more property is one queued
 // line and one daemon UPDATE per kill instead of two.
 //
-// No match id is stamped on these lines, on purpose. hlstats.pl's recordEvent()
-// injects match_id server-side for every event it writes and gates it on
-// round_live, which is strictly better than anything this side can supply -- the
-// plugin has no equivalent of that freeze-time gate.
+// Most lines intentionally omit a match id. hlstats.pl's recordEvent() injects
+// match_id server-side and gates it on its KTP_ROUND_LIVE/FREEZE state. The one
+// exception is `life_boundary`: it is a private standalone ledger whose markers
+// can sit in this five-second buffer across a context transition, so each line
+// carries its own matchid. Freeze-time boundaries are retained rather than
+// silently dropped. Their precise live/freeze state is deliberately not stamped:
+// MatchHandler's dodx_set_stats_paused() state is private to DODX, and the public
+// dodstats_pause cvar is not an authoritative mirror of it.
 
 #if defined _ktp_stats_capture_included
 	#endinput
@@ -92,11 +97,17 @@
 #define KSC_BUF_MAX_ENTRIES 128
 // Sized for the longest line we emit: frag_context, with two full player
 // strings (32-char name + userid + steamid + team each, ~70 apiece) plus nine
-// properties (headshot, k/v_prone, k/v_scope, k/v_clip, k/v_ammo), which
-// measures ~350. Headroom kept deliberately -- a truncated line does not fail
-// loudly, it just silently stops matching the daemon's regex.
-#define KSC_BUF_LINE_LEN    512
+// properties plus producer match/half/clocks. A synthetic maximum-width
+// contract line is 764 bytes; 768 preserves it including the NUL terminator.
+// A truncated line does not fail loudly -- it silently loses trailing clocks.
+#define KSC_BUF_LINE_LEN    768
 #define KSC_BUF_FLUSH_SECS  5.0
+
+// Life boundaries are control-plane facts. Keep them out of the high-volume
+// damage/frag queue so a hit burst cannot consume their capacity. This queue
+// is drained first, reports its own drops, and has a truthful bool enqueue API.
+#define KSC_LIFE_BUF_MAX_ENTRIES 64
+#define KSC_LIFE_BUF_LINE_LEN    384
 
 // Distinct from stats_logging.sma's own flush task, which registers with the
 // default id -- sharing an id would make one remove_task() cancel both.
@@ -108,6 +119,9 @@
 new g_kscBuffer[KSC_BUF_MAX_ENTRIES][KSC_BUF_LINE_LEN]
 new g_kscBufferCount = 0
 new g_kscDropped = 0
+new g_kscLifeBuffer[KSC_LIFE_BUF_MAX_ENTRIES][KSC_LIFE_BUF_LINE_LEN]
+new g_kscLifeBufferCount = 0
+new g_kscLifeDropped = 0
 
 // [victim][attacker] -- enemy damage dealt to victim since their last spawn.
 new g_kscDmgTaken[MAX_PLAYERS + 1][MAX_PLAYERS + 1]
@@ -122,6 +136,24 @@ new g_kscLastEnemyAttacker[MAX_PLAYERS + 1]
 // the forward's own "value" parameter (1 = scope up, 0 = scope down); starts
 // at 0, which is correct for anyone who has never scoped this life.
 new g_kscScoped[MAX_PLAYERS + 1]
+
+// Durable life-boundary capture. `g_kscLifePhysicalAlive` follows the actual
+// spawn/death lifecycle even outside a match context, so an alive player who
+// disconnects just after context becomes available still gets a physical end
+// marker. `g_kscLifeOpen` means this match context already has a start marker
+// for the slot; it prevents the periodic context baseline from duplicating a
+// spawn marker that raced just ahead of the next poll.
+new bool:g_kscLifePhysicalAlive[MAX_PLAYERS + 1]
+new bool:g_kscLifeOpen[MAX_PLAYERS + 1]
+new g_kscLifeMatchId[64]
+new bool:g_kscLifeBaselinePending = true
+
+// Authoritative producer context comes from KTPMatchHandler's AMXX
+// multi-forwards, not from receipt-time daemon memory. DODX's match id must
+// agree before any event is stamped; half 101+ is normalized to DB half 3+.
+new g_kscProducerMatchId[64]
+new g_kscProducerHalf = 0
+new bool:g_kscProducerContextConfirmed = false
 
 new g_kscCvarEnabled
 
@@ -184,11 +216,101 @@ stock ksc_buffer(const line[]) {
 	g_kscBufferCount++
 }
 
+stock ksc_normalize_match_half(half) {
+	if (half == 1 || half == 2)
+		return half
+	if (half >= 101 && half <= 353)
+		return half - 98
+	return 0
+}
+
+stock ksc_on_match_start(const matchid[], half) {
+	new normalized_half = ksc_normalize_match_half(half)
+	if (!matchid[0] || normalized_half == 0) {
+		g_kscProducerMatchId[0] = 0
+		g_kscProducerHalf = 0
+		g_kscProducerContextConfirmed = false
+		g_kscLifeBaselinePending = true
+		ksc_clear_open_lives()
+		return
+	}
+
+	copy(g_kscProducerMatchId, charsmax(g_kscProducerMatchId), matchid)
+	g_kscProducerHalf = normalized_half
+	g_kscProducerContextConfirmed = false
+	g_kscLifeBaselinePending = true
+	ksc_clear_open_lives()
+}
+
+stock ksc_on_match_context_end(const matchid[]) {
+	if (!g_kscProducerMatchId[0] || !equal(matchid, g_kscProducerMatchId))
+		return
+
+	// Preserve ordering: drain boundaries while this exact producer context is
+	// still known, then make later warmup/disconnect events fail closed.
+	ksc_flush()
+	g_kscProducerMatchId[0] = 0
+	g_kscProducerHalf = 0
+	g_kscProducerContextConfirmed = false
+	g_kscLifeBaselinePending = true
+	ksc_clear_open_lives()
+}
+
+stock bool:ksc_event_context(matchid[], len, &half) {
+	// `-` is an explicit non-context sentinel for the optional damage/frag/
+	// assist fields. Never emit an empty quoted property: older property parsers
+	// could consume following fields when faced with `(matchid "")`.
+	copy(matchid, len, "-")
+	half = 0
+	if (!g_kscProducerMatchId[0] || g_kscProducerHalf == 0)
+		return false
+
+	new dodx_matchid[64]
+	dodx_get_match_id(dodx_matchid, charsmax(dodx_matchid))
+	if (!dodx_matchid[0] || !equal(dodx_matchid, g_kscProducerMatchId)) {
+		// Some teardown paths omit a match-end forward. DODX is the authoritative
+		// invalidation edge once it has agreed. Before first agreement the producer
+		// forward may legitimately precede DODX's round-live id write; keep that
+		// pending context but emit nothing. Never reconstruct a half mid-match.
+		if (g_kscProducerContextConfirmed) {
+			g_kscProducerMatchId[0] = 0
+			g_kscProducerHalf = 0
+			g_kscProducerContextConfirmed = false
+			g_kscLifeBaselinePending = true
+			ksc_clear_open_lives()
+		}
+		return false
+	}
+
+	g_kscProducerContextConfirmed = true
+	copy(matchid, len, g_kscProducerMatchId)
+	half = g_kscProducerHalf
+	return true
+}
+
+stock bool:ksc_life_buffer(const line[]) {
+	if (g_kscLifeBufferCount >= KSC_LIFE_BUF_MAX_ENTRIES) {
+		g_kscLifeDropped++
+		return false
+	}
+
+	copy(g_kscLifeBuffer[g_kscLifeBufferCount], KSC_LIFE_BUF_LINE_LEN - 1, line)
+	g_kscLifeBufferCount++
+	return true
+}
+
 public ksc_flush_task() {
 	ksc_flush()
 }
 
 stock ksc_flush() {
+	// MatchHandler calls this before it clears context. Drain the durable,
+	// low-volume control-plane queue before the high-volume capture queue.
+	for (new i = 0; i < g_kscLifeBufferCount; i++)
+		log_message("%s", g_kscLifeBuffer[i])
+
+	g_kscLifeBufferCount = 0
+
 	for (new i = 0; i < g_kscBufferCount; i++)
 		log_message("%s", g_kscBuffer[i])
 
@@ -197,6 +319,10 @@ stock ksc_flush() {
 	if (g_kscDropped > 0) {
 		log_amx("[KTP-STATS] dropped %d capture line(s) -- buffer full", g_kscDropped)
 		g_kscDropped = 0
+	}
+	if (g_kscLifeDropped > 0) {
+		log_amx("[KTP-STATS] dropped %d LIFE boundary line(s) -- dedicated buffer full", g_kscLifeDropped)
+		g_kscLifeDropped = 0
 	}
 }
 
@@ -270,6 +396,171 @@ stock ksc_clear_player(id) {
 
 	g_kscLastEnemyAttacker[id] = 0
 	g_kscScoped[id] = 0
+	g_kscLifePhysicalAlive[id] = false
+	g_kscLifeOpen[id] = false
+}
+
+// ---------------------------------------------------------------------------
+// Durable private life boundaries
+//
+// DoD has continuous respawns, so a half-level "survived" flag is not a
+// meaningful KOST analogue. These markers expose the physical life windows
+// without assigning any rating or public interpretation in the game plugin.
+// The daemon stores them in a private canonical ledger; analytics can derive
+// survival, per-life K/A/D, and KAT-style coverage later.
+
+stock ksc_clear_open_lives() {
+	for (new id = 1; id <= MAX_PLAYERS; id++)
+		g_kscLifeOpen[id] = false
+}
+
+// Observe the match-id edge without adding a DODX/core API. The 0.5-second
+// zone task supplies the normal transition baseline, while spawn/death/
+// disconnect call this too so an event racing ahead of that poll is stamped
+// with the correct context. Empty is a real state: remembering the gap lets
+// the same match id used by the next half trigger a fresh baseline.
+stock ksc_observe_life_context(const matchid[]) {
+	if (!matchid[0]) {
+		if (g_kscLifeMatchId[0] || !g_kscLifeBaselinePending) {
+			g_kscLifeMatchId[0] = 0
+			g_kscLifeBaselinePending = true
+			ksc_clear_open_lives()
+		}
+		return
+	}
+
+	if (equal(matchid, g_kscLifeMatchId))
+		return
+
+	copy(g_kscLifeMatchId, charsmax(g_kscLifeMatchId), matchid)
+	g_kscLifeBaselinePending = true
+	ksc_clear_open_lives()
+}
+
+// One player-action marker per physical boundary. Explicit matchid makes the
+// record self-describing even if the daemon sees it after a context transition.
+// `event_epoch` is get_systime() (whole seconds) while `game_time` preserves
+// intra-map ordering at sub-second precision.
+stock bool:ksc_emit_life_boundary(id, const matchid[], const kind[], const reason[]) {
+	if (!ksc_enabled() || !matchid[0])
+		return false
+	if (id < 1 || id > MAX_PLAYERS)
+		return false
+	new producer_matchid[64], producer_half
+	if (!ksc_event_context(producer_matchid, charsmax(producer_matchid), producer_half) ||
+		!equal(matchid, producer_matchid))
+		return false
+
+	new player_str[96]
+	ksc_player_str(id, player_str, charsmax(player_str))
+
+	new team = get_user_team(id)
+	// The engine can report spectator as team 3 during a late disconnect.
+	// The durable schema uses 0 for unassigned/non-playing state and reserves
+	// 1/2 for Allies/Axis, so normalize instead of emitting a marker the daemon
+	// must reject.
+	if (team != 1 && team != 2)
+		team = 0
+	new class_id = dod_get_user_class(id)
+	new event_epoch = get_systime()
+	new Float:game_time = get_gametime()
+
+	new line[KSC_LIFE_BUF_LINE_LEN]
+	formatex(line, charsmax(line),
+		"^"%s^" triggered ^"life_boundary^" (matchid ^"%s^") (half ^"%d^") (event_epoch ^"%d^") (game_time ^"%.2f^") (kind ^"%s^") (reason ^"%s^") (team ^"%d^") (class ^"%d^") (slot ^"%d^")",
+		player_str, producer_matchid, producer_half, event_epoch, game_time,
+		kind, reason, team, class_id, id)
+	return ksc_life_buffer(line)
+}
+
+stock ksc_life_start(id, const reason[]) {
+	if (id < 1 || id > MAX_PLAYERS)
+		return
+
+	// Do not suppress an authoritative spawn merely because the prior start is
+	// still open. That shape means its end was missed; the next start is the
+	// truthful boundary that lets the derivation layer right-censor the old
+	// life. Only the synthetic context baseline is duplicate-suppressed below.
+	g_kscLifePhysicalAlive[id] = true
+
+	new matchid[64]
+	dodx_get_match_id(matchid, charsmax(matchid))
+	ksc_observe_life_context(matchid)
+
+	if (ksc_emit_life_boundary(id, matchid, "start", reason))
+		g_kscLifeOpen[id] = true
+	else
+		// Retry as a left-censored context baseline on the next zone poll.
+		g_kscLifeBaselinePending = true
+}
+
+stock ksc_life_end(id, const reason[]) {
+	if (id < 1 || id > MAX_PLAYERS)
+		return
+
+	new matchid[64]
+	dodx_get_match_id(matchid, charsmax(matchid))
+	ksc_observe_life_context(matchid)
+
+	// Emit an authoritative death even if its start raced the context baseline;
+	// that is an honest left-censored life and is preferable to losing the end.
+	ksc_emit_life_boundary(id, matchid, "end", reason)
+	g_kscLifePhysicalAlive[id] = false
+	g_kscLifeOpen[id] = false
+}
+
+// A context can become live after the clan-restart spawn has already fired.
+// Baseline every connected+alive player exactly once on the empty->populated
+// or changed-id edge. This runs even on maps with no objective entities.
+stock ksc_sync_life_context() {
+	new matchid[64]
+	dodx_get_match_id(matchid, charsmax(matchid))
+	ksc_observe_life_context(matchid)
+
+	// Validate even on the empty-context branch below. Some teardown paths do
+	// not fire match_end; this periodic check is what invalidates an already
+	// confirmed producer half as soon as DODX clears or changes its id.
+	if (g_kscProducerContextConfirmed) {
+		new checked_matchid[64], checked_half
+		ksc_event_context(checked_matchid, charsmax(checked_matchid), checked_half)
+	}
+
+	if (!matchid[0] || !g_kscLifeBaselinePending || !ksc_enabled())
+		return
+
+	new bool:all_queued = true
+	for (new id = 1; id <= MAX_PLAYERS; id++) {
+		if (!is_user_connected(id) || !is_user_alive(id))
+			continue
+
+		g_kscLifePhysicalAlive[id] = true
+		if (g_kscLifeOpen[id])
+			continue
+
+		if (ksc_emit_life_boundary(id, matchid, "start", "context_live"))
+			g_kscLifeOpen[id] = true
+		else
+			all_queued = false
+	}
+
+	// A partial pass remains pending. Successfully queued slots are already open
+	// and are skipped when the 0.5s poll retries the remainder.
+	g_kscLifeBaselinePending = !all_queued
+}
+
+// Called from stats_logging.sma before recycled-slot state is cleared. AMXX's
+// disconnect forward can no longer be trusted to report is_user_alive(), so
+// use the spawn/death-tracked physical state instead.
+stock ksc_on_disconnect(id) {
+	if (id < 1 || id > MAX_PLAYERS || !g_kscLifePhysicalAlive[id])
+		return
+
+	new matchid[64]
+	dodx_get_match_id(matchid, charsmax(matchid))
+	ksc_observe_life_context(matchid)
+	ksc_emit_life_boundary(id, matchid, "end", "disconnect")
+	g_kscLifePhysicalAlive[id] = false
+	g_kscLifeOpen[id] = false
 }
 
 // DODX forward. The only source for live scope state; there is no getter.
@@ -316,6 +607,7 @@ public client_damage(attacker, victim, damage, wpnindex, hitplace, TA) {
 // row, so damage from a previous life can't carry over if a death was missed.
 public dod_client_spawn(id) {
 	ksc_clear_damage_row(id)
+	ksc_life_start(id, "spawn")
 }
 
 // ---------------------------------------------------------------------------
@@ -573,6 +865,11 @@ stock ksc_queue_break_candidate(killer, victim, TK) {
 }
 
 public ksc_zone_poll_task() {
+	// Match-context transition detection must not depend on a map having flags.
+	// It also deliberately precedes the capture kill switch's early return so
+	// an empty context always resets the pending baseline/open-life state.
+	ksc_sync_life_context()
+
 	if (!ksc_enabled())
 		return
 	if (g_kscFlagCount <= 0)
@@ -802,12 +1099,16 @@ stock ksc_emit_damage(attacker, victim, damage, wpnindex, hitplace) {
 
 	new damage_capped = (damage > KSC_DAMAGE_CAP) ? KSC_DAMAGE_CAP : damage
 	new Float:gt = get_gametime()
+	new event_epoch = get_systime()
+	new producer_matchid[64], producer_half
+	copy(producer_matchid, charsmax(producer_matchid), "-")
+	ksc_event_context(producer_matchid, charsmax(producer_matchid), producer_half)
 
 	new line[KSC_BUF_LINE_LEN]
 	formatex(line, charsmax(line),
-		"^"%s^" triggered ^"damage^" against ^"%s^" with ^"%s^" (damage ^"%d^") (damage_capped ^"%d^") (hitplace ^"%d^") (game_time ^"%.2f^")",
+		"^"%s^" triggered ^"damage^" against ^"%s^" with ^"%s^" (damage ^"%d^") (damage_capped ^"%d^") (hitplace ^"%d^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^")",
 		attacker_str, victim_str, weapon,
-		damage, damage_capped, hitplace, gt)
+		damage, damage_capped, hitplace, producer_matchid, producer_half, gt, event_epoch)
 
 	ksc_buffer(line)
 }
@@ -891,24 +1192,31 @@ stock ksc_emit_frag_context(killer, victim, wpnindex, hitplace) {
 
 	new killer_team = get_user_team(killer)
 	new is_last_flag_defense = ksc_is_last_flag_defense(killer, killer_team) ? 1 : 0
+	new event_epoch = get_systime()
+	new Float:game_time = get_gametime()
+	new producer_matchid[64], producer_half
+	copy(producer_matchid, charsmax(producer_matchid), "-")
+	ksc_event_context(producer_matchid, charsmax(producer_matchid), producer_half)
 
 	new line[KSC_BUF_LINE_LEN]
 	if (have_k_pos && have_v_pos)
 		formatex(line, charsmax(line),
-			"^"%s^" triggered ^"frag_context^" against ^"%s^" with ^"%s^" (headshot ^"%d^") (k_prone ^"%d^") (v_prone ^"%d^") (k_scope ^"%d^") (v_scope ^"%d^") (k_clip ^"%d^") (k_ammo ^"%d^") (v_clip ^"%d^") (v_ammo ^"%d^") (k_position ^"%s^") (v_position ^"%s^") (is_last_flag_defense ^"%d^")",
+			"^"%s^" triggered ^"frag_context^" against ^"%s^" with ^"%s^" (headshot ^"%d^") (k_prone ^"%d^") (v_prone ^"%d^") (k_scope ^"%d^") (v_scope ^"%d^") (k_clip ^"%d^") (k_ammo ^"%d^") (v_clip ^"%d^") (v_ammo ^"%d^") (k_position ^"%s^") (v_position ^"%s^") (is_last_flag_defense ^"%d^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^")",
 			killer_str, victim_str, weapon,
 			headshot, k_prone, v_prone,
 			g_kscScoped[killer], g_kscScoped[victim],
 			k_clip, k_ammo, v_clip, v_ammo,
-			k_pos, v_pos, is_last_flag_defense)
+			k_pos, v_pos, is_last_flag_defense,
+			producer_matchid, producer_half, game_time, event_epoch)
 	else
 		formatex(line, charsmax(line),
-			"^"%s^" triggered ^"frag_context^" against ^"%s^" with ^"%s^" (headshot ^"%d^") (k_prone ^"%d^") (v_prone ^"%d^") (k_scope ^"%d^") (v_scope ^"%d^") (k_clip ^"%d^") (k_ammo ^"%d^") (v_clip ^"%d^") (v_ammo ^"%d^") (is_last_flag_defense ^"%d^")",
+			"^"%s^" triggered ^"frag_context^" against ^"%s^" with ^"%s^" (headshot ^"%d^") (k_prone ^"%d^") (v_prone ^"%d^") (k_scope ^"%d^") (v_scope ^"%d^") (k_clip ^"%d^") (k_ammo ^"%d^") (v_clip ^"%d^") (v_ammo ^"%d^") (is_last_flag_defense ^"%d^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^")",
 			killer_str, victim_str, weapon,
 			headshot, k_prone, v_prone,
 			g_kscScoped[killer], g_kscScoped[victim],
 			k_clip, k_ammo, v_clip, v_ammo,
-			is_last_flag_defense)
+			is_last_flag_defense,
+			producer_matchid, producer_half, game_time, event_epoch)
 
 	ksc_buffer(line)
 }
@@ -921,6 +1229,13 @@ stock ksc_emit_frag_context(killer, victim, wpnindex, hitplace) {
 // behind while the cvar is off would let stale damage credit an assist on some
 // much later death once it is switched back on.
 stock ksc_on_death(killer, victim, wpnindex, hitplace, TK) {
+	// Physical boundaries are intentionally independent of the stats-pause
+	// gate: round-freeze deaths still happened. The plugin cannot truthfully
+	// stamp their live/freeze state without a DODX getter, so this raw ledger
+	// leaves that classification to later context. An empty match id (warmup)
+	// still fails closed.
+	ksc_life_end(victim, "death")
+
 	ksc_queue_break_candidate(killer, victim, TK)
 
 	// No TK exclusion, matching the old headshot-only marker it replaces --
@@ -938,6 +1253,11 @@ stock ksc_on_death(killer, victim, wpnindex, hitplace, TK) {
 		new victim_str[96], victim_pos[40]
 		new bool:built_victim_str = false
 		new bool:have_victim_pos = false
+		new producer_matchid[64], producer_half
+		copy(producer_matchid, charsmax(producer_matchid), "-")
+		ksc_event_context(producer_matchid, charsmax(producer_matchid), producer_half)
+		new event_epoch = get_systime()
+		new Float:game_time = get_gametime()
 
 		for (new a = 1; a <= MAX_PLAYERS; a++) {
 			if (a == killer || a == final_attacker || a == victim)
@@ -974,20 +1294,24 @@ stock ksc_on_death(killer, victim, wpnindex, hitplace, TK) {
 			// property rather than writing a bogus map-origin coordinate.
 			if (have_assister_pos && have_victim_pos)
 				formatex(line, charsmax(line),
-					"^"%s^" triggered ^"assist^" against ^"%s^" (assister_position ^"%s^") (victim_position ^"%s^")",
-					assister_str, victim_str, assister_pos, victim_pos)
+					"^"%s^" triggered ^"assist^" against ^"%s^" (assister_position ^"%s^") (victim_position ^"%s^") (matchid ^"%s^") (half ^"%d^") (event_epoch ^"%d^") (game_time ^"%.2f^")",
+					assister_str, victim_str, assister_pos, victim_pos,
+					producer_matchid, producer_half, event_epoch, game_time)
 			else if (have_assister_pos)
 				formatex(line, charsmax(line),
-					"^"%s^" triggered ^"assist^" against ^"%s^" (assister_position ^"%s^")",
-					assister_str, victim_str, assister_pos)
+					"^"%s^" triggered ^"assist^" against ^"%s^" (assister_position ^"%s^") (matchid ^"%s^") (half ^"%d^") (event_epoch ^"%d^") (game_time ^"%.2f^")",
+					assister_str, victim_str, assister_pos,
+					producer_matchid, producer_half, event_epoch, game_time)
 			else if (have_victim_pos)
 				formatex(line, charsmax(line),
-					"^"%s^" triggered ^"assist^" against ^"%s^" (victim_position ^"%s^")",
-					assister_str, victim_str, victim_pos)
+					"^"%s^" triggered ^"assist^" against ^"%s^" (victim_position ^"%s^") (matchid ^"%s^") (half ^"%d^") (event_epoch ^"%d^") (game_time ^"%.2f^")",
+					assister_str, victim_str, victim_pos,
+					producer_matchid, producer_half, event_epoch, game_time)
 			else
 				formatex(line, charsmax(line),
-					"^"%s^" triggered ^"assist^" against ^"%s^"",
-					assister_str, victim_str)
+					"^"%s^" triggered ^"assist^" against ^"%s^" (matchid ^"%s^") (half ^"%d^") (event_epoch ^"%d^") (game_time ^"%.2f^")",
+					assister_str, victim_str,
+					producer_matchid, producer_half, event_epoch, game_time)
 
 			ksc_buffer(line)
 		}

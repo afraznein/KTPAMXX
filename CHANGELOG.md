@@ -42,6 +42,52 @@ The `main` fixes and the 2.7.31 cut were developed in parallel and neither shipp
 with the other; merging them changes the compiled module, so 2.7.31's pinned md5
 no longer describes this tree. See the 2.7.32 note.
 
+### Added
+- **Durable private life-boundary markers for continuous-respawn analytics**
+  (`ktp_stats_capture.inc`, `stats_logging.sma` 1.15.6 -> 1.16.0). The plugin
+  now emits buffered `life_boundary` player actions for `start/spawn`,
+  `start/context_live`, `end/death`, and `end/disconnect`, carrying explicit
+  `matchid`, authoritative producer `half`, wall-clock `event_epoch`,
+  map-relative `game_time`, team, class, and client slot. Producer context is
+  cached only from KTPMatchHandler's `ktp_match_start` multi-forward and must
+  agree with DODX's exact match id; empty/mismatched DODX context invalidates
+  the cache and capture never infers a half mid-match. This is canonical capture only;
+  it does not add a rating or publish player paths.
+  - Warmup remains fail-closed: an empty DODX match id emits no boundary.
+    Round-freeze events are not discarded. This first increment deliberately
+    does not stamp `round_live`: MatchHandler's `dodx_set_stats_paused()` state
+    is private to DODX and is not mirrored authoritatively by the public
+    `dodstats_pause` cvar. Emitting that cvar would create false data; adding a
+    trustworthy state field requires a later API or producer change.
+  - The existing 0.5-second task detects empty-to-populated and changed match
+    contexts before its no-flags early return. It baselines connected, alive
+    players as `context_live`, covering the production ordering where the clan
+    restart spawn precedes MatchHandler setting the match id. Observing the
+    empty gap makes the same id reusable for the next half without suppressing
+    its baseline.
+  - Live disconnects close the life before recycled-slot capture state is
+    cleared. Death ends are emitted from the existing `client_death` path, and
+    spawns retain the existing assist-ledger reset before opening the new life.
+  - Life markers use their own 64-entry high-priority ring instead of sharing
+    the bursty damage/frag ring. Its enqueue API reports failure truthfully,
+    baseline starts retry without marking a slot open, and its independent
+    drop counter remains loud in the AMXX log.
+  - `dod_stats_flush` now drains the private capture ring before every
+    connected/bot/stats-pause early return. MatchHandler invokes that forward
+    before clearing context, so already-buffered boundaries cannot arrive late
+    and lose attribution.
+  - `frag_context` and `damage` now also carry producer match/half plus
+    `event_epoch`/`game_time`; the existing `assist` action carries the same
+    four fields for a canonical companion ledger while retaining its generic
+    rating-neutral action. The general line buffer is 768 bytes so the
+    maximum-width clocked frag marker cannot be silently truncated.
+  - `scripts/test_stats_life_boundaries.py` locks the marker schema and the
+    ordering/gating invariants; CI runs it with Python before the native build.
+
+  Deployment requires a full HLDS/AMXX process restart: MatchHandler's
+  multi-forward consumer list is snapshotted when created, so late-loading only
+  `stats_logging.amxx` correctly leaves producer context fail-closed.
+
 ### Fixed
 - **A newly started capture can no longer be missed by cap-break candidate
   selection** (`ktp_stats_capture.inc`, `stats_logging.sma` 1.15.5 ->
