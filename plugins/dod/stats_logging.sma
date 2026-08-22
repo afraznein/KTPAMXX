@@ -15,13 +15,13 @@
 #include <amxmodx>
 #include <dodx>
 
+#define PLUGIN_VERSION "1.17.0"
+
 // KTP: extra per-match stat capture for HLStatsX (assists, cap breaks,
 // positions and frag context today; the per-hit damage ledger in a later
 // phase). Self-contained -- it shares no state with this file. See its
 // header for why.
 #include "ktp_stats_capture"
-
-#define PLUGIN_VERSION "1.16.2"
 
 // KTP: Buffered logging to avoid synchronous file I/O during postthink.
 // client_death fires inside SV_RunCmd postthink phase — a single log_message()

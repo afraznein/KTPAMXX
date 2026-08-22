@@ -43,6 +43,13 @@ with the other; merging them changes the compiled module, so 2.7.31's pinned md5
 no longer describes this tree. See the 2.7.32 note.
 
 ### Added
+- **Capture observability contract** (`stats_logging.sma` 1.16.2 -> 1.17.0).
+  Every half emits its producer version, schema contract, capability set,
+  position cadence, and buffer sizes. All custom markers carry one monotonic
+  producer sequence; end-of-half records report attempted, enqueued, dropped,
+  and emitted counts for eight event classes. Static flag positions are
+  idempotently re-emitted after the authoritative match context is confirmed,
+  and cap-break context carries exact flag, victim, and incident identity.
 - **Durable private life-boundary markers for continuous-respawn analytics**
   (`ktp_stats_capture.inc`, `stats_logging.sma` 1.15.6 -> 1.16.0). The plugin
   now emits buffered `life_boundary` player actions for `start/spawn`,
