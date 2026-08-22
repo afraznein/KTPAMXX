@@ -25,8 +25,8 @@
 // headshot_kill marker: both used the identical technique -- buffer a marker
 // after the kill line, then have the daemon flush and UPDATE the just-inserted
 // Frags row by (killerId, victimId, weapon) ORDER BY id DESC LIMIT 1 -- so
-// firing it unconditionally with headshot as one more property is one queued
-// line and one daemon UPDATE per kill instead of two.
+// firing it for each non-teamkill frag with headshot as one more property is
+// one queued line and one daemon UPDATE per Frags row instead of two.
 //
 // Most lines intentionally omit a match id. hlstats.pl's recordEvent() injects
 // match_id server-side and gates it on its KTP_ROUND_LIVE/FREEZE state. The one
@@ -66,6 +66,7 @@
 #define KSC_BREAK_QUEUE_MAX 6   // concurrent pending killers per flag
 #define KSC_BREAK_WINDOW    5   // polls a candidate stays live (~2.5s)
 #define KSC_BREAK_RADIUS    512.0
+#define KSC_ROUND_REBASE_EPSILON 0.01
 
 // Roster-position broadcast for positional/"holding" stats (map presence
 // beyond a discrete capture event) and, later, ninja-cap detection -- both
@@ -173,12 +174,16 @@ new g_kscBreakTtl[KSC_MAX_FLAGS][KSC_BREAK_QUEUE_MAX]  // polls left before expi
 new g_kscBreakCount[KSC_MAX_FLAGS]
 new g_kscBreakTeam[KSC_MAX_FLAGS]   // team being broken, latched with the first candidate
 new g_kscBreakBase[KSC_MAX_FLAGS]   // rolling in-zone baseline to measure drops against
+new Float:g_kscLastRoundTime = -1.0
+new bool:g_kscBreakBaselineSuppressed = true
+new g_kscCvarTimelimit
 
 stock ksc_init() {
 	// Runtime kill switch, so new capture can be shut off on a live server
 	// without a redeploy. Mirrors the dodstats_pause/isDSMActive() gate this
 	// plugin already uses for its stock output.
 	g_kscCvarEnabled = register_cvar("ktp_stats_capture", "1")
+	g_kscCvarTimelimit = get_cvar_pointer("mp_timelimit")
 }
 
 stock ksc_cfg() {
@@ -225,6 +230,11 @@ stock ksc_normalize_match_half(half) {
 }
 
 stock ksc_on_match_start(const matchid[], half) {
+	// A match/half boundary invalidates every observation made against the
+	// previous round. Suppress one fresh zone baseline even when the clock is
+	// unavailable, so a warmup candidate cannot drain into go-live counts.
+	ksc_break_reset_boundary()
+
 	new normalized_half = ksc_normalize_match_half(half)
 	if (!matchid[0] || normalized_half == 0) {
 		g_kscProducerMatchId[0] = 0
@@ -245,6 +255,7 @@ stock ksc_on_match_start(const matchid[], half) {
 stock ksc_on_match_context_end(const matchid[]) {
 	if (!g_kscProducerMatchId[0] || !equal(matchid, g_kscProducerMatchId))
 		return
+	ksc_break_reset_boundary()
 
 	// Preserve ordering: drain boundaries while this exact producer context is
 	// still known, then make later warmup/disconnect events fail closed.
@@ -273,6 +284,10 @@ stock bool:ksc_event_context(matchid[], len, &half) {
 		// forward may legitimately precede DODX's round-live id write; keep that
 		// pending context but emit nothing. Never reconstruct a half mid-match.
 		if (g_kscProducerContextConfirmed) {
+			// Some force-reset/abandon exits clear DODX context without firing
+			// ktp_half_end/ktp_match_end. Treat that authoritative mismatch as
+			// the same capture boundary so a queued break cannot drain in warmup.
+			ksc_break_reset_boundary()
 			g_kscProducerMatchId[0] = 0
 			g_kscProducerHalf = 0
 			g_kscProducerContextConfirmed = false
@@ -637,6 +652,60 @@ stock ksc_break_clear(f) {
 	g_kscBreakBase[f]  = 0
 }
 
+stock ksc_break_clear_all() {
+	for (new f = 0; f < g_kscFlagCount; f++)
+		ksc_break_clear(f)
+}
+
+stock ksc_break_reset_boundary() {
+	ksc_break_clear_all()
+	g_kscLastRoundTime = -1.0
+	g_kscBreakBaselineSuppressed = true
+}
+
+// The DODX clock projects from m_flRestartRoundTime as soon as a clan restart
+// is scheduled, before the engine zeroes objective occupancies. That produces
+// an authoritative upward rebase without depending on RoundState user messages
+// (which are absent in all-bot Lane B). Once observed, suppress and clear break
+// candidates for the whole projected countdown, then suppress one final poll
+// at completion so its zeroed counts become the new baseline rather than a
+// burst of phantom breaks.
+stock bool:ksc_break_observe_round_clock() {
+	new Float:current = dodx_get_round_time()
+	if (current < 0.0) {
+		// There is no safe way to distinguish an ordinary occupancy drop from
+		// a round-reset collapse while the authoritative clock is unavailable.
+		// Stay fail-closed on every poll, not just the first one: callers clear
+		// all candidates and the per-flag loop below still refreshes the live
+		// count baselines. Keeping suppression armed also makes recovery consume
+		// one fresh baseline before break evaluation resumes.
+		g_kscLastRoundTime = -1.0
+		g_kscBreakBaselineSuppressed = true
+		return true
+	}
+
+	new Float:limit = -1.0
+	if (g_kscCvarTimelimit)
+		limit = get_pcvar_float(g_kscCvarTimelimit) * 60.0
+
+	// The native's countdown projection is mathematically above the nominal
+	// limit until the scheduled restart target. Do not add a tolerance here:
+	// even a small one can release suppression before objective counts reset.
+	new bool:countdown = (limit > 0.0 && current > limit)
+	new bool:rebased = (g_kscLastRoundTime >= 0.0 &&
+		current > g_kscLastRoundTime + KSC_ROUND_REBASE_EPSILON)
+	g_kscLastRoundTime = current
+
+	if (rebased || countdown)
+		g_kscBreakBaselineSuppressed = true
+
+	new bool:suppress_now = g_kscBreakBaselineSuppressed
+	if (g_kscBreakBaselineSuppressed && !countdown)
+		g_kscBreakBaselineSuppressed = false
+
+	return suppress_now
+}
+
 stock ksc_break_shift(f) {
 	for (new i = 1; i < g_kscBreakCount[f]; i++) {
 		g_kscBreakQ[f][i - 1]   = g_kscBreakQ[f][i]
@@ -817,12 +886,33 @@ stock ksc_break_flag_for_victim(victim, victim_team) {
 	return best_flag
 }
 
+// DeathMsg is the no-Damage fallback for world/suicide deaths. Its DODX
+// client_death dispatch has degraded TK=0 semantics, and the documented 33ms
+// Damage/DeathMsg race can put a real teamkill on that path. Reconstruct the
+// same-team fact while both slots are still live so neither break attribution
+// nor the Frags-only context marker trusts that lossy bit alone.
+stock bool:ksc_effective_teamkill(killer, victim, TK) {
+	if (TK)
+		return true
+	if (killer < 1 || killer > MAX_PLAYERS ||
+			victim < 1 || victim > MAX_PLAYERS || killer == victim)
+		return false
+	if (!is_user_connected(killer) || !is_user_connected(victim))
+		return false
+
+	new killer_team = get_user_team(killer)
+	if (killer_team != KSC_TEAM_ALLIES && killer_team != KSC_TEAM_AXIS)
+		return false
+
+	return killer_team == get_user_team(victim)
+}
+
 // Called from ksc_on_death. A kill only becomes a break if the victim's team
 // was mid-capture somewhere and their in-zone count then drops.
-stock ksc_queue_break_candidate(killer, victim, TK) {
+stock ksc_queue_break_candidate(killer, victim, bool:teamkill) {
 	if (!ksc_enabled())
 		return
-	if (TK || killer == victim)
+	if (teamkill || killer == victim)
 		return
 	if (killer < 1 || killer > MAX_PLAYERS || !is_user_connected(killer))
 		return
@@ -870,12 +960,25 @@ public ksc_zone_poll_task() {
 	// an empty context always resets the pending baseline/open-life state.
 	ksc_sync_life_context()
 
-	if (!ksc_enabled())
+	if (!ksc_enabled()) {
+		// The runtime kill switch is also a capture-state boundary. Never let
+		// a queued candidate or an old count baseline survive a disabled
+		// restart and drain when capture is enabled again.
+		ksc_break_clear_all()
+		g_kscBreakBaselineSuppressed = true
 		return
+	}
 	if (g_kscFlagCount <= 0)
 		return
 
 	ksc_ensure_ownership_baseline()
+
+	// This runs before any per-flag count-drop processing. During a restart the
+	// loop still refreshes owner/capping/count caches, but pending killers are
+	// empty and break evaluation is explicitly suppressed for this baseline.
+	new bool:suppress_breaks = ksc_break_observe_round_clock()
+	if (suppress_breaks)
+		ksc_break_clear_all()
 
 	for (new f = 0; f < g_kscFlagCount; f++) {
 		new ac = dodx_area_get_data(f, CA_num_allies)
@@ -898,7 +1001,7 @@ public ksc_zone_poll_task() {
 		new is_capping = dodx_area_get_data(f, CA_is_capturing)
 		g_kscCapTeam[f] = is_capping ? dodx_area_get_data(f, CA_capturing_team) : 0
 
-		if (g_kscBreakCount[f] > 0) {
+		if (!suppress_breaks && g_kscBreakCount[f] > 0) {
 			new bt = g_kscBreakTeam[f]
 			new now_count = (bt == KSC_TEAM_ALLIES) ? ac : xc
 
@@ -940,6 +1043,8 @@ public controlpoints_init() {
 	g_kscFlagCount = dodx_objectives_get_num()
 	g_kscOwnershipBaselinePending = true
 	g_kscOwnershipMatchId[0] = 0
+	g_kscLastRoundTime = -1.0
+	g_kscBreakBaselineSuppressed = true
 
 	// Permanent, low-noise: controlpoints_init's own doc contract is "called
 	// AFTER map control point data is initialized", but dodx_objectives_get_num()
@@ -1154,10 +1259,11 @@ stock bool:ksc_is_last_flag_defense(killer, killer_team) {
 	return dist2 <= (KSC_LAST_FLAG_RADIUS * KSC_LAST_FLAG_RADIUS)
 }
 
-// frag_context: fired on every kill (not just headshots), carrying the state
-// that makes a kill legible after the fact -- was the victim prone, scoped,
-// out of ammo. Retires stats_logging.sma's old headshot-only marker; see the
-// file header for why one line replaces two.
+// frag_context: fired on every non-teamkill player frag (not just headshots),
+// carrying the state that makes a kill legible after the fact -- was the
+// victim prone, scoped, out of ammo. Teamkills live in a different HLStatsX
+// table with no context columns. Retires stats_logging.sma's old headshot-only
+// marker; see the file header for why one line replaces two.
 //
 // Same guard shape the old headshot marker used: skip suicides, skip a
 // disconnected participant. dod_get_pronestate returns 0 standing, 1 going
@@ -1236,12 +1342,14 @@ stock ksc_on_death(killer, victim, wpnindex, hitplace, TK) {
 	// still fails closed.
 	ksc_life_end(victim, "death")
 
-	ksc_queue_break_candidate(killer, victim, TK)
+	new bool:effectiveTeamkill = ksc_effective_teamkill(killer, victim, TK)
+	ksc_queue_break_candidate(killer, victim, effectiveTeamkill)
 
-	// No TK exclusion, matching the old headshot-only marker it replaces --
-	// that fired on any headshot kill regardless of TK, so this stays a
-	// superset rather than a narrower replacement.
-	if (ksc_enabled())
+	// frag_context is an UPDATE contract for hlstats_Events_Frags. HLStatsX
+	// stores teamkills in hlstats_Events_Teamkills instead, so emitting this
+	// marker for a TK can only produce a false no-row diagnostic (and has no
+	// Teamkills context columns to populate).
+	if (ksc_enabled() && !effectiveTeamkill)
 		ksc_emit_frag_context(killer, victim, wpnindex, hitplace)
 
 	if (victim < 1 || victim > MAX_PLAYERS)

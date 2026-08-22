@@ -89,6 +89,52 @@ no longer describes this tree. See the 2.7.32 note.
   `stats_logging.amxx` correctly leaves producer context fail-closed.
 
 ### Fixed
+- **Extension-mode gameconfig lookup now resolves the real game DLL through
+  Metamod's declared `mm_gamedll` path when the engine-facing callbacks are
+  anonymous trampolines** (`CGameConfigs.cpp`). This is the split-loader shape
+  used by the bot lane: KTP AMX remains a ReHLDS extension while Metamod hosts
+  the bot and loads `dod.so`. The fallback canonicalizes only the declared game
+  DLL, opens it with `RTLD_NOLOAD`, verifies the `GiveFnptrsToDll` anchor belongs
+  to that exact file, and then exposes its base to the existing signature
+  resolver. It neither guesses via entity wrappers nor loads a second DLL.
+  Direct production extension mode and ordinary Metamod-hosted KTP AMX retain
+  their existing `pfnSpawn`/`MDLL_Spawn` paths. Lane B now fails before gameplay
+  unless this resolves `g_pGameRules` and a valid DODX round clock.
+
+- **Round restarts in timed match configurations can no longer drain stale
+  cap-break candidates into phantom actions** (`ktp_stats_capture.inc`,
+  `stats_logging.sma` 1.16.0 -> 1.16.1).
+  The existing 0.5-second objective poll now observes DODX's authoritative
+  half clock before evaluating any per-flag count drop. An upward engine rebase
+  clears every pending killer; the projected clan-restart countdown and its
+  completion baseline remain suppressed until zeroed occupancies have been
+  refreshed. Match/half start and matching context end also clear the queue and
+  force a fresh baseline, preventing warmup or previous-half candidates from
+  crossing producer boundaries. If the authoritative clock is unavailable,
+  the producer now remains persistently fail-safe: every poll clears pending
+  candidates and refreshes live count baselines, and the first valid clock
+  sample after recovery is consumed as a fresh baseline before attribution
+  resumes. This intentionally disables cap-break attribution on untimed maps
+  or while gamerules/clock resolution is unavailable rather than risking a
+  phantom action. This uses the existing
+  `dodx_get_round_time()` native and does not add a RoundState, ReAPI, or core
+  module dependency.
+  Disabling `ktp_stats_capture` now clears the same queue and arms a fresh
+  baseline, so stale credit cannot cross a disabled/re-enabled interval.
+  Confirmed DODX context loss/mismatch also resets the queue and clock baseline,
+  covering force-reset and abandon teardown paths that intentionally do not fire
+  the normal half/match-end forwards.
+
+- **Teamkills no longer produce false missing-Frags diagnostics or cap-break
+  candidates when DODX's DeathMsg fallback loses its TK bit**
+  (`ktp_stats_capture.inc`, `stats_logging.sma` 1.16.1).
+  The producer derives an effective teamkill from either the forward's TK flag
+  or two valid, connected players on the same Allies/Axis team. That result is
+  shared by both candidate exclusion and `frag_context` emission. HLStatsX
+  stores teamkills in `hlstats_Events_Teamkills`, while `frag_context` is an
+  UPDATE contract for `hlstats_Events_Frags`; suppressing that marker is the
+  only truthful behavior until Teamkills has an explicit context schema.
+
 - **A newly started capture can no longer be missed by cap-break candidate
   selection** (`ktp_stats_capture.inc`, `stats_logging.sma` 1.15.5 ->
   1.15.6). Selection previously read the last 0.2-second cached capping team,

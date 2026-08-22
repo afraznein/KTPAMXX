@@ -21,7 +21,7 @@
 // header for why.
 #include "ktp_stats_capture"
 
-#define PLUGIN_VERSION "1.16.0"
+#define PLUGIN_VERSION "1.16.1"
 
 // KTP: Buffered logging to avoid synchronous file I/O during postthink.
 // client_death fires inside SV_RunCmd postthink phase — a single log_message()
@@ -178,14 +178,14 @@ stock log_player_stats(id) {
 
 // KTP: client_death dispatches into ktp_stats_capture.inc for everything
 // this fork adds on top of the stock plugin: assists, cap-break candidate
-// queuing, and frag_context (headshot/prone/scope/ammo on every kill).
+// queuing, and frag_context (headshot/prone/scope/ammo on every non-TK frag).
 //
 // frag_context replaced a dedicated "headshot_kill" marker that used to live
 // here directly (headshot-only, its own buffered log line). Both use the same
 // technique -- log a marker after the kill, daemon flushes and UPDATEs the
 // just-inserted Frags row by killerId/victimId/weapon -- so folding headshot
 // into frag_context as one more property means one queued line and one
-// daemon UPDATE per kill instead of two. See ktp_stats_capture.inc's header.
+// daemon UPDATE per Frags row instead of two. See ktp_stats_capture.inc's header.
 public client_death(killer, victim, wpnindex, hitplace, TK) {
   ksc_on_death(killer, victim, wpnindex, hitplace, TK)
 
