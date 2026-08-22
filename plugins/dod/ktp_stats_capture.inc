@@ -731,6 +731,26 @@ stock ksc_team_flag_count(team) {
 	return n
 }
 
+// A team owning one flag is not enough to call a capout threat. Neutral or
+// otherwise unaccounted-for flags make that inference false (observed live on
+// dod_thunder2, where the old one-sided check marked every central-point break
+// as a capout). Require a complete two-team partition: the defender owns this
+// final flag and the attacker owns every other objective.
+stock bool:ksc_is_full_capout_threat(defending_team) {
+	if (g_kscFlagCount < 2)
+		return false
+	if (defending_team != KSC_TEAM_ALLIES && defending_team != KSC_TEAM_AXIS)
+		return false
+
+	new attacking_team = (defending_team == KSC_TEAM_ALLIES) ? KSC_TEAM_AXIS : KSC_TEAM_ALLIES
+	if (ksc_team_flag_count(defending_team) != 1)
+		return false
+	if (ksc_team_flag_count(attacking_team) != g_kscFlagCount - 1)
+		return false
+
+	return true
+}
+
 stock ksc_normalize_owner(owner) {
 	// DODX can expose an authored/unowned point as -1 during initialization.
 	// The persisted contract uses the stable KTP team convention: 0=neutral,
@@ -815,7 +835,7 @@ stock ksc_emit_break(f, breaker, contester_count) {
 	// finished, i.e. they own exactly 1 right now: this one).
 	new Float:time_remaining = Float:dodx_area_get_data(f, CA_time_remaining)
 	new defending_team = (g_kscBreakTeam[f] == KSC_TEAM_ALLIES) ? KSC_TEAM_AXIS : KSC_TEAM_ALLIES
-	new is_capout = (ksc_team_flag_count(defending_team) == 1) ? 1 : 0
+	new is_capout = ksc_is_full_capout_threat(defending_team) ? 1 : 0
 
 	// Single-player action shape. Requires an hlstats_Actions row for
 	// game='dod', code='cap_break' with for_PlayerActions='1'.
@@ -1233,7 +1253,7 @@ stock ksc_emit_damage(attacker, victim, damage, wpnindex, hitplace) {
 // queue structurally cannot see a kill that never touched a capture zone.
 // 2D only: dodx.inc exposes no CP_origin_z, matching ksc_emit_flag_position.
 stock bool:ksc_is_last_flag_defense(killer, killer_team) {
-	if (ksc_team_flag_count(killer_team) != 1)
+	if (!ksc_is_full_capout_threat(killer_team))
 		return false
 
 	new last_flag = -1

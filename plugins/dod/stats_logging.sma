@@ -21,7 +21,7 @@
 // header for why.
 #include "ktp_stats_capture"
 
-#define PLUGIN_VERSION "1.16.1"
+#define PLUGIN_VERSION "1.16.2"
 
 // KTP: Buffered logging to avoid synchronous file I/O during postthink.
 // client_death fires inside SV_RunCmd postthink phase — a single log_message()

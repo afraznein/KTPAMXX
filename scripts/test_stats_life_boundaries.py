@@ -6,7 +6,8 @@ tests cover the failure-prone integration contract locally and in KTPAMXX CI:
 wire fields, warmup/round-live semantics, event-hook placement, transition
 baseline ordering, restart fail-safety, teamkill routing, flush-before-context-
 clear ordering, and the narrow extension-mode game-DLL resolver used by Lane
-B's split loader. KTPInfrastructure's Lane A/B tests remain responsible for
+clear ordering, objective-topology fail-safety, and the narrow extension-mode
+game-DLL resolver used by Lane B's split loader. KTPInfrastructure's Lane A/B tests remain responsible for
 runtime forward dispatch, ingestion, and behavioral gamerules/clock preflight.
 """
 
@@ -491,7 +492,19 @@ def test_physical_boundaries_do_not_use_stats_pause_gate() -> None:
 
 
 def test_plugin_version() -> None:
-    assert re.search(r'#define\s+PLUGIN_VERSION\s+"1\.16\.1"', STATS)
+    assert re.search(r'#define\s+PLUGIN_VERSION\s+"1\.16\.2"', STATS)
+
+
+def test_capout_requires_a_complete_two_team_partition() -> None:
+    predicate = function_body(CAPTURE, "stock bool:ksc_is_full_capout_threat")
+    assert "g_kscFlagCount < 2" in predicate
+    assert "ksc_team_flag_count(defending_team) != 1" in predicate
+    assert "ksc_team_flag_count(attacking_team) != g_kscFlagCount - 1" in predicate
+
+    break_body = function_body(CAPTURE, "stock ksc_emit_break")
+    defense_body = function_body(CAPTURE, "stock bool:ksc_is_last_flag_defense")
+    assert "ksc_is_full_capout_threat(defending_team)" in break_body
+    assert "ksc_is_full_capout_threat(killer_team)" in defense_body
 
 
 def main() -> None:
