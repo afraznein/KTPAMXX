@@ -273,6 +273,36 @@ static cell AMX_NATIVE_CALL dodx_get_user_origin(AMX *amx, cell *params)
 	return 1;
 }
 
+// KTP: Get player bounding box (extension mode compatible, no fakemeta needed)
+//
+// The companion to dodx_area_get_bounds. GoldSrc decides trigger membership by
+// BBOX OVERLAP, not by whether the origin is inside the brush, so a caller
+// asking "was this player in that zone?" needs the player's box too -- a point
+// test rejects players the engine itself counts as inside.
+//
+// absmin/absmax are world-space and already account for stance: a prone DoD
+// player has a flatter box than a standing one, which matters precisely at the
+// zone edges where these questions get decided.
+static cell AMX_NATIVE_CALL dodx_get_user_bounds(AMX *amx, cell *params)
+{
+	int index = params[1];
+	CHECK_PLAYER(index);
+
+	CPlayer* pPlayer = GET_PLAYER_POINTER_I(index);
+	if (!pPlayer->ingame || !pPlayer->pEdict || pPlayer->pEdict->free)
+		return 0;
+
+	cell *mins = MF_GetAmxAddr(amx, params[2]);
+	cell *maxs = MF_GetAmxAddr(amx, params[3]);
+	for (int i = 0; i < 3; i++)
+	{
+		mins[i] = amx_ftoc(pPlayer->pEdict->v.absmin[i]);
+		maxs[i] = amx_ftoc(pPlayer->pEdict->v.absmax[i]);
+	}
+
+	return 1;
+}
+
 // KTP: Set player origin (extension mode compatible, no fakemeta needed)
 static cell AMX_NATIVE_CALL dodx_set_user_origin(AMX *amx, cell *params)
 {
@@ -2386,6 +2416,7 @@ AMX_NATIVE_INFO base_Natives[] =
 	{"dodx_set_user_class", dodx_set_user_class},
 	{"dodx_set_user_team", dodx_set_user_team},
 	{"dodx_get_user_origin", dodx_get_user_origin},
+	{"dodx_get_user_bounds", dodx_get_user_bounds},
 	{"dodx_set_user_origin", dodx_set_user_origin},
 	{"dodx_get_user_angles", dodx_get_user_angles},
 	{"dodx_set_user_angles", dodx_set_user_angles},

@@ -640,8 +640,31 @@ void Client_InitObj(void* mValue)
 	case 3:
 		if (num < 12)
 		{
-			mObjects.obj[num].default_owner = *(int*)mValue;
-			mObjects.obj[num].owner = mObjects.obj[num].default_owner;
+			// KTP: field 3 is the LIVE owner, not the default. dodfun's
+			// CObjective::InitObj (CMisc.cpp) writes obj[i].owner here, and its
+			// nine WRITE_* calls line up one-for-one with cases 0-9 below; this
+			// was the only field whose name disagreed, and the name was wrong.
+			//
+			// Writing it into default_owner destroys the BSP seed that
+			// DODX_InitCPFromEntities() applies at ServerActivate. That used to
+			// be invisible because the entity scan runs AFTER the map-load
+			// InitObj and re-Clear()s everything, so the bad write was always
+			// overwritten a moment later. It only bites on a LATER InitObj —
+			// reorder or refresh — and the scan never runs again, so from that
+			// point default_owner reports whoever happens to hold the flag.
+			//
+			// A corrupted default_owner fails silently rather than loudly —
+			// downstream readers take it at face value and never cross-check it.
+			//
+			// A FIRST parse still seeds default_owner from it because mObjects was
+			// empty and nothing better exists yet — NOT because live equals default
+			// here, which a pdata read on jagd contradicts. Also keeps non-extension
+			// mode
+			// working, where DODX_InitCPFromEntities() returns at the
+			// g_bExtensionMode gate and never provides a seed at all.
+			mObjects.obj[num].owner = *(int*)mValue;
+			if (!s_initObjReorderMode)
+				mObjects.obj[num].default_owner = mObjects.obj[num].owner;
 		}
 		break;
 	case 4:
@@ -675,6 +698,13 @@ void Client_InitObj(void* mValue)
 			{
 				// Carry forward each CP's pAreaEdict pairing from the snapshot
 				// (matched by edict pointer — the only stable identifier).
+				//
+				// KTP: default_owner rides along for the same reason. A reorder
+				// Clear()s mObjects, and the message carries no default — field 3
+				// is the live owner (see case 3). The snapshot holds the BSP seed
+				// written by DODX_InitCPFromEntities(), which never runs again,
+				// so without this a reorder zeroes every CP's default for the
+				// rest of the map.
 				for (int i = 0; i < mObjects.count; i++)
 				{
 					for (int j = 0; j < s_initObjScanSnapshotCount; j++)
@@ -682,8 +712,9 @@ void Client_InitObj(void* mValue)
 						if (mObjects.obj[i].pEdict &&
 						    mObjects.obj[i].pEdict == s_initObjScanSnapshot[j].pEdict)
 						{
-							mObjects.obj[i].pAreaEdict = s_initObjScanSnapshot[j].pAreaEdict;
-							mObjects.obj[i].areaflags  = s_initObjScanSnapshot[j].areaflags;
+							mObjects.obj[i].pAreaEdict    = s_initObjScanSnapshot[j].pAreaEdict;
+							mObjects.obj[i].areaflags     = s_initObjScanSnapshot[j].areaflags;
+							mObjects.obj[i].default_owner = s_initObjScanSnapshot[j].default_owner;
 							break;
 						}
 					}

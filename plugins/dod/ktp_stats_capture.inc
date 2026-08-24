@@ -8,8 +8,9 @@
 // periodic roster-position broadcast for positional/"holding" stats and
 // (later) ninja-cap detection.
 //
-// Requires fakemeta in the including plugin: cap-break attribution reads the
-// capture zone's bounding box off its entity, which needs pev().
+// Cap-break attribution reads bounding boxes through dodx natives, NOT fakemeta:
+// `fakemeta.inc` carries `#pragma reqlib fakemeta`, and this fleet's modules.ini
+// lists only amxxcurl/reapi/dodx -- a plugin including it does not LOAD.
 //
 // SELF-CONTAINED BY DESIGN. Everything below declares its own state and reads
 // nothing from stats_logging.sma's globals -- deliberately unlike
@@ -135,10 +136,6 @@ new g_kscCvarEnabled
 
 // ---- Cap-break state, all in dodx objective/area index space ----
 new g_kscFlagCount = 0
-// Capture-zone entity per flag, resolved once at controlpoints_init. Every
-// geometric question about a zone is answered off this edict at runtime, so
-// nothing here goes stale when the map pool changes. -1 = unusable.
-new g_kscZoneEnt[KSC_MAX_FLAGS]
 new g_kscFlagName[KSC_MAX_FLAGS][32]
 
 new g_kscCapTeam[KSC_MAX_FLAGS]     // team currently capturing this point, 0 = none
@@ -505,23 +502,6 @@ stock ksc_emit_break_context(breaker, contester_count, Float:time_remaining, is_
 	ksc_buffer(line)
 }
 
-// The capture zone's entity, cached per flag. Rejects a zero-volume box: it
-// would match nothing and read as "this flag never sees a cap break", which
-// is indistinguishable from a quiet flag.
-stock ksc_zone_entity(f) {
-	new ent = dodx_area_get_data(f, CA_edict)
-	if (ent <= 0 || !pev_valid(ent))
-		return -1
-
-	new Float:mn[3], Float:mx[3]
-	pev(ent, pev_absmin, mn)
-	pev(ent, pev_absmax, mx)
-	if (mx[0] - mn[0] <= 0.0 || mx[1] - mn[1] <= 0.0 || mx[2] - mn[2] <= 0.0)
-		return -1
-
-	return ent
-}
-
 // The area API exposes aggregate team counts, not per-player membership, so
 // the flag a death belongs to has to be inferred. Ask whether the victim was
 // INSIDE the zone rather than how near the flag prop they were: a prop can sit
@@ -531,23 +511,9 @@ stock ksc_zone_entity(f) {
 // Box-vs-box, not point-in-box -- GoldSrc decides zone membership by bbox
 // overlap, so a point test would reject players the engine counts as in-zone.
 stock ksc_break_flag_for_victim(victim, victim_team) {
-	if (!pev_valid(victim))
-		return -1
-
 	new Float:vmin[3], Float:vmax[3]
-	pev(victim, pev_absmin, vmin)
-	pev(victim, pev_absmax, vmax)
-
-	// A degenerate box means the entity is not readable at this instant. Fall
-	// back to the origin as a point rather than matching nothing -- silent
-	// under-counting is the defect this change exists to remove.
-	if (vmin[0] == vmax[0] && vmin[1] == vmax[1]) {
-		new Float:o[3]
-		if (!dodx_get_user_origin(victim, o))
-			return -1
-		vmin = o
-		vmax = o
-	}
+	if (!dodx_get_user_bounds(victim, vmin, vmax))
+		return -1
 
 	new best_flag = -1
 	new Float:best_d2 = 0.0
@@ -560,13 +526,11 @@ stock ksc_break_flag_for_victim(victim, victim_team) {
 			dodx_area_get_data(f, CA_capturing_team) != victim_team)
 			continue
 
-		new ent = g_kscZoneEnt[f]
-		if (ent <= 0)
-			continue
-
+		// Returns 0 on a missing, freed or zero-volume area -- a flag that cannot
+		// answer is skipped, never silently matched.
 		new Float:zmin[3], Float:zmax[3]
-		pev(ent, pev_absmin, zmin)
-		pev(ent, pev_absmax, zmax)
+		if (!dodx_area_get_bounds(f, zmin, zmax))
+			continue
 
 		if (vmax[0] < zmin[0] || vmin[0] > zmax[0]) continue
 		if (vmax[1] < zmin[1] || vmin[1] > zmax[1]) continue
@@ -730,12 +694,12 @@ public controlpoints_init() {
 		g_kscPrevAllies[f] = 0
 		g_kscPrevAxis[f]   = 0
 		ksc_break_clear(f)
-		g_kscZoneEnt[f] = ksc_zone_entity(f)
 	}
 
 	new zones_ok = 0
+	new Float:zmn[3], Float:zmx[3]
 	for (new f = 0; f < g_kscFlagCount; f++)
-		if (g_kscZoneEnt[f] > 0)
+		if (dodx_area_get_bounds(f, zmn, zmx))
 			zones_ok++
 	// Loud at map start beats finding it as missing rows a season later: a flag
 	// with no usable zone can never report a cap break.

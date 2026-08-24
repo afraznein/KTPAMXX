@@ -651,6 +651,22 @@ native dodx_set_user_team(id, teamId, refresh = 1);
 native dodx_get_user_origin(id, Float:origin[3]);
 
 /**
+ * Get a player's world-space bounding box.
+ * Extension mode compatible alternative to pev(id, pev_absmin/pev_absmax).
+ *
+ * Needed for zone containment: GoldSrc decides trigger membership by BBOX
+ * OVERLAP, so a point-in-box test on the origin rejects players the engine
+ * itself counts as inside. The box also reflects stance -- a prone player is
+ * flatter -- which matters exactly at the zone edges.
+ *
+ * @param id        Player index
+ * @param mins      Float array[3] to store the box minimum (absmin)
+ * @param maxs      Float array[3] to store the box maximum (absmax)
+ * @return          1 on success, 0 on failure
+ */
+native dodx_get_user_bounds(id, Float:mins[3], Float:maxs[3]);
+
+/**
  * Set player origin (position/teleport).
  * Extension mode compatible alternative to set_pev/entity_set_origin.
  *
@@ -829,6 +845,28 @@ native dodx_area_get_data(index, CA_VALUE:key, szvalue[] = "", len = 0);
  * @return          1 on success, 0 if no area
  */
 native dodx_area_set_data(index, CA_VALUE:key, ivalue = 0, const szvalue[] = "");
+
+/**
+ * Get a capture zone's world-space bounding box.
+ * Extension mode compatible -- reads the brush entity directly, no fakemeta.
+ *
+ * Use this, NOT a radius around the control point. The flag prop and its
+ * capture trigger are separate entities and are not co-located: across the DoD
+ * pool some control points sit entirely OUTSIDE their own zone, and on
+ * dod_jagd the gap runs to thousands of units. A prop-anchored radius is
+ * therefore simultaneously too small on one map and far too large on another,
+ * whatever value it is given.
+ *
+ * Returns 0 for a zero-volume box rather than reporting one. Such a box would
+ * match nothing, which reads downstream as "this flag never sees a capture" --
+ * indistinguishable from a flag nobody contested.
+ *
+ * @param index     CP array index (0 to dodx_objectives_get_num()-1)
+ * @param mins      Float array[3] to store the box minimum (absmin)
+ * @param maxs      Float array[3] to store the box maximum (absmax)
+ * @return          1 on success, 0 if no area or the box is degenerate
+ */
+native dodx_area_get_bounds(index, Float:mins[3], Float:maxs[3]);
 
 // ==================================================================
 // TEST-ONLY forward dispatch primitives — Tier 2 integration tests

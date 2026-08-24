@@ -368,6 +368,55 @@ static cell AMX_NATIVE_CALL dodx_area_set_data(AMX *amx, cell *params)
 	return 1;
 }
 
+// KTP: dodx_area_get_bounds(index, Float:mins[3], Float:maxs[3])
+//
+// The capture zone's world-space bounding box, read straight off the brush
+// entity. Extension-mode safe: pEdict->v.* is HL SDK, no fakemeta involved.
+//
+// This exists because zone membership cannot be inferred from the control
+// point's position. The flag prop is a separate entity from its trigger and
+// the two are not co-located -- across the DoD pool some control points sit
+// entirely OUTSIDE their own capture zone, and on dod_jagd the gap is on the
+// order of thousands of units. Any prop-anchored radius is therefore too small
+// on one map and far too large on another at the same time, whatever value it
+// is given.
+//
+// absmin/absmax rather than mins/maxs: the former are already world-space and
+// account for the entity's origin, which is what a containment test needs.
+static cell AMX_NATIVE_CALL dodx_area_get_bounds(AMX *amx, cell *params)
+{
+	int index = params[1];
+	if (index < 0 || index >= mObjects.count)
+	{
+		MF_LogError(amx, AMX_ERR_NATIVE, "CP index out of range (%d)", index);
+		return 0;
+	}
+
+	GET_CAPTURE_AREA(index)
+
+	edict_t *pArea = mObjects.obj[index].pAreaEdict;
+	if (!pArea || pArea->free)
+		return 0;
+
+	// A zero-volume box matches nothing, which reads downstream as "this flag
+	// never sees a capture" -- indistinguishable from a quiet flag. Fail here
+	// so the caller can report it instead of silently under-counting forever.
+	if (pArea->v.absmax[0] - pArea->v.absmin[0] <= 0.0f ||
+	    pArea->v.absmax[1] - pArea->v.absmin[1] <= 0.0f ||
+	    pArea->v.absmax[2] - pArea->v.absmin[2] <= 0.0f)
+		return 0;
+
+	cell *mins = MF_GetAmxAddr(amx, params[2]);
+	cell *maxs = MF_GetAmxAddr(amx, params[3]);
+	for (int i = 0; i < 3; i++)
+	{
+		mins[i] = amx_ftoc(pArea->v.absmin[i]);
+		maxs[i] = amx_ftoc(pArea->v.absmax[i]);
+	}
+
+	return 1;
+}
+
 AMX_NATIVE_INFO cp_Natives[] = {
 	{ "dodx_objectives_get_num",  dodx_objectives_get_num },
 	{ "dodx_objective_get_data",  dodx_objective_get_data },
@@ -375,5 +424,6 @@ AMX_NATIVE_INFO cp_Natives[] = {
 	{ "dodx_objectives_reinit",   dodx_objectives_reinit },
 	{ "dodx_area_get_data",       dodx_area_get_data },
 	{ "dodx_area_set_data",       dodx_area_set_data },
+	{ "dodx_area_get_bounds",     dodx_area_get_bounds },
 	{ NULL, NULL }
 };
