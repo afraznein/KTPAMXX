@@ -1,6 +1,6 @@
 # KTP AMX
 
-**Version 2.7.31** | Modified AMX Mod X with ReHLDS extension mode, real-time client cvar detection, and async game-thread-safe logging
+**Version 2.7.32** | Modified AMX Mod X with ReHLDS extension mode, real-time client cvar detection, and async game-thread-safe logging
 
 A major fork of [AMX Mod X](https://github.com/alliedmodders/amxmodx) featuring standalone ReHLDS extension support (no Metamod required) and the `client_cvar_changed` forward for instant detection of client-side console variable changes. Designed for competitive Day of Defeat servers requiring strict anti-cheat enforcement.
 
@@ -219,7 +219,7 @@ AMXX log lines (`log_amx`, error logs) are written by a dedicated writer thread 
 
 ## Version Information
 
-- **Current Version**: 2.7.31 (2026-08) — DODX-only cut; the fleet core binary is still 2.7.27
+- **Current Version**: 2.7.32 (2026-08) — DODX-only cut; the fleet core binary is still 2.7.27
 - **Based on**: AMX Mod X 1.10.0 (upstream)
 - **Platform**: GCC 7.3+ / Visual Studio 2019+
 - **Compatible with**: KTP-ReHLDS 3.22.0.904+, KTP-ReAPI 5.29.0.362-ktp+. Extension-mode teardown (`KTP_ExtensionShutdown`) needs ReHLDS .928+, and the 2.7.24 `client_infochanged` ordering fix only becomes reachable on .929+ — below those those fixes are inert. 2.7.25 adds no new engine-version floor, and neither do 2.7.26 through 2.7.31.

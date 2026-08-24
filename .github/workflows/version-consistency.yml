@@ -1,0 +1,37 @@
+name: Version Consistency
+
+# The trigger matters more than the check. ci.yml built `master` only for most of this
+# repo's life, so tier2/weapon-fire-aim-error — the branch the 24-instance fleet actually
+# ran — had zero CI runs, ever. This gate is therefore unfiltered on purpose:
+#   - push on '**' so any branch is covered, not a named allowlist that goes stale
+#   - pull_request with no `branches:` filter, so every base branch is covered
+#   - NO paths-ignore: a path-filtered required check never reports, and the branch
+#     can then never merge.
+on:
+  workflow_dispatch:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  version-consistency:
+    name: version-consistency
+    runs-on: ubuntu-latest
+    steps:
+      # No submodules and no toolchain: this reads three text files at the repo root.
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      # Run first. A gate that only ever passes proves nothing, so make it demonstrate
+      # that it still fails on a stale literal before believing the real result.
+      - name: Prove the gate discriminates
+        run: python3 support/check_versions.py --selftest
+
+      - name: Check version consistency
+        run: python3 support/check_versions.py
