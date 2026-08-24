@@ -13,6 +13,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.7.32] - unreleased
 
+### Fixed — `KTP_FLAG_POSITION` only ever emitted for the map the server booted into
+
+- **The one-shot task that emits flag positions was armed from `controlpoints_init`, and in
+  extension mode that forward runs *before* the map-change path that wipes the task list.**
+  dodx fires `controlpoints_init` from its control-point entity scan during `ServerActivate`;
+  `KTPAMX_ReloadPlugins()` runs later in the same activation and calls `g_tasksMngr.clear()`.
+  On a cold boot that path is never taken (`KTPAMX_InitAsRehldsExtension()` returns early), so
+  the task survived and the marker appeared — which is why the loss looked map-specific rather
+  than changelevel-specific. This is a divergence from Metamod mode, where the equivalent clear
+  happens in `C_ServerDeactivate_Post`, at the end of the *previous* map.
+- The deferral itself is unchanged and still deliberate: `log_message()` does not reach the game
+  log from inside `controlpoints_init`, while `log_amx()` at the same instant does. The task is
+  now *also* armed from `plugin_cfg`, which `KTPAMX_ReloadPlugins()` executes after the clear, and
+  a pending latch keeps it to one emit per cache refresh no matter which arm survives.
+- Measured on Denver 27018, 08/21 03:01 through 08/24 12:25: **245 `controlpoints_init` fires,
+  245 map loads, 5 emissions — one per server start, all `dod_anzio`.** Control: `KTP_FLAG_STATE`
+  and `position_sample` both appear in the game log on non-boot maps (3,144 and 13 lines in a
+  single mid-day map load), and both come from tasks registered in `plugin_cfg` — so
+  `log_message()`, the game log and `plugin_cfg`-armed tasks all work after a changelevel.
+- `ksc_flag_positions_task` now logs once when it emits. The forward's own diagnostic proved it
+  fired and nothing proved the emit happened, so the two halves lived in different log files and
+  could not be compared.
+
 ### Fixed — the cap-break containment test could not load on this fleet
 
 - **`stats_logging.amxx` was built with `#include <fakemeta>` and would have failed to load on all

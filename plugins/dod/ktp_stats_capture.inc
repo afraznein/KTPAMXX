@@ -138,6 +138,11 @@ new g_kscCvarEnabled
 new g_kscFlagCount = 0
 new g_kscFlagName[KSC_MAX_FLAGS][32]
 
+// Latched by controlpoints_init, cleared once the positions actually reach the
+// log. Two independent callers arm the emit task and either may be the one that
+// survives, so the flag is what keeps it to one emit per cache refresh.
+new bool:g_kscFlagPosPending = false
+
 new g_kscCapTeam[KSC_MAX_FLAGS]     // team currently capturing this point, 0 = none
 new g_kscOwner[KSC_MAX_FLAGS]       // last seen CA_owning_team, to spot a completed cap
 new bool:g_kscOwnershipBaselinePending = true
@@ -150,6 +155,13 @@ new g_kscBreakTtl[KSC_MAX_FLAGS][KSC_BREAK_QUEUE_MAX]  // polls left before expi
 new g_kscBreakCount[KSC_MAX_FLAGS]
 new g_kscBreakTeam[KSC_MAX_FLAGS]   // team being broken, latched with the first candidate
 new g_kscBreakBase[KSC_MAX_FLAGS]   // rolling in-zone baseline to measure drops against
+
+// Defined up here only because Pawn resolves stocks in declaration order and
+// ksc_cfg() below needs it.
+stock ksc_arm_flag_positions() {
+	remove_task(KSC_TASK_FLAG_POSITIONS)
+	set_task(1.0, "ksc_flag_positions_task", KSC_TASK_FLAG_POSITIONS)
+}
 
 stock ksc_init() {
 	// Runtime kill switch, so new capture can be shut off on a live server
@@ -165,6 +177,11 @@ stock ksc_cfg() {
 	set_task(KSC_BUF_FLUSH_SECS, "ksc_flush_task", KSC_TASK_FLUSH, .flags="b")
 	set_task(KSC_ZONE_POLL_SECS, "ksc_zone_poll_task", KSC_TASK_ZONES, .flags="b")
 	set_task(KSC_POSITION_BROADCAST_SECS, "ksc_position_broadcast_task", KSC_TASK_POSITIONS, .flags="b")
+
+	// The arm that actually survives a changelevel. controlpoints_init runs
+	// before the extension-mode map-change path wipes the task list, so its own
+	// arm only reaches the log on a cold boot; plugin_cfg runs after the wipe.
+	ksc_arm_flag_positions()
 }
 
 stock bool:ksc_enabled() {
@@ -721,12 +738,26 @@ public controlpoints_init() {
 	// every other early-init marker in this codebase is already reliable.
 	// The data being emitted (g_kscFlagName/g_kscFlagCount) is cached above
 	// already, so the delayed task has nothing left to look up.
-	set_task(1.0, "ksc_flag_positions_task", KSC_TASK_FLAG_POSITIONS)
+	//
+	// This arm alone only ever fires on the boot map: KTPAMX_ReloadPlugins()
+	// wipes the task list after dodx fires this forward, so ksc_cfg()'s arm is
+	// the surviving one. Keep this one for dodx's post-plugin_cfg InitObj re-fire.
+	g_kscFlagPosPending = true
+	ksc_arm_flag_positions()
 }
 
 public ksc_flag_positions_task() {
+	if (!g_kscFlagPosPending || g_kscFlagCount <= 0)
+		return
+
+	g_kscFlagPosPending = false
+
 	for (new f = 0; f < g_kscFlagCount; f++)
 		ksc_emit_flag_position(f)
+
+	// controlpoints_init's diagnostic proved the forward fired and nothing proved
+	// the emit did, so the halves sat in two log files and went uncompared.
+	log_amx("[KTP-STATS] flag positions emitted for %d flag(s)", g_kscFlagCount)
 }
 
 // Static per-map fact, fired once per map load (this fires on every map
