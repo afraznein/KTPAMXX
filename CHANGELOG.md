@@ -13,6 +13,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.7.32] - unreleased
 
+### Changed — `dodx_give_grenade` distinguishes "already holds one" from a real refusal
+
+- The DLL's refusal signature is identical whether the player is at capacity or something
+  is genuinely wrong, so every refused pickup returned `-1` and plugins logged it as a
+  failure — ~75k fleet-wide "failures", most of them benign. The native now reads the
+  grenade's ammo slot **before** spawning the entity: a refusal with the slot already
+  holding one returns **`2`** (benign); `-1` now means refused with an empty or unreadable
+  slot — the case actually worth logging.
+- Success (`1`) and error (`0`) paths are unchanged, and every non-`1` still means
+  "entity not granted", so existing callers (`KTPGrenadeLoadout` `:307`,
+  `KTPPracticeMode` `.grenade`) keep working — they just keep mislabelling `2` as failed
+  until their own follow-up change consumes the new code.
+- ⛔ **Not part of the pinned 2.7.32 ABI-wave artifacts.** Those are hash-pinned to their
+  review; this rides the next dodx cut.
+
 ### Fixed — `KTP_FLAG_POSITION` only ever emitted for the map the server booted into
 
 - **The one-shot task that emits flag positions was armed from `controlpoints_init`, and in
