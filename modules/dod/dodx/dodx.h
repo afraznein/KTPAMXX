@@ -356,6 +356,11 @@ typedef struct objinfo_s {
 	float origin_y;
 	// setobj
 	int owner;
+	// Last m_iTeam read out of this CP's pdata, and whether the DLL has
+	// demonstrably stamped it (a nonzero read or an observed change). Both
+	// travel with the struct across any reorder.
+	int last_dll_owner;
+	int owner_sync_armed;
 	// control area
 	int areaflags; // 0-need check , 1-no area , 2-found area
 	edict_t* pAreaEdict;
