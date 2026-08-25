@@ -61,6 +61,8 @@ static char *DODX_LoadBSPEntityLump();
 static void DODX_ReadBSPMapInfo();
 void DODX_RegisterMessageHooks();
 static void DODX_InitCPFromEntities();
+static void DODX_SyncCPOwnersFromDLL();
+static float g_cpOwnerSyncNext = 0.0f;  // next owner-sync time, on sv.time
 static void DODX_ArmCPIdentityResolve();
 static void DODX_ForgetCPIdentity();
 static void DODX_ResolveCPIdentityFromDLL();
@@ -1985,6 +1987,19 @@ static void DODX_OnSV_ActivateServer(IVoidHookChain<int> *chain, int runPhysics)
 	else
 		MF_Log("[DODX] CP identity: no module frame callback available — CP order stays "
 			"at the BSP/entity-scan result");
+
+	// Ownership can change with no message we see — a round restart resets every
+	// CP to its default and broadcasts nothing extension mode intercepts — so poll
+	// the DLL's own per-CP team at a low rate under the same frame callback
+	// mechanism. Order-independent of the identity resolve above: the sync keys
+	// every read off the entry's own pEdict, and its tracker fields ride the
+	// resolver's whole-struct copies.
+	g_cpOwnerSyncNext = 0.0f;
+	if (MF_RegModuleFrameFunc)
+		MF_RegModuleFrameFunc(DODX_SyncCPOwnersFromDLL);
+	else
+		MF_Log("[DODX] CP owner sync: no module frame callback available — "
+			"CP_owner will not recover from round restarts on default-owned maps");
 }
 
 // KTP: SV_DropClient hook handler - replaces FN_ClientDisconnect
@@ -2280,6 +2295,12 @@ static bool DODX_SetupExtensionHooks()
 	// Same first-map gap: DODX_OnSV_ActivateServer already ran, so without this
 	// the boot map after every restart runs with detect_* = 0 until a changelevel.
 	DODX_ReadBSPMapInfo();
+
+	// Same gap for the CP owner sync: if the activate hook missed the boot map,
+	// nothing registers the frame callback until a changelevel. Idempotent.
+	g_cpOwnerSyncNext = 0.0f;
+	if (MF_RegModuleFrameFunc)
+		MF_RegModuleFrameFunc(DODX_SyncCPOwnersFromDLL);
 
 	return true;
 }
@@ -2631,6 +2652,8 @@ static void DODX_InitCPFromEntities()
 		mObjects.obj[idx].index = idx + 1;
 		mObjects.obj[idx].default_owner = cpd.owner;
 		mObjects.obj[idx].owner = cpd.owner;
+		mObjects.obj[idx].last_dll_owner = cpd.owner;
+		mObjects.obj[idx].owner_sync_armed = 0;
 		mObjects.obj[idx].visible = 1;
 		mObjects.obj[idx].icon_neutral = cpd.icon_neutral;
 		mObjects.obj[idx].icon_allies = cpd.icon_allies;
@@ -2683,6 +2706,8 @@ static void DODX_InitCPFromEntities()
 				{
 					mObjects.obj[oi].default_owner = bspAll[bi].default_owner;
 					mObjects.obj[oi].owner = bspAll[bi].default_owner;
+					// last_dll_owner deliberately keeps the raw pdata read: the
+					// DLL's ~2s stamp must arrive as an edge to the owner sync.
 					bspUsed[bi] = true;
 					matched = true;
 					break;
@@ -3115,6 +3140,81 @@ static void DODX_ResolveCPIdentityFromDLL()
 	// Consumers cached names and indices against the provisional order.
 	if (iFInitCP >= 0)
 		MF_ExecuteForward(iFInitCP);
+}
+
+// KTP: Re-seed CP ownership when the game DLL changes it without a SetObj we can
+// observe. On a round restart the DLL resets every CP's m_iTeam to its default,
+// but the only InitObj that reaches extension mode carries newCount=0 and no
+// SetObj is broadcast, so mObjects kept the pre-restart owners for the rest of
+// the map. m_iTeam IS the DLL's live state, so it is the one source that covers
+// every restart flavour (sv_restartround, clan-timer resets, match live-restarts).
+//
+// Arm-then-level, not pure edge detection: m_iTeam reads 0 until the DLL stamps
+// CP state ~2s into the map, and a level copy in that window would wipe the
+// BSP-seeded defaults — so a CP arms only on proof the stamp happened (a nonzero
+// read, or any change from the scan-time read). Once armed it level-compares,
+// so a change the 0.5s sampling missed entirely (captured and reset inside one
+// window) is still corrected on the next tick. Until a neutral-default CP's
+// first-ever change is sampled, coverage has not begun for it; that window
+// closes on any subsequent change.
+//
+// Writes owner ONLY — never default_owner (the BSP seed), and never
+// iFCPCaptured: a reset is not a capture, and firing the capture forward here
+// would invent captures in every consumer's stats.
+static void DODX_SyncCPOwnersFromDLL()
+{
+	if (!g_bServerActive || !gpGlobals || mObjects.count <= 0)
+		return;
+	// sv.time restarts with the map; a stale next-sync stamp would sit in the
+	// new map's future forever. The activate hook resets it, this is the backstop.
+	if (g_cpOwnerSyncNext > gpGlobals->time + 1.0f)
+		g_cpOwnerSyncNext = 0.0f;
+	if (gpGlobals->time < g_cpOwnerSyncNext)
+		return;
+	g_cpOwnerSyncNext = gpGlobals->time + 0.5f;
+
+	int corrected = 0;
+	for (int i = 0; i < mObjects.count; i++)
+	{
+		objinfo_t &o = mObjects.obj[i];
+		edict_t *pe = o.pEdict;
+		if (!pe || pe->free || !pe->pvPrivateData)
+			continue;
+
+		int dllOwner = GET_CP_PD(pe).owner;
+		// A team is 0..2; anything else means the read missed (wrong layout for
+		// this platform's DLL build) and must not be written into owner. This
+		// also keeps a garbage read from arming the level compare below.
+		if (dllOwner < 0 || dllOwner > 2)
+			continue;
+
+		if (!o.owner_sync_armed)
+		{
+			if (dllOwner == 0 && dllOwner == o.last_dll_owner)
+				continue;   // still indistinguishable from pre-stamp
+			o.owner_sync_armed = 1;
+		}
+		o.last_dll_owner = dllOwner;
+
+		// SetObj normally lands first, so mObjects already agrees. Only a change
+		// nothing delivered — the round-restart reset — leaves this divergent,
+		// and the write makes them agree again, so it cannot re-fire next tick.
+		if (o.owner != dllOwner)
+		{
+			o.owner = dllOwner;
+			corrected++;
+		}
+	}
+
+	if (corrected > 0)
+	{
+		MF_Log("[DODX] CP owner re-seed: %d CPs changed owner with no SetObj "
+			"(round restart) — refreshed from the DLL", corrected);
+		// Full-snapshot semantics: consumers re-read every CP and re-arm their
+		// ownership baselines, which is exactly what a restart calls for.
+		if (iFInitCP >= 0)
+			MF_ExecuteForward(iFInitCP);
+	}
 }
 
 // KTP: Cleanup extension mode hooks
