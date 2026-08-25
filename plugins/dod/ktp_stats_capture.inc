@@ -332,6 +332,17 @@ stock ksc_normalize_match_half(half) {
 }
 
 stock ksc_on_match_start(const matchid[], half) {
+	// KTPMatchHandler fires ktp_half_end only with half=1 and ktp_match_end
+	// only at true match end, so an H2->OT or OT->OT boundary arrives ONLY as
+	// this next start. Emit the outgoing half's health record before its
+	// counters are reset below, or that half's record is silently lost.
+	// The normal H1 end is unaffected: ktp_half_end already emitted and
+	// cleared this context, so the guard is false there.
+	if (g_kscProducerMatchId[0] && g_kscProducerHalf != 0) {
+		ksc_flush()
+		ksc_emit_health(g_kscProducerMatchId, g_kscProducerHalf)
+	}
+
 	// A match/half boundary invalidates every observation made against the
 	// previous round. Suppress one fresh zone baseline even when the clock is
 	// unavailable, so a warmup candidate cannot drain into go-live counts.

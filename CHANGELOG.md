@@ -45,6 +45,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ⛔ **Not part of the pinned 2.7.32 ABI-wave artifacts.** Those are hash-pinned to their
   review; this rides the next dodx cut.
 
+### Fixed — per-half `KTP_CAPTURE_HEALTH` was silently lost on H2→OT and OT→OT
+
+- KTPMatchHandler's `ktp_half_end` fires exactly once, hardcoded `half=1`, and
+  `ktp_match_end` fires only at true match end — so the only signal an H2→OT or OT→OT
+  boundary sends the producer is the next `ktp_match_start`. `ksc_on_match_start` reset
+  the health counters there without emitting them, so the outgoing half's health record
+  (the reconciliation row for every event type) never reached the log. Observability
+  loss only: the data lines themselves were flushed before the reset.
+- `ksc_on_match_start` now flushes and emits the outgoing half's health record first,
+  guarded on a still-populated producer context. The normal H1 end is unaffected —
+  `ktp_half_end` already emits and clears the context, so the guard is false there. A
+  half aborted and restarted under the same id now produces a health record set for
+  each segment; the daemon already keys health on (matchid, half, sequence) and the
+  later set's `sequence_last` supersedes.
+
 ### Fixed — dodx: CP ownership was never re-seeded after a round restart (#10)
 
 - **From round 2 onward, `CP_owner` reported the pre-restart ownership on every

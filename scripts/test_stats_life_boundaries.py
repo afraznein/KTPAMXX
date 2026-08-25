@@ -249,6 +249,23 @@ def test_authoritative_producer_context_and_clocks() -> None:
             assert field in body, f"{signature} missing producer field {field}"
 
 
+def test_match_start_emits_outgoing_half_health_before_reset() -> None:
+    # ktp_half_end fires only with half=1 and ktp_match_end only at true match
+    # end, so H2->OT and OT->OT boundaries arrive solely as the next
+    # ktp_match_start. The outgoing half's health record must be emitted there
+    # before ksc_reset_health() zeroes its counters.
+    start = function_body(CAPTURE, "stock ksc_on_match_start")
+    assert "ksc_emit_health(g_kscProducerMatchId, g_kscProducerHalf)" in start
+    before(start, "ksc_emit_health(g_kscProducerMatchId, g_kscProducerHalf)",
+           "ksc_reset_health()")
+    # The emit must be flushed-behind and guarded on a still-populated context,
+    # and must run before either branch overwrites that context.
+    before(start, "ksc_flush()",
+           "ksc_emit_health(g_kscProducerMatchId, g_kscProducerHalf)")
+    before(start, "ksc_emit_health(g_kscProducerMatchId, g_kscProducerHalf)",
+           "copy(g_kscProducerMatchId, charsmax(g_kscProducerMatchId), matchid)")
+
+
 def test_plugin_end_drains_private_capture() -> None:
     plugin_end = function_body(STATS, "public plugin_end")
     assert "ksc_flush()" in plugin_end
