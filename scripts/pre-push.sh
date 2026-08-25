@@ -22,6 +22,29 @@ if [[ "${KTP_SKIP_PREPUSH:-0}" == "1" ]]; then
 fi
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+# Cheap gates before the Docker builds. CRLF-mangled scripts are invisible to
+# `git status` (the index is LF) and make `set -e` fail as a command, so the
+# script runs on unguarded. The CR probe is the load-bearing half: Git Bash's
+# bash tolerates CRLF, so `bash -n` alone passes here and only fails under WSL.
+# grep needs -U on Windows -- text mode strips the CR before matching sees it.
+CR="$(printf '\r')"
+GATE_FAIL=0
+while IFS= read -r sh; do
+  if grep -qU "$CR" "$REPO_ROOT/$sh"; then
+    echo "[pre-push] CRLF line endings in: $sh (fails under WSL bash; renormalize it)"
+    GATE_FAIL=1
+  fi
+  if ! bash -n "$REPO_ROOT/$sh"; then
+    echo "[pre-push] bash -n FAILED: $sh"
+    GATE_FAIL=1
+  fi
+done < <(git -C "$REPO_ROOT" ls-files '*.sh')
+if [[ "$GATE_FAIL" -ne 0 ]]; then
+  echo "[pre-push] shell script gate failed — push aborted."
+  exit 1
+fi
+
 INFRA_DIR="$REPO_ROOT/../KTPInfrastructure"
 
 if [[ ! -d "$INFRA_DIR" ]]; then
