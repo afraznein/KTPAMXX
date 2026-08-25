@@ -451,12 +451,12 @@ def test_split_loader_resolver_uses_only_declared_loaded_game_dll() -> None:
         GAMECONFIGS, "static bool ResolveLoadedMetamodGameDll")
     assert "GET_GAME_DIR(gameDir)" in helper
     assert "realpath(candidates[i], nullptr)" in helper
-    assert "dlopen(resolvedPath, RTLD_NOW | RTLD_NOLOAD)" in helper
+    assert "dlopen(resolvedPath, RTLD_LAZY | RTLD_NOLOAD)" in helper
     assert 'dlsym(handle, "GiveFnptrsToDll")' in helper
     assert "GetEntityInit" not in helper
     assert "worldspawn" not in helper
     before(helper, "realpath(candidates[i], nullptr)",
-           "dlopen(resolvedPath, RTLD_NOW | RTLD_NOLOAD)")
+           "dlopen(resolvedPath, RTLD_LAZY | RTLD_NOLOAD)")
     relative = helper[helper.index("GET_GAME_DIR(gameDir)"):]
     before(relative, "candidates[candidateCount++] = modRelative",
            "candidates[candidateCount++] = gameDll")
@@ -476,6 +476,13 @@ def test_split_loader_resolver_verifies_anchor_file_identity() -> None:
     before(helper, "requestedStat.st_ino == resolvedStat.st_ino",
            "*baseAddress = info.dli_fbase")
     before(helper, "dlclose(handle)", "return true")
+    # The mismatch out-param may only be raised for a candidate that was
+    # actually mapped (a NOLOAD handle existed) and then failed the identity
+    # check -- a merely-absent candidate must not read as a mismatch.
+    assert "*identityMismatch = true;" in helper
+    before(helper, "dlopen(resolvedPath, RTLD_LAZY | RTLD_NOLOAD)",
+           "*identityMismatch = true;")
+    before(helper, "if (!valid && identityMismatch)", "if (valid)")
 
 
 def test_split_loader_resolver_preserves_direct_paths() -> None:
@@ -492,6 +499,18 @@ def test_split_loader_resolver_preserves_direct_paths() -> None:
     assert "if (!dladdr(symbol, &info))" in resolver
     before(resolver, 'get_localinfo("mm_gamedll", "")',
            "g_pGameEntityInterface->pfnSpawn")
+    # A declared-but-not-loaded mm_gamedll is a stale localinfo (settable from
+    # any cfg/rcon), not a split-loader topology: it must fall through to the
+    # engine entity interface rather than permanently null-caching "server"
+    # resolution. Only a genuine identity-check mismatch stays failed closed.
+    assert "bool identityMismatch = false;" in resolver
+    assert "if (identityMismatch)" in resolver
+    assert "ignoring stale localinfo" in resolver
+    before(resolver, "if (identityMismatch)", "ignoring stale localinfo")
+    mismatch_start = resolver.index("if (identityMismatch)")
+    mismatch_block = resolver[mismatch_start:resolver.index("ignoring stale localinfo")]
+    assert "Unable to prove declared mm_gamedll" in mismatch_block
+    assert "return false;" in mismatch_block
 
 
 def test_split_loader_resolver_is_linux_and_no_load_only() -> None:
@@ -500,6 +519,9 @@ def test_split_loader_resolver_is_linux_and_no_load_only() -> None:
         "defined PLATFORM_LINUX && defined RTLD_NOLOAD") >= 2
     assert "dlopen(resolvedPath, RTLD_NOW)" not in GAMECONFIGS
     assert "dlopen(resolvedPath, RTLD_LAZY)" not in GAMECONFIGS
+    # RTLD_NOW would promote a lazily bound game DLL to eager relocation and
+    # can hard-fail resolution; the helper only dlsyms one exported symbol.
+    assert "dlopen(resolvedPath, RTLD_NOW | RTLD_NOLOAD)" not in GAMECONFIGS
 
 
 def test_physical_boundaries_do_not_use_stats_pause_gate() -> None:

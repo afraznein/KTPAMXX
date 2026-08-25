@@ -116,6 +116,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Requires `fakemeta` in `stats_logging.sma` for `pev()`. Plugin only — no module or
   engine change. `stats_logging` 1.15.6 → 1.15.7.
 
+### Fixed — a stale `mm_gamedll` localinfo hard-failed "server" gameconfig resolution (core)
+
+- On a non-Metamod host, any non-empty `mm_gamedll` localinfo whose declared DLL could
+  not be proven loaded made `ResolveLibraryInfo("server")` return false with no fallback,
+  permanently null-caching "server" resolution for the process. `localinfo` is settable
+  from any cfg or rcon and survives map changes, so a stale value silently disabled the
+  feature. The two failure shapes are now told apart: a declared object that **is**
+  mapped but fails the anchor identity check still fails closed (trusting it risks
+  CRC'ing the wrong binary); one that is **not mapped at all** is a stale localinfo — it
+  logs and falls through to the engine entity interface the non-declared path already
+  trusts. (Fleet swept 2026-08-25: no live instance carries `mm_gamedll` on its command
+  line or in any cfg, so the failure was latent here, not live.)
+- Same block: the split-loader resolver's `dlopen` probe now uses `RTLD_LAZY |
+  RTLD_NOLOAD`. `RTLD_NOW` promoted an already-mapped, lazily bound game DLL to eager
+  relocation and could hard-fail resolution on an unrelated unresolved symbol; the
+  helper only dlsyms one exported symbol, so lazy binding is sufficient.
+- **Ships as core** (`ktpamx_i386.so`), not a plugin — this is `amxmodx/CGameConfigs.cpp`.
+
 ### Changed — ReHLDS API version gate
 
 - **`REHLDS_API_VERSION_MINOR` 6 → 16 in `public/resdk/engine/rehlds_api.h`,
