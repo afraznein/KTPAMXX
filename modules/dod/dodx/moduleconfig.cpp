@@ -62,6 +62,7 @@ static void DODX_ReadBSPMapInfo();
 void DODX_RegisterMessageHooks();
 static void DODX_InitCPFromEntities();
 static void DODX_ArmCPIdentityResolve();
+static void DODX_ForgetCPIdentity();
 static void DODX_ResolveCPIdentityFromDLL();
 
 funEventCall modMsgsEnd[MAX_REG_MSGS];
@@ -1864,6 +1865,10 @@ static void DODX_OnChangelevel(IVoidHookChain<const char *, const char *> *chain
 
 	// Clear CP data — pEdict pointers become stale after map change
 	mObjects.Clear();
+	// The resolve latches describe the map being left, and the cached master edict is
+	// about to dangle. They are re-armed on activate; die with the map anyway.
+	g_cpOrderingFinalized = false;
+	DODX_ForgetCPIdentity();
 
 	// Clear grenade tracking — edict pointers become stale after map change
 	g_grenades.clear();
@@ -1969,8 +1974,11 @@ static void DODX_OnSV_ActivateServer(IVoidHookChain<int> *chain, int runPhysics)
 
 	// The scan runs before the DLL has stamped CP identity, so what it produced is
 	// provisional. Arm the resolver that replaces it once the DLL has an answer.
-	// Registration is per map because plugin reload clears module frame callbacks;
-	// MNF_RegModuleFrameFunc dedups, so re-registering is a no-op.
+	// Registration lives here, not at attach, because this is the one extension-mode
+	// entry point that runs on every map before the resolver is needed; it is
+	// idempotent (MF_RegModuleFrameFunc scans for an existing entry first). Nothing on
+	// the extension path clears module frame callbacks — the only two clears are
+	// Metamod's reload table and process teardown.
 	DODX_ArmCPIdentityResolve();
 	if (MF_RegModuleFrameFunc)
 		MF_RegModuleFrameFunc(DODX_ResolveCPIdentityFromDLL);
@@ -2706,8 +2714,10 @@ static void DODX_InitCPFromEntities()
 
 #ifdef DODX_DEBUG_CP_INIT
 			// Logged BEFORE the count gate so it still fires where the reorder short-circuits —
-			// those are the maps worth investigating. flag_id is the DLL-assigned pdata index,
-			// which separates a master/slave collapse from a coincidental point_index collision.
+			// those are the maps worth investigating. It used to also print flag_id as "the
+			// DLL-assigned pdata index"; that field reads 0 for every CP this early (measured),
+			// so it distinguished nothing and is gone. The DLL's index appears in the
+			// CP identity lines once the master has claimed its points.
 			// Build with -DDODX_DEBUG_CP_INIT=1; off in prod because it is ~25 lines per map load.
 			MF_Log("[DODX] CP scan: entities=%d bsp_total=%d bsp_with_index=%d filtered=%d gate=%s",
 				mObjects.count, bspTotal, bspWithIndex, bspCount,
@@ -2716,9 +2726,8 @@ static void DODX_InitCPFromEntities()
 			{
 				edict_t *pe = mObjects.obj[oi].pEdict;
 				const char *tn = pe ? STRING(pe->v.targetname) : "?";
-				MF_Log("[DODX] CP scan: entity[%d] flag_id=%d origin=(%.0f,%.0f) targetname='%s'",
-					oi, mObjects.obj[oi].index, mObjects.obj[oi].origin_x,
-					mObjects.obj[oi].origin_y, tn);
+				MF_Log("[DODX] CP scan: entity[%d] origin=(%.0f,%.0f) targetname='%s'",
+					oi, mObjects.obj[oi].origin_x, mObjects.obj[oi].origin_y, tn);
 			}
 			// bspAll, not the filtered view: an entry dropped for a missing point_index is
 			// exactly what a collapse looks like, so it has to be visible.
@@ -2826,7 +2835,10 @@ static void DODX_InitCPFromEntities()
 			const char *nn = pe ? STRING(pe->v.netname) : "?";
 			// default_owner is near-redundant with owner here, but it is the one field
 			// that separates "seeded from the BSP" from "read 0 out of pdata" in a log.
-			MF_Log("[DODX]   CP[%d] point_index=%d owner=%d default_owner=%d targetname='%s' netname='%s'",
+			// index, not point_index: it is the array position + 1 by construction, so
+			// labelling it point_index would print 1..N on every map and read as
+			// "every map numbers its points contiguously".
+			MF_Log("[DODX]   CP[%d] index=%d owner=%d default_owner=%d targetname='%s' netname='%s'",
 				i, mObjects.obj[i].index, mObjects.obj[i].owner,
 				mObjects.obj[i].default_owner, tn, nn);
 		}
@@ -2868,31 +2880,50 @@ static void DODX_InitCPFromEntities()
 	#define CP_OFF_INDEX       392
 #endif
 
+// The offsets above are 32-bit reads, and ControlPointArray holds pointers stored in
+// the same 4 bytes. Every DoD server binary is i386; make the assumption refuse to
+// compile rather than read half a pointer.
+static_assert(sizeof(void *) == 4, "raw pdata offsets assume a 32-bit build");
+
 #define CP_SECONDS_TO_WAIT 30.0f
 
 static bool  g_cpIdentityResolved = false;
 static bool  g_cpIdentityGaveUp   = false;
 static float g_cpResolveNextTry   = 0.0f;
 static float g_cpResolveDeadline  = 0.0f;
+// Found once and then read every frame. The master entity exists from map spawn; it
+// is FoundPoints that arrives late, so re-running the entity search per frame would
+// buy nothing and searching only every 0.25s would leave a window in which SetObj is
+// subscripted into a still-provisional mObjects.
+static edict_t *g_cpMaster = NULL;
 
 static inline int DODX_RawInt(void *base, int byteOffset)
 {
 	return *(int *)((char *)base + byteOffset);
 }
 
-// Re-arm per map. Called from SV_ActivateServer after the entity scan.
-static void DODX_ArmCPIdentityResolve()
+// Drop everything describing the current map. Separate from the arm below so the
+// changelevel path can run it without inventing a deadline on a clock about to reset.
+static void DODX_ForgetCPIdentity()
 {
 	g_cpIdentityResolved = false;
 	g_cpIdentityGaveUp   = false;
 	g_cpResolveNextTry   = 0.0f;
-	g_cpResolveDeadline  = (gpGlobals ? gpGlobals->time : 0.0f) + CP_SECONDS_TO_WAIT;
+	g_cpMaster           = NULL;
 }
 
-// Every failure retries until the map's deadline, then reports once. The whole stamp
-// landed in a single frame on all four maps measured, but treating one bad read as
-// final would give up permanently on a map a retry would have resolved.
-static void DODX_CPResolveFailed(const char *why)
+// Re-arm per map. Called from SV_ActivateServer after the entity scan.
+static void DODX_ArmCPIdentityResolve()
+{
+	DODX_ForgetCPIdentity();
+	g_cpResolveDeadline = (gpGlobals ? gpGlobals->time : 0.0f) + CP_SECONDS_TO_WAIT;
+}
+
+// A failure that a later frame could still resolve: the DLL fills FoundPoints,
+// m_iNumPoints and the whole array together, so a read that catches it half-built is
+// possible in principle even though all six maps measured landed it in one frame.
+// Retry silently until the map's deadline, then report once.
+static void DODX_CPResolveRetry(const char *why)
 {
 	if (!gpGlobals || gpGlobals->time <= g_cpResolveDeadline)
 		return;
@@ -2900,6 +2931,60 @@ static void DODX_CPResolveFailed(const char *why)
 	g_cpIdentityGaveUp = true;
 	MF_Log("[DODX] CP identity: %s after %.0fs — keeping BSP/entity-scan order "
 		"(CP indices may not match the DLL on this map)", why, CP_SECONDS_TO_WAIT);
+}
+
+// A failure no retry can change. Reported immediately.
+static void DODX_CPResolveAbandon(const char *why)
+{
+	g_cpIdentityGaveUp = true;
+	MF_Log("[DODX] CP identity: %s — keeping BSP/entity-scan order "
+		"(CP indices may not match the DLL on this map)", why);
+}
+
+// Locate the master, and refuse to guess when there is more than one.
+//
+// DoD supports grouped masters — that is why m_sMaster and m_szGroup exist on both
+// CControlPoint and CControlPointMaster — and 3 of the 72 maps on the test tree ship
+// two (dod_heutau, dod_overlord, dod_schwetz). Taking the first would produce a
+// PERFECT bijection over that master's own subset and commit it, silently dropping
+// every point the other master governs, with a log line identical to the legitimate
+// dod_merderet 5-of-6 case. mObjects is a flat array with one index space and cannot
+// represent grouped masters at all, so the honest answer is to keep the BSP order.
+static bool DODX_FindSoleCPMaster()
+{
+	if (g_cpMaster)
+		return true;
+	if (gpGlobals->time < g_cpResolveNextTry)
+		return false;
+	g_cpResolveNextTry = gpGlobals->time + 0.25f;
+
+	edict_t *pe = NULL, *first = NULL;
+	int found = 0;
+	while ((pe = FindEntityByClassname(pe, "dod_control_point_master")) != NULL)
+	{
+		if (pe->free)
+			continue;
+		if (!first)
+			first = pe;
+		found++;
+	}
+
+	if (found > 1)
+	{
+		char why[96];
+		snprintf(why, sizeof(why), "%d control point masters on this map, so no single "
+			"index space exists", found);
+		DODX_CPResolveAbandon(why);
+		return false;
+	}
+	if (found == 0)
+	{
+		DODX_CPResolveRetry("no dod_control_point_master on the map");
+		return false;
+	}
+
+	g_cpMaster = first;
+	return true;
 }
 
 // Reorder mObjects into the DLL's own CP index space, once the DLL has one.
@@ -2913,24 +2998,30 @@ static void DODX_ResolveCPIdentityFromDLL()
 {
 	if (g_cpIdentityResolved || g_cpIdentityGaveUp || mObjects.count <= 0 || !gpGlobals)
 		return;
-	if (gpGlobals->time < g_cpResolveNextTry)
+
+	if (!DODX_FindSoleCPMaster())
 		return;
-	g_cpResolveNextTry = gpGlobals->time + 0.25f;
 
-	edict_t *pMaster = FindEntityByClassname(NULL, "dod_control_point_master");
-	void *md = (pMaster && !pMaster->free) ? pMaster->pvPrivateData : NULL;
-
-	if (!md || DODX_RawInt(md, CPM_OFF_FOUND) == 0)
+	void *md = g_cpMaster->free ? NULL : g_cpMaster->pvPrivateData;
+	if (!md)
 	{
-		DODX_CPResolveFailed(md ? "master never claimed its points"
-		                        : "no dod_control_point_master on the map");
+		g_cpMaster = NULL;   // gone or not yet built; look again
+		DODX_CPResolveRetry("the control point master has no private data");
+		return;
+	}
+
+	if (DODX_RawInt(md, CPM_OFF_FOUND) == 0)
+	{
+		DODX_CPResolveRetry("the master never claimed its points");
 		return;
 	}
 
 	int n = DODX_RawInt(md, CPM_OFF_NUMPOINTS);
 	if (n <= 0 || n > 12)
 	{
-		DODX_CPResolveFailed("master reported a point count out of range");
+		char why[96];
+		snprintf(why, sizeof(why), "the master reported %d points, outside 1..12", n);
+		DODX_CPResolveRetry(why);
 		return;
 	}
 
@@ -2947,7 +3038,8 @@ static void DODX_ResolveCPIdentityFromDLL()
 		int scanned = -1;
 		for (int i = 0; i < mObjects.count; i++)
 		{
-			if (mObjects.obj[i].pEdict && mObjects.obj[i].pEdict->pvPrivateData == cppd)
+			if (mObjects.obj[i].pEdict && !mObjects.obj[i].pEdict->free &&
+			    mObjects.obj[i].pEdict->pvPrivateData == cppd)
 			{
 				scanned = i;
 				break;
@@ -2972,7 +3064,10 @@ static void DODX_ResolveCPIdentityFromDLL()
 	// we already have, because it looks authoritative.
 	if (matched != n)
 	{
-		DODX_CPResolveFailed("the master's points did not resolve to distinct indices");
+		char why[112];
+		snprintf(why, sizeof(why), "the master claims %d points but %d resolved to a "
+			"distinct index among %d scanned", n, matched, mObjects.count);
+		DODX_CPResolveRetry(why);
 		return;
 	}
 
@@ -2982,13 +3077,18 @@ static void DODX_ResolveCPIdentityFromDLL()
 		          (ordered[i].index  != mObjects.obj[i].index);
 
 	// The DLL's set is authoritative and is not always every dod_control_point on the
-	// map: dod_merderet spawns six and the master claims five. Tracking the extra one
-	// shifts every index after it.
+	// map: dod_merderet spawns six and the sole master claims five. Tracking the extra
+	// one shifts every index after it. This is only sound because DODX_FindSoleCPMaster
+	// has established there is exactly one master — with two, a subset looks identical.
 	if (n != mObjects.count)
-		MF_Log("[DODX] CP identity: master claims %d of the %d dod_control_point "
+		MF_Log("[DODX] CP identity: the one master claims %d of the %d dod_control_point "
 			"entities — following the DLL", n, mObjects.count);
 
 	memcpy(mObjects.obj, ordered, sizeof(objinfo_t) * n);
+	// Entries past the new count still hold pre-reorder copies, duplicate pEdict
+	// included. Nothing reads past count today; do not leave that as the only defence.
+	if (n < mObjects.count)
+		memset(&mObjects.obj[n], 0, sizeof(objinfo_t) * (mObjects.count - n));
 	mObjects.count = n;
 	g_cpIdentityResolved = true;
 
@@ -3005,10 +3105,12 @@ static void DODX_ResolveCPIdentityFromDLL()
 	MF_Log("[DODX] CP identity: reordered %d CPs to the DLL's index space", n);
 	for (int i = 0; i < mObjects.count; i++)
 	{
+		// netname, not just targetname: dod_donner leaves every CP's targetname
+		// empty but names them all, so a targetname-only line cannot be read.
 		edict_t *pe = mObjects.obj[i].pEdict;
-		MF_Log("[DODX]   CP[%d] index=%d owner=%d targetname='%s'",
+		MF_Log("[DODX]   CP[%d] index=%d owner=%d targetname='%s' netname='%s'",
 			i, mObjects.obj[i].index, mObjects.obj[i].owner,
-			pe ? STRING(pe->v.targetname) : "?");
+			pe ? STRING(pe->v.targetname) : "?", pe ? STRING(pe->v.netname) : "?");
 	}
 
 	// Consumers cached names and indices against the provisional order.

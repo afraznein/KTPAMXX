@@ -703,12 +703,16 @@ native dodx_set_user_angles(id, Float:angles[3]);
  *
  * The control point index passed to these natives is the game DLL's own cp index —
  * the same one SetObj carries — and CP_index reads back that index + 1, i.e. the
- * 1-based control point number. Both hold on every map, including maps that ship no
- * point_index keyvalue, where ordering used to fall back to entity-scan order.
+ * 1-based control point number.
  *
  * Ordering is provisional until the DLL claims its control points, 2s of game time
  * after the map loads. controlpoints_init fires again if the order changes, so read
  * it there rather than caching from the first fire.
+ *
+ * On a map the module cannot resolve — no control point master, or more than one, so
+ * no single index space exists — ordering stays at the BSP/entity-scan result and may
+ * not match the DLL. The module logs "CP indices may not match the DLL on this map"
+ * when that happens; there is no way to ask for it from a plugin.
  */
 enum CP_VALUE {
 	CP_edict = 1,
