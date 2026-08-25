@@ -177,7 +177,7 @@ def test_capture_flush_precedes_every_stats_flush_gate() -> None:
     before(flush, "ksc_flush()", "if ( is_user_bot(id) )")
 
 
-def test_life_boundaries_have_truthful_priority_queue() -> None:
+def test_life_boundaries_have_truthful_ordered_queue() -> None:
     life_queue = function_body(CAPTURE, "stock bool:ksc_life_buffer")
     assert "KSC_LIFE_BUF_MAX_ENTRIES" in life_queue
     assert "g_kscLifeDropped++" in life_queue
@@ -189,7 +189,10 @@ def test_life_boundaries_have_truthful_priority_queue() -> None:
     assert "ksc_buffer(line)" not in emit
 
     flush = function_body(CAPTURE, "stock ksc_flush")
-    before(flush, "g_kscLifeBufferCount", "g_kscBufferCount")
+    assert "g_kscLifeBufferSequence[life_i] < g_kscBufferSequence[data_i]" in flush
+    assert "while (data_i < g_kscBufferCount || life_i < g_kscLifeBufferCount)" in flush
+    assert "g_kscLifeBuffer[life_i]" in flush
+    assert "g_kscBuffer[data_i]" in flush
     assert "dropped %d LIFE boundary" in flush
 
 
