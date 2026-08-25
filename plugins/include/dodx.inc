@@ -818,10 +818,9 @@ native dodx_objectives_get_num();
  * (2s of game time after the map loads), it gave up on this map, or the module is
  * running under Metamod, where nothing resolves identity at all.
  *
- * Read it where you are about to act on a CP index, not once from
- * controlpoints_init. The forward re-fires only when the resolve *changes* the
- * order; on a map whose scan order was already right this flips to 1 with no
- * second fire, so an init-time read alone would report 0 forever.
+ * Read it at the point of use, not once from controlpoints_init: the forward
+ * re-fires only when the resolve *changes* the order, so on a map whose scan
+ * order was already right this flips to 1 with no second fire.
  *
  * @return          1 if control point ordering matches the DLL, 0 otherwise
  */
