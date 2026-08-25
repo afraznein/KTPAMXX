@@ -43,6 +43,13 @@ with the other; merging them changes the compiled module, so 2.7.31's pinned md5
 no longer describes this tree. See the 2.7.32 note.
 
 ### Added
+- **Capture observability contract** (`stats_logging.sma` 1.16.2 -> 1.17.0).
+  Every half emits its producer version, schema contract, capability set,
+  position cadence, and buffer sizes. All custom markers carry one monotonic
+  producer sequence; end-of-half records report attempted, enqueued, dropped,
+  and emitted counts for eight event classes. Static flag positions are
+  idempotently re-emitted after the authoritative match context is confirmed,
+  and cap-break context carries exact flag, victim, and incident identity.
 - **Durable private life-boundary markers for continuous-respawn analytics**
   (`ktp_stats_capture.inc`, `stats_logging.sma` 1.15.6 -> 1.16.0). The plugin
   now emits buffered `life_boundary` player actions for `start/spawn`,
@@ -89,6 +96,15 @@ no longer describes this tree. See the 2.7.32 note.
   `stats_logging.amxx` correctly leaves producer context fail-closed.
 
 ### Fixed
+- **Capout and last-flag-defense telemetry now requires the attacker to own
+  every other flag** (`ktp_stats_capture.inc`, `stats_logging.sma` 1.16.1 ->
+  1.16.2). The previous test only required the defender to own one flag. On a
+  neutral or incompletely represented topology that one-sided condition could
+  label ordinary central-point play as a capout threat. The shared predicate
+  now requires at least two flags, exactly one defender-owned flag, and all
+  remaining flags owned by the opposing team. Raw ownership telemetry is
+  unchanged; ambiguous states fail closed instead of producing a derived tag.
+
 - **Extension-mode gameconfig lookup now resolves the real game DLL through
   Metamod's declared `mm_gamedll` path when the engine-facing callbacks are
   anonymous trampolines** (`CGameConfigs.cpp`). This is the split-loader shape

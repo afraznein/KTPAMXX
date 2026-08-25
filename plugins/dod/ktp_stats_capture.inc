@@ -101,14 +101,32 @@
 // properties plus producer match/half/clocks. A synthetic maximum-width
 // contract line is 764 bytes; 768 preserves it including the NUL terminator.
 // A truncated line does not fail loudly -- it silently loses trailing clocks.
-#define KSC_BUF_LINE_LEN    768
+#define KSC_BUF_LINE_LEN    832
 #define KSC_BUF_FLUSH_SECS  5.0
 
 // Life boundaries are control-plane facts. Keep them out of the high-volume
 // damage/frag queue so a hit burst cannot consume their capacity. This queue
 // is drained first, reports its own drops, and has a truthful bool enqueue API.
 #define KSC_LIFE_BUF_MAX_ENTRIES 64
-#define KSC_LIFE_BUF_LINE_LEN    384
+#define KSC_LIFE_BUF_LINE_LEN    416
+
+// Increment when the producer/daemon storage contract changes. This is
+// emitted in every per-half manifest so mixed fleet deployments are visible
+// without reverse-engineering them from which rows happened to arrive.
+#define KSC_SCHEMA_CONTRACT 21
+#define KSC_CAPABILITIES "frag_context,damage,position,assist,life,break,flag_state,flag_position,sequence,health"
+
+enum {
+	KSC_EVENT_LIFE = 0,
+	KSC_EVENT_DAMAGE,
+	KSC_EVENT_POSITION,
+	KSC_EVENT_FRAG,
+	KSC_EVENT_ASSIST,
+	KSC_EVENT_BREAK,
+	KSC_EVENT_FLAG_STATE,
+	KSC_EVENT_FLAG_POSITION,
+	KSC_EVENT_COUNT
+}
 
 // Distinct from stats_logging.sma's own flush task, which registers with the
 // default id -- sharing an id would make one remove_task() cancel both.
@@ -118,11 +136,24 @@
 #define KSC_TASK_FLAG_POSITIONS 88013
 
 new g_kscBuffer[KSC_BUF_MAX_ENTRIES][KSC_BUF_LINE_LEN]
+new g_kscBufferType[KSC_BUF_MAX_ENTRIES]
+new g_kscBufferSequence[KSC_BUF_MAX_ENTRIES]
 new g_kscBufferCount = 0
 new g_kscDropped = 0
 new g_kscLifeBuffer[KSC_LIFE_BUF_MAX_ENTRIES][KSC_LIFE_BUF_LINE_LEN]
+new g_kscLifeBufferType[KSC_LIFE_BUF_MAX_ENTRIES]
+new g_kscLifeBufferSequence[KSC_LIFE_BUF_MAX_ENTRIES]
 new g_kscLifeBufferCount = 0
 new g_kscLifeDropped = 0
+new g_kscAttempted[KSC_EVENT_COUNT]
+new g_kscEnqueued[KSC_EVENT_COUNT]
+new g_kscDroppedByType[KSC_EVENT_COUNT]
+new g_kscEmitted[KSC_EVENT_COUNT]
+new g_kscSequence = 0
+new const g_kscEventNames[KSC_EVENT_COUNT][] = {
+	"life", "damage", "position", "frag", "assist", "break",
+	"flag_state", "flag_position"
+}
 
 // [victim][attacker] -- enemy damage dealt to victim since their last spawn.
 new g_kscDmgTaken[MAX_PLAYERS + 1][MAX_PLAYERS + 1]
@@ -170,6 +201,7 @@ new g_kscPrevAllies[KSC_MAX_FLAGS]  // in-zone counts as of the previous poll
 new g_kscPrevAxis[KSC_MAX_FLAGS]
 
 new g_kscBreakQ[KSC_MAX_FLAGS][KSC_BREAK_QUEUE_MAX]    // FIFO of candidate killers
+new g_kscBreakVictim[KSC_MAX_FLAGS][KSC_BREAK_QUEUE_MAX]
 new g_kscBreakTtl[KSC_MAX_FLAGS][KSC_BREAK_QUEUE_MAX]  // polls left before expiry
 new g_kscBreakCount[KSC_MAX_FLAGS]
 new g_kscBreakTeam[KSC_MAX_FLAGS]   // team being broken, latched with the first candidate
@@ -206,7 +238,45 @@ stock bool:ksc_enabled() {
 	return true
 }
 
-stock ksc_buffer(const line[]) {
+stock ksc_next_sequence() {
+	g_kscSequence++
+	return g_kscSequence
+}
+
+stock ksc_reset_health() {
+	g_kscSequence = 0
+	for (new i = 0; i < KSC_EVENT_COUNT; i++) {
+		g_kscAttempted[i] = 0
+		g_kscEnqueued[i] = 0
+		g_kscDroppedByType[i] = 0
+		g_kscEmitted[i] = 0
+	}
+}
+
+stock ksc_emit_manifest(const matchid[], half) {
+	new mapname[32]
+	get_mapname(mapname, charsmax(mapname))
+	new sequence = ksc_next_sequence()
+	log_message("KTP_CAPTURE_MANIFEST (matchid ^"%s^") (half ^"%d^") (map ^"%s^") (producer ^"stats_logging^") (producer_version ^"%s^") (schema ^"%d^") (capabilities ^"%s^") (position_interval ^"%.1f^") (buffer_entries ^"%d^") (life_buffer_entries ^"%d^") (sequence ^"%d^") (event_epoch ^"%d^")",
+		matchid, half, mapname, PLUGIN_VERSION, KSC_SCHEMA_CONTRACT,
+		KSC_CAPABILITIES, KSC_POSITION_BROADCAST_SECS,
+		KSC_BUF_MAX_ENTRIES, KSC_LIFE_BUF_MAX_ENTRIES, sequence, get_systime())
+}
+
+stock ksc_emit_health(const matchid[], half) {
+	new last_data_sequence = g_kscSequence
+	for (new event_type = 0; event_type < KSC_EVENT_COUNT; event_type++) {
+		new sequence = ksc_next_sequence()
+		log_message("KTP_CAPTURE_HEALTH (matchid ^"%s^") (half ^"%d^") (event_type ^"%s^") (attempted ^"%d^") (enqueued ^"%d^") (dropped ^"%d^") (emitted ^"%d^") (sequence_first ^"1^") (sequence_last ^"%d^") (sequence ^"%d^") (event_epoch ^"%d^")",
+			matchid, half, g_kscEventNames[event_type],
+			g_kscAttempted[event_type], g_kscEnqueued[event_type],
+			g_kscDroppedByType[event_type], g_kscEmitted[event_type],
+			last_data_sequence, sequence, get_systime())
+	}
+}
+
+stock ksc_buffer(const line[], event_type) {
+	g_kscAttempted[event_type]++
 	if (g_kscBufferCount >= KSC_BUF_MAX_ENTRIES) {
 		// Deliberately NOT an inline flush (which is what the stock buffer_log
 		// does when full): this runs in postthink, and a synchronous write here
@@ -214,11 +284,15 @@ stock ksc_buffer(const line[]) {
 		// count instead -- the task drains within KSC_BUF_FLUSH_SECS, and a
 		// non-zero counter in the logs is the signal to raise the size.
 		g_kscDropped++
+		g_kscDroppedByType[event_type]++
 		return
 	}
 
 	copy(g_kscBuffer[g_kscBufferCount], KSC_BUF_LINE_LEN - 1, line)
+	g_kscBufferType[g_kscBufferCount] = event_type
+	g_kscBufferSequence[g_kscBufferCount] = g_kscSequence
 	g_kscBufferCount++
+	g_kscEnqueued[event_type]++
 }
 
 stock ksc_normalize_match_half(half) {
@@ -248,8 +322,15 @@ stock ksc_on_match_start(const matchid[], half) {
 	copy(g_kscProducerMatchId, charsmax(g_kscProducerMatchId), matchid)
 	g_kscProducerHalf = normalized_half
 	g_kscProducerContextConfirmed = false
+	ksc_flush()
+	ksc_reset_health()
 	g_kscLifeBaselinePending = true
 	ksc_clear_open_lives()
+	ksc_emit_manifest(matchid, normalized_half)
+	// Static metadata is an idempotent upsert. Re-emit it at the authoritative
+	// match boundary so a map-load log-path miss cannot disable objective
+	// distance analytics for the whole half.
+	ksc_flag_positions_task()
 }
 
 stock ksc_on_match_context_end(const matchid[]) {
@@ -260,6 +341,7 @@ stock ksc_on_match_context_end(const matchid[]) {
 	// Preserve ordering: drain boundaries while this exact producer context is
 	// still known, then make later warmup/disconnect events fail closed.
 	ksc_flush()
+	ksc_emit_health(matchid, g_kscProducerHalf)
 	g_kscProducerMatchId[0] = 0
 	g_kscProducerHalf = 0
 	g_kscProducerContextConfirmed = false
@@ -304,13 +386,18 @@ stock bool:ksc_event_context(matchid[], len, &half) {
 }
 
 stock bool:ksc_life_buffer(const line[]) {
+	g_kscAttempted[KSC_EVENT_LIFE]++
 	if (g_kscLifeBufferCount >= KSC_LIFE_BUF_MAX_ENTRIES) {
 		g_kscLifeDropped++
+		g_kscDroppedByType[KSC_EVENT_LIFE]++
 		return false
 	}
 
 	copy(g_kscLifeBuffer[g_kscLifeBufferCount], KSC_LIFE_BUF_LINE_LEN - 1, line)
+	g_kscLifeBufferType[g_kscLifeBufferCount] = KSC_EVENT_LIFE
+	g_kscLifeBufferSequence[g_kscLifeBufferCount] = g_kscSequence
 	g_kscLifeBufferCount++
+	g_kscEnqueued[KSC_EVENT_LIFE]++
 	return true
 }
 
@@ -319,17 +406,24 @@ public ksc_flush_task() {
 }
 
 stock ksc_flush() {
-	// MatchHandler calls this before it clears context. Drain the durable,
-	// low-volume control-plane queue before the high-volume capture queue.
-	for (new i = 0; i < g_kscLifeBufferCount; i++)
-		log_message("%s", g_kscLifeBuffer[i])
-
-	g_kscLifeBufferCount = 0
-
-	for (new i = 0; i < g_kscBufferCount; i++)
-		log_message("%s", g_kscBuffer[i])
+	// Both capacity pools share one producer sequence. Merge their already
+	// ordered contents so neither queue can jump ahead of the other on the wire.
+	new data_i = 0, life_i = 0
+	while (data_i < g_kscBufferCount || life_i < g_kscLifeBufferCount) {
+		if (life_i < g_kscLifeBufferCount &&
+			(data_i >= g_kscBufferCount || g_kscLifeBufferSequence[life_i] < g_kscBufferSequence[data_i])) {
+			log_message("%s", g_kscLifeBuffer[life_i])
+			g_kscEmitted[g_kscLifeBufferType[life_i]]++
+			life_i++
+		} else {
+			log_message("%s", g_kscBuffer[data_i])
+			g_kscEmitted[g_kscBufferType[data_i]]++
+			data_i++
+		}
+	}
 
 	g_kscBufferCount = 0
+	g_kscLifeBufferCount = 0
 
 	if (g_kscDropped > 0) {
 		log_amx("[KTP-STATS] dropped %d capture line(s) -- buffer full", g_kscDropped)
@@ -479,12 +573,13 @@ stock bool:ksc_emit_life_boundary(id, const matchid[], const kind[], const reaso
 	new class_id = dod_get_user_class(id)
 	new event_epoch = get_systime()
 	new Float:game_time = get_gametime()
+	new sequence = ksc_next_sequence()
 
 	new line[KSC_LIFE_BUF_LINE_LEN]
 	formatex(line, charsmax(line),
-		"^"%s^" triggered ^"life_boundary^" (matchid ^"%s^") (half ^"%d^") (event_epoch ^"%d^") (game_time ^"%.2f^") (kind ^"%s^") (reason ^"%s^") (team ^"%d^") (class ^"%d^") (slot ^"%d^")",
+		"^"%s^" triggered ^"life_boundary^" (matchid ^"%s^") (half ^"%d^") (event_epoch ^"%d^") (game_time ^"%.2f^") (kind ^"%s^") (reason ^"%s^") (team ^"%d^") (class ^"%d^") (slot ^"%d^") (sequence ^"%d^")",
 		player_str, producer_matchid, producer_half, event_epoch, game_time,
-		kind, reason, team, class_id, id)
+		kind, reason, team, class_id, id, sequence)
 	return ksc_life_buffer(line)
 }
 
@@ -709,6 +804,7 @@ stock bool:ksc_break_observe_round_clock() {
 stock ksc_break_shift(f) {
 	for (new i = 1; i < g_kscBreakCount[f]; i++) {
 		g_kscBreakQ[f][i - 1]   = g_kscBreakQ[f][i]
+		g_kscBreakVictim[f][i - 1] = g_kscBreakVictim[f][i]
 		g_kscBreakTtl[f][i - 1] = g_kscBreakTtl[f][i]
 	}
 
@@ -731,6 +827,26 @@ stock ksc_team_flag_count(team) {
 	return n
 }
 
+// A team owning one flag is not enough to call a capout threat. Neutral or
+// otherwise unaccounted-for flags make that inference false (observed live on
+// dod_thunder2, where the old one-sided check marked every central-point break
+// as a capout). Require a complete two-team partition: the defender owns this
+// final flag and the attacker owns every other objective.
+stock bool:ksc_is_full_capout_threat(defending_team) {
+	if (g_kscFlagCount < 2)
+		return false
+	if (defending_team != KSC_TEAM_ALLIES && defending_team != KSC_TEAM_AXIS)
+		return false
+
+	new attacking_team = (defending_team == KSC_TEAM_ALLIES) ? KSC_TEAM_AXIS : KSC_TEAM_ALLIES
+	if (ksc_team_flag_count(defending_team) != 1)
+		return false
+	if (ksc_team_flag_count(attacking_team) != g_kscFlagCount - 1)
+		return false
+
+	return true
+}
+
 stock ksc_normalize_owner(owner) {
 	// DODX can expose an authored/unowned point as -1 during initialization.
 	// The persisted contract uses the stable KTP team convention: 0=neutral,
@@ -746,9 +862,8 @@ stock ksc_normalize_owner(owner) {
 // the database every five seconds. Positions remain the independently sampled
 // stream that is joined to these intervals in the analytics layer.
 stock ksc_emit_flag_state(f, owner, is_initial) {
-	new matchid[64]
-	dodx_get_match_id(matchid, charsmax(matchid))
-	if (!matchid[0])
+	new matchid[64], half
+	if (!ksc_event_context(matchid, charsmax(matchid), half))
 		return
 
 	new mapname[32]
@@ -757,8 +872,14 @@ stock ksc_emit_flag_state(f, owner, is_initial) {
 	// Direct from the repeating zone task, not a player postthink callback.
 	// These lines are rare and their ordering relative to KTP_MATCH_START /
 	// KTP_ROUND_FREEZE matters, so do not hold them in the five-second buffer.
-	log_message("KTP_FLAG_STATE (map ^"%s^") (flag_index ^"%d^") (flag_name ^"%s^") (owner ^"%d^") (initial ^"%d^") (game_time ^"%.2f^")",
-		mapname, f, g_kscFlagName[f], owner, is_initial, get_gametime())
+	ksc_flush()
+	new sequence = ksc_next_sequence()
+	g_kscAttempted[KSC_EVENT_FLAG_STATE]++
+	g_kscEnqueued[KSC_EVENT_FLAG_STATE]++
+	log_message("KTP_FLAG_STATE (map ^"%s^") (flag_index ^"%d^") (flag_name ^"%s^") (owner ^"%d^") (initial ^"%d^") (game_time ^"%.2f^") (matchid ^"%s^") (half ^"%d^") (sequence ^"%d^") (event_epoch ^"%d^")",
+		mapname, f, g_kscFlagName[f], owner, is_initial, get_gametime(),
+		matchid, half, sequence, get_systime())
+	g_kscEmitted[KSC_EVENT_FLAG_STATE]++
 }
 
 stock ksc_ensure_ownership_baseline() {
@@ -780,6 +901,11 @@ stock ksc_ensure_ownership_baseline() {
 		return
 
 	copy(g_kscOwnershipMatchId, charsmax(g_kscOwnershipMatchId), matchid)
+	// Re-emit the static coordinates only after DODX confirms the same match
+	// context. The match-start forward can precede that write by a frame, so its
+	// eager attempt is useful but not sufficient for a sequenced health record.
+	for (new f = 0; f < g_kscFlagCount; f++)
+		ksc_emit_flag_position(f)
 	for (new f = 0; f < g_kscFlagCount; f++) {
 		// Refresh immediately before the baseline. If a round reset happened
 		// between polls, emitting the cached pre-reset owner followed by a
@@ -792,7 +918,7 @@ stock ksc_ensure_ownership_baseline() {
 	g_kscOwnershipBaselinePending = false
 }
 
-stock ksc_emit_break(f, breaker, contester_count) {
+stock ksc_emit_break(f, breaker, victim, contester_count) {
 	if (breaker < 1 || breaker > MAX_PLAYERS)
 		return
 	if (!is_user_connected(breaker))
@@ -815,7 +941,13 @@ stock ksc_emit_break(f, breaker, contester_count) {
 	// finished, i.e. they own exactly 1 right now: this one).
 	new Float:time_remaining = Float:dodx_area_get_data(f, CA_time_remaining)
 	new defending_team = (g_kscBreakTeam[f] == KSC_TEAM_ALLIES) ? KSC_TEAM_AXIS : KSC_TEAM_ALLIES
-	new is_capout = (ksc_team_flag_count(defending_team) == 1) ? 1 : 0
+	new is_capout = ksc_is_full_capout_threat(defending_team) ? 1 : 0
+	new sequence = ksc_next_sequence()
+	new producer_matchid[64], producer_half
+	copy(producer_matchid, charsmax(producer_matchid), "-")
+	ksc_event_context(producer_matchid, charsmax(producer_matchid), producer_half)
+	new event_epoch = get_systime()
+	new Float:game_time = get_gametime()
 
 	// Single-player action shape. Requires an hlstats_Actions row for
 	// game='dod', code='cap_break' with for_PlayerActions='1'.
@@ -828,30 +960,43 @@ stock ksc_emit_break(f, breaker, contester_count) {
 	// buffer-then-daemon-UPDATE technique frag_context uses on Frags.
 	if (have_pos)
 		formatex(line, charsmax(line),
-			"^"%s^" triggered ^"cap_break^" (flag ^"%s^") (position ^"%s^")",
-			breaker_str, g_kscFlagName[f], pos)
+			"^"%s^" triggered ^"cap_break^" (flag ^"%s^") (flag_index ^"%d^") (position ^"%s^") (matchid ^"%s^") (half ^"%d^") (sequence ^"%d^") (event_epoch ^"%d^") (game_time ^"%.2f^")",
+			breaker_str, g_kscFlagName[f], f, pos, producer_matchid,
+			producer_half, sequence, event_epoch, game_time)
 	else
 		formatex(line, charsmax(line),
-			"^"%s^" triggered ^"cap_break^" (flag ^"%s^")",
-			breaker_str, g_kscFlagName[f])
+			"^"%s^" triggered ^"cap_break^" (flag ^"%s^") (flag_index ^"%d^") (matchid ^"%s^") (half ^"%d^") (sequence ^"%d^") (event_epoch ^"%d^") (game_time ^"%.2f^")",
+			breaker_str, g_kscFlagName[f], f, producer_matchid,
+			producer_half, sequence, event_epoch, game_time)
 
-	ksc_buffer(line)
-	ksc_emit_break_context(breaker, contester_count, time_remaining, is_capout)
+	ksc_buffer(line, KSC_EVENT_BREAK)
+	ksc_emit_break_context(breaker, victim, f, contester_count, time_remaining, is_capout)
 }
 
 // Follow-up marker for the cap_break line just buffered above. Same
 // technique as frag_context/headshot_kill: the daemon flushes PlayerActions,
 // then UPDATEs the most recent matching row by (playerId, actionId) rather
 // than this being a second independent event.
-stock ksc_emit_break_context(breaker, contester_count, Float:time_remaining, is_capout) {
+stock ksc_emit_break_context(breaker, victim, flag_index, contester_count, Float:time_remaining, is_capout) {
 	new breaker_str[96], line[KSC_BUF_LINE_LEN]
 	ksc_player_str(breaker, breaker_str, charsmax(breaker_str))
+	new victim_str[96]
+	if (victim >= 1 && victim <= MAX_PLAYERS && is_user_connected(victim))
+		ksc_player_str(victim, victim_str, charsmax(victim_str))
+	else
+		copy(victim_str, charsmax(victim_str), "-")
+	new producer_matchid[64], producer_half
+	copy(producer_matchid, charsmax(producer_matchid), "-")
+	ksc_event_context(producer_matchid, charsmax(producer_matchid), producer_half)
+	new sequence = ksc_next_sequence()
 
 	formatex(line, charsmax(line),
-		"^"%s^" triggered ^"break_context^" (contester_count ^"%d^") (time_remaining ^"%.1f^") (is_capout ^"%d^")",
-		breaker_str, contester_count, time_remaining, is_capout)
+		"^"%s^" triggered ^"break_context^" (victim ^"%s^") (flag ^"%s^") (flag_index ^"%d^") (contester_count ^"%d^") (time_remaining ^"%.1f^") (is_capout ^"%d^") (matchid ^"%s^") (half ^"%d^") (sequence ^"%d^") (event_epoch ^"%d^") (game_time ^"%.2f^")",
+		breaker_str, victim_str, g_kscFlagName[flag_index], flag_index, contester_count,
+		time_remaining, is_capout, producer_matchid, producer_half, sequence,
+		get_systime(), get_gametime())
 
-	ksc_buffer(line)
+	ksc_buffer(line, KSC_EVENT_BREAK)
 }
 
 // The area API exposes aggregate team counts, not per-player membership.
@@ -949,6 +1094,7 @@ stock ksc_queue_break_candidate(killer, victim, bool:teamkill) {
 	if (g_kscBreakCount[f] < KSC_BREAK_QUEUE_MAX) {
 		new q = g_kscBreakCount[f]
 		g_kscBreakQ[f][q]   = killer
+		g_kscBreakVictim[f][q] = victim
 		g_kscBreakTtl[f][q] = KSC_BREAK_WINDOW
 		g_kscBreakCount[f]++
 	}
@@ -1017,7 +1163,7 @@ public ksc_zone_poll_task() {
 				new contester_count = g_kscBreakBase[f]
 
 				while (drops > 0 && g_kscBreakCount[f] > 0) {
-					ksc_emit_break(f, g_kscBreakQ[f][0], contester_count)
+					ksc_emit_break(f, g_kscBreakQ[f][0], g_kscBreakVictim[f][0], contester_count)
 					ksc_break_shift(f)
 					drops--
 				}
@@ -1113,8 +1259,22 @@ stock ksc_emit_flag_position(f) {
 	new mapname[32]
 	get_mapname(mapname, charsmax(mapname))
 
-	log_message("KTP_FLAG_POSITION (map ^"%s^") (flag_index ^"%d^") (flag_name ^"%s^") (x ^"%d^") (y ^"%d^")",
-		mapname, f, g_kscFlagName[f], x, y)
+	new matchid[64], half, sequence = 0
+	new bool:tracked = ksc_event_context(matchid, charsmax(matchid), half)
+	if (!tracked)
+		copy(matchid, charsmax(matchid), "-")
+	else {
+		// A direct metadata record must follow every older buffered sequence.
+		ksc_flush()
+		sequence = ksc_next_sequence()
+		g_kscAttempted[KSC_EVENT_FLAG_POSITION]++
+		g_kscEnqueued[KSC_EVENT_FLAG_POSITION]++
+	}
+
+	log_message("KTP_FLAG_POSITION (map ^"%s^") (flag_index ^"%d^") (flag_name ^"%s^") (x ^"%d^") (y ^"%d^") (matchid ^"%s^") (half ^"%d^") (sequence ^"%d^") (event_epoch ^"%d^")",
+		mapname, f, g_kscFlagName[f], x, y, matchid, half, sequence, get_systime())
+	if (tracked)
+		g_kscEmitted[KSC_EVENT_FLAG_POSITION]++
 }
 
 // Periodic roster-position sample -- raw facts only, on purpose. Per the
@@ -1132,6 +1292,9 @@ stock ksc_emit_flag_position(f) {
 public ksc_position_broadcast_task() {
 	if (!ksc_enabled())
 		return
+	new producer_matchid[64], producer_half
+	if (!ksc_event_context(producer_matchid, charsmax(producer_matchid), producer_half))
+		return
 
 	for (new id = 1; id <= MAX_PLAYERS; id++) {
 		if (!is_user_connected(id))
@@ -1148,12 +1311,14 @@ public ksc_position_broadcast_task() {
 
 		new team = get_user_team(id)
 		new Float:gt = get_gametime()
+		new event_epoch = get_systime()
+		new sequence = ksc_next_sequence()
 
 		new line[KSC_BUF_LINE_LEN]
 		formatex(line, charsmax(line),
-			"^"%s^" triggered ^"position_sample^" (team ^"%d^") (position ^"%s^") (game_time ^"%.2f^")",
-			pstr, team, pos, gt)
-		ksc_buffer(line)
+			"^"%s^" triggered ^"position_sample^" (team ^"%d^") (position ^"%s^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^")",
+			pstr, team, pos, producer_matchid, producer_half, gt, event_epoch, sequence)
+		ksc_buffer(line, KSC_EVENT_POSITION)
 	}
 }
 
@@ -1208,14 +1373,15 @@ stock ksc_emit_damage(attacker, victim, damage, wpnindex, hitplace) {
 	new producer_matchid[64], producer_half
 	copy(producer_matchid, charsmax(producer_matchid), "-")
 	ksc_event_context(producer_matchid, charsmax(producer_matchid), producer_half)
+	new sequence = ksc_next_sequence()
 
 	new line[KSC_BUF_LINE_LEN]
 	formatex(line, charsmax(line),
-		"^"%s^" triggered ^"damage^" against ^"%s^" with ^"%s^" (damage ^"%d^") (damage_capped ^"%d^") (hitplace ^"%d^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^")",
+		"^"%s^" triggered ^"damage^" against ^"%s^" with ^"%s^" (damage ^"%d^") (damage_capped ^"%d^") (hitplace ^"%d^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^")",
 		attacker_str, victim_str, weapon,
-		damage, damage_capped, hitplace, producer_matchid, producer_half, gt, event_epoch)
+		damage, damage_capped, hitplace, producer_matchid, producer_half, gt, event_epoch, sequence)
 
-	ksc_buffer(line)
+	ksc_buffer(line, KSC_EVENT_DAMAGE)
 }
 
 // Radius (2D, world units) within which a kill counts as "near" a defended
@@ -1233,7 +1399,7 @@ stock ksc_emit_damage(attacker, victim, damage, wpnindex, hitplace) {
 // queue structurally cannot see a kill that never touched a capture zone.
 // 2D only: dodx.inc exposes no CP_origin_z, matching ksc_emit_flag_position.
 stock bool:ksc_is_last_flag_defense(killer, killer_team) {
-	if (ksc_team_flag_count(killer_team) != 1)
+	if (!ksc_is_full_capout_threat(killer_team))
 		return false
 
 	new last_flag = -1
@@ -1303,28 +1469,29 @@ stock ksc_emit_frag_context(killer, victim, wpnindex, hitplace) {
 	new producer_matchid[64], producer_half
 	copy(producer_matchid, charsmax(producer_matchid), "-")
 	ksc_event_context(producer_matchid, charsmax(producer_matchid), producer_half)
+	new sequence = ksc_next_sequence()
 
 	new line[KSC_BUF_LINE_LEN]
 	if (have_k_pos && have_v_pos)
 		formatex(line, charsmax(line),
-			"^"%s^" triggered ^"frag_context^" against ^"%s^" with ^"%s^" (headshot ^"%d^") (k_prone ^"%d^") (v_prone ^"%d^") (k_scope ^"%d^") (v_scope ^"%d^") (k_clip ^"%d^") (k_ammo ^"%d^") (v_clip ^"%d^") (v_ammo ^"%d^") (k_position ^"%s^") (v_position ^"%s^") (is_last_flag_defense ^"%d^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^")",
+			"^"%s^" triggered ^"frag_context^" against ^"%s^" with ^"%s^" (headshot ^"%d^") (k_prone ^"%d^") (v_prone ^"%d^") (k_scope ^"%d^") (v_scope ^"%d^") (k_clip ^"%d^") (k_ammo ^"%d^") (v_clip ^"%d^") (v_ammo ^"%d^") (k_position ^"%s^") (v_position ^"%s^") (is_last_flag_defense ^"%d^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^")",
 			killer_str, victim_str, weapon,
 			headshot, k_prone, v_prone,
 			g_kscScoped[killer], g_kscScoped[victim],
 			k_clip, k_ammo, v_clip, v_ammo,
 			k_pos, v_pos, is_last_flag_defense,
-			producer_matchid, producer_half, game_time, event_epoch)
+			producer_matchid, producer_half, game_time, event_epoch, sequence)
 	else
 		formatex(line, charsmax(line),
-			"^"%s^" triggered ^"frag_context^" against ^"%s^" with ^"%s^" (headshot ^"%d^") (k_prone ^"%d^") (v_prone ^"%d^") (k_scope ^"%d^") (v_scope ^"%d^") (k_clip ^"%d^") (k_ammo ^"%d^") (v_clip ^"%d^") (v_ammo ^"%d^") (is_last_flag_defense ^"%d^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^")",
+			"^"%s^" triggered ^"frag_context^" against ^"%s^" with ^"%s^" (headshot ^"%d^") (k_prone ^"%d^") (v_prone ^"%d^") (k_scope ^"%d^") (v_scope ^"%d^") (k_clip ^"%d^") (k_ammo ^"%d^") (v_clip ^"%d^") (v_ammo ^"%d^") (is_last_flag_defense ^"%d^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^")",
 			killer_str, victim_str, weapon,
 			headshot, k_prone, v_prone,
 			g_kscScoped[killer], g_kscScoped[victim],
 			k_clip, k_ammo, v_clip, v_ammo,
 			is_last_flag_defense,
-			producer_matchid, producer_half, game_time, event_epoch)
+			producer_matchid, producer_half, game_time, event_epoch, sequence)
 
-	ksc_buffer(line)
+	ksc_buffer(line, KSC_EVENT_FRAG)
 }
 
 // Called from stats_logging.sma's client_death, ahead of its old headshot-only
@@ -1390,6 +1557,7 @@ stock ksc_on_death(killer, victim, wpnindex, hitplace, TK) {
 			new assister_str[96], line[KSC_BUF_LINE_LEN], assister_pos[40]
 			ksc_player_str(a, assister_str, charsmax(assister_str))
 			new bool:have_assister_pos = ksc_origin_str(a, assister_pos, charsmax(assister_pos))
+			new sequence = ksc_next_sequence()
 
 			// Player-vs-player action shape (hlstats.pl's "triggered ... against"
 			// regex). Requires an hlstats_Actions row for game='dod',
@@ -1402,26 +1570,26 @@ stock ksc_on_death(killer, victim, wpnindex, hitplace, TK) {
 			// property rather than writing a bogus map-origin coordinate.
 			if (have_assister_pos && have_victim_pos)
 				formatex(line, charsmax(line),
-					"^"%s^" triggered ^"assist^" against ^"%s^" (assister_position ^"%s^") (victim_position ^"%s^") (matchid ^"%s^") (half ^"%d^") (event_epoch ^"%d^") (game_time ^"%.2f^")",
+					"^"%s^" triggered ^"assist^" against ^"%s^" (assister_position ^"%s^") (victim_position ^"%s^") (matchid ^"%s^") (half ^"%d^") (event_epoch ^"%d^") (game_time ^"%.2f^") (sequence ^"%d^")",
 					assister_str, victim_str, assister_pos, victim_pos,
-					producer_matchid, producer_half, event_epoch, game_time)
+					producer_matchid, producer_half, event_epoch, game_time, sequence)
 			else if (have_assister_pos)
 				formatex(line, charsmax(line),
-					"^"%s^" triggered ^"assist^" against ^"%s^" (assister_position ^"%s^") (matchid ^"%s^") (half ^"%d^") (event_epoch ^"%d^") (game_time ^"%.2f^")",
+					"^"%s^" triggered ^"assist^" against ^"%s^" (assister_position ^"%s^") (matchid ^"%s^") (half ^"%d^") (event_epoch ^"%d^") (game_time ^"%.2f^") (sequence ^"%d^")",
 					assister_str, victim_str, assister_pos,
-					producer_matchid, producer_half, event_epoch, game_time)
+					producer_matchid, producer_half, event_epoch, game_time, sequence)
 			else if (have_victim_pos)
 				formatex(line, charsmax(line),
-					"^"%s^" triggered ^"assist^" against ^"%s^" (victim_position ^"%s^") (matchid ^"%s^") (half ^"%d^") (event_epoch ^"%d^") (game_time ^"%.2f^")",
+					"^"%s^" triggered ^"assist^" against ^"%s^" (victim_position ^"%s^") (matchid ^"%s^") (half ^"%d^") (event_epoch ^"%d^") (game_time ^"%.2f^") (sequence ^"%d^")",
 					assister_str, victim_str, victim_pos,
-					producer_matchid, producer_half, event_epoch, game_time)
+					producer_matchid, producer_half, event_epoch, game_time, sequence)
 			else
 				formatex(line, charsmax(line),
-					"^"%s^" triggered ^"assist^" against ^"%s^" (matchid ^"%s^") (half ^"%d^") (event_epoch ^"%d^") (game_time ^"%.2f^")",
+					"^"%s^" triggered ^"assist^" against ^"%s^" (matchid ^"%s^") (half ^"%d^") (event_epoch ^"%d^") (game_time ^"%.2f^") (sequence ^"%d^")",
 					assister_str, victim_str,
-					producer_matchid, producer_half, event_epoch, game_time)
+					producer_matchid, producer_half, event_epoch, game_time, sequence)
 
-			ksc_buffer(line)
+			ksc_buffer(line, KSC_EVENT_ASSIST)
 		}
 	}
 
