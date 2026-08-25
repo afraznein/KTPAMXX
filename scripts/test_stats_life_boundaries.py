@@ -151,6 +151,29 @@ def test_disconnect_precedes_slot_clear_and_pause_gate() -> None:
     before(disconnected, "ksc_on_disconnect(id)", "if ( is_user_bot(id) || !isDSMActive() )")
 
 
+def test_disconnect_purges_break_queue_by_zeroing() -> None:
+    # A queued candidate outlives its killer by up to KSC_BREAK_WINDOW polls,
+    # and slots recycle. The purge must ZERO matching killer/victim entries,
+    # never remove them: the victim's delayed zone decrement still consumes a
+    # queue slot in FIFO order, so removal would shift that drop onto the next
+    # queued candidate. Zeroed entries are inert in both emitters (range guard
+    # in ksc_emit_break; "-" victim in ksc_emit_break_context).
+    purge = function_body(CAPTURE, "stock ksc_break_purge_player")
+    assert "g_kscBreakQ[f][q] = 0" in purge
+    assert "g_kscBreakVictim[f][q] = 0" in purge
+    assert "g_kscBreakCount[f]--" not in purge  # zero, never compact
+    assert "ksc_break_shift" not in purge
+
+    clear = function_body(CAPTURE, "stock ksc_clear_player")
+    assert "ksc_break_purge_player(id)" in clear
+
+    emit = function_body(CAPTURE, "stock ksc_emit_break")
+    before(emit, "if (breaker < 1 || breaker > MAX_PLAYERS)",
+           "ksc_player_str(breaker")
+    context = function_body(CAPTURE, "stock ksc_emit_break_context")
+    assert 'copy(victim_str, charsmax(victim_str), "-")' in context
+
+
 def test_context_baseline_precedes_objective_early_return() -> None:
     poll = function_body(CAPTURE, "public ksc_zone_poll_task")
     before(poll, "ksc_sync_life_context()", "if (!ksc_enabled())")
