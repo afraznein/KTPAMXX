@@ -71,6 +71,13 @@
 #define KSC_BREAK_WINDOW    5   // polls a candidate stays live (~2.5s)
 #define KSC_ROUND_REBASE_EPSILON 0.01
 
+// Consecutive polls (KSC_ZONE_POLL_SECS apart) the round clock may read
+// unavailable before the fail-closed suppression is worth announcing. The
+// clock is legitimately unavailable in short bursts around gamerules setup;
+// ten seconds of it means a standing condition (mp_timelimit 0 being the
+// reachable one -- dodx_get_round_time() documents "no time limit" as -1.0).
+#define KSC_ROUND_CLOCK_WARN_POLLS 20
+
 // Roster-position broadcast for positional/"holding" stats (map presence
 // beyond a discrete capture event) and, later, ninja-cap detection -- both
 // deferred items that need the exact same underlying data (see
@@ -217,6 +224,7 @@ new g_kscBreakBase[KSC_MAX_FLAGS]   // rolling in-zone baseline to measure drops
 new Float:g_kscLastRoundTime = -1.0
 new bool:g_kscBreakBaselineSuppressed = true
 new g_kscCvarTimelimit
+new g_kscRoundClockUnavailPolls = 0  // consecutive unavailable polls; -1 once warned
 
 // Defined up here only because Pawn resolves stocks in declaration order and
 // ksc_cfg() below needs it.
@@ -810,8 +818,22 @@ stock bool:ksc_break_observe_round_clock() {
 		// one fresh baseline before break evaluation resumes.
 		g_kscLastRoundTime = -1.0
 		g_kscBreakBaselineSuppressed = true
+
+		// Fail-closed is deliberate, but silent-forever is not: mp_timelimit 0
+		// is a legitimate server setting that keeps this branch taken on every
+		// poll, permanently disabling cap-break attribution with nothing in any
+		// log. Announce a SUSTAINED unavailability once per episode; a valid
+		// reading re-arms the diagnostic.
+		if (g_kscRoundClockUnavailPolls >= 0
+			&& ++g_kscRoundClockUnavailPolls >= KSC_ROUND_CLOCK_WARN_POLLS) {
+			log_amx("[KTP-STATS] round clock unavailable for %d polls -- cap-break attribution is fail-closed until it returns (mp_timelimit 0 disables the half clock; see dodx_get_round_time)",
+				KSC_ROUND_CLOCK_WARN_POLLS)
+			g_kscRoundClockUnavailPolls = -1
+		}
 		return true
 	}
+
+	g_kscRoundClockUnavailPolls = 0
 
 	new Float:limit = -1.0
 	if (g_kscCvarTimelimit)

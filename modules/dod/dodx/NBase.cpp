@@ -1556,6 +1556,8 @@ static cell AMX_NATIVE_CALL dodx_send_ammox(AMX *amx, cell *params)
 // KTP: Give a grenade weapon to a player (for infinite grenades in practice mode)
 // dodx_give_grenade(id, grenade_type)
 // grenade_type: DODW_HANDGRENADE (13), DODW_STICKGRENADE (14), DODW_MILLS_BOMB (36)
+// Returns 1 = picked up, 2 = refused but the player already holds one (benign),
+// -1 = refused with an empty or unreadable slot, 0 = bad args/dead/DLL unavailable.
 static cell AMX_NATIVE_CALL dodx_give_grenade(AMX *amx, cell *params)
 {
 	int index = params[1];
@@ -1591,6 +1593,18 @@ static cell AMX_NATIVE_CALL dodx_give_grenade(AMX *amx, cell *params)
 	DLL_FUNCTIONS* pGameDll = (DLL_FUNCTIONS*)MF_GetGameDllFuncs();
 	if (!pGameDll || !pGameDll->pfnSpawn || !pGameDll->pfnTouch)
 		return 0;
+
+	// Read the grenade slot BEFORE the entity exists. A refused pickup looks
+	// identical from the DLL whether the player is at capacity or something is
+	// genuinely wrong; this pre-spawn read is the only thing that can tell the
+	// two apart, and "already holds one" is benign, not a failure.
+	int heldBefore = -1;
+	if (pPlayer->pEdict->pvPrivateData)
+	{
+		int heldSlot = DODX_GrenadeAmmoIndex(grenadeType);
+		if (heldSlot >= 0)
+			heldBefore = *((int*)pPlayer->pEdict->pvPrivateData + PDOFFSET_AMMO_ARRAY + heldSlot);
+	}
 
 	// Create the weapon entity
 	edict_t* pWeapon = CREATE_NAMED_ENTITY(ALLOC_STRING(weaponClass));
@@ -1646,7 +1660,9 @@ static cell AMX_NATIVE_CALL dodx_give_grenade(AMX *amx, cell *params)
 	if (pWeapon->v.solid == oldSolid && !FNullEnt(pWeapon) && pWeapon->free == 0)
 	{
 		REMOVE_ENTITY(pWeapon);
-		return -1;  // Indicate pickup failed (player may already have max)
+		if (heldBefore > 0)
+			return 2;  // Not an error: the player already holds one
+		return -1;  // Refused with an empty (or unreadable) slot
 	}
 
 	return 1;
