@@ -31,10 +31,20 @@ IGameConfig *CommonConfig;
  * supplied to Metamod through mm_gamedll.  Resolve only that already-loaded
  * object (RTLD_NOLOAD is deliberate) and verify that the anchor symbol belongs
  * to the same file before trusting its base address.
+ *
+ * identityMismatch distinguishes the two failure shapes: a declared object
+ * that IS mapped in this process but fails the anchor identity check (keep
+ * failing closed) versus one that is not mapped at all -- a stale localinfo,
+ * which the caller may fall back from.
  */
 static bool ResolveLoadedMetamodGameDll(const char *gameDll, void **baseAddress,
-	char *pathBuffer, size_t pathBufferSize)
+	char *pathBuffer, size_t pathBufferSize, bool *identityMismatch)
 {
+	if (identityMismatch)
+	{
+		*identityMismatch = false;
+	}
+
 	if (!gameDll || !gameDll[0])
 	{
 		return false;
@@ -76,7 +86,11 @@ static bool ResolveLoadedMetamodGameDll(const char *gameDll, void **baseAddress,
 			continue;
 		}
 
-		void *handle = dlopen(resolvedPath, RTLD_NOW | RTLD_NOLOAD);
+		// RTLD_LAZY: the object is already mapped (RTLD_NOLOAD) and only one
+		// exported symbol is dlsym'd below. RTLD_NOW would promote a lazily
+		// bound game DLL to eager relocation and can hard-fail resolution on
+		// an unrelated unresolved symbol.
+		void *handle = dlopen(resolvedPath, RTLD_LAZY | RTLD_NOLOAD);
 		if (!handle)
 		{
 			free(resolvedPath);
@@ -95,6 +109,14 @@ static bool ResolveLoadedMetamodGameDll(const char *gameDll, void **baseAddress,
 			&& stat(info.dli_fname, &resolvedStat) == 0
 			&& requestedStat.st_dev == resolvedStat.st_dev
 			&& requestedStat.st_ino == resolvedStat.st_ino;
+
+		if (!valid && identityMismatch)
+		{
+			// This candidate IS mapped in the process (RTLD_NOLOAD handed back
+			// a handle) yet could not be proven to be the file the localinfo
+			// names -- the shape the caller must keep failing closed on.
+			*identityMismatch = true;
+		}
 
 		if (valid)
 		{
@@ -1398,15 +1420,32 @@ bool CGameConfigManager::ResolveLibraryInfo(const char *library, void **baseAddr
 			const char *metamodGameDll = get_localinfo("mm_gamedll", "");
 			if (metamodGameDll && metamodGameDll[0])
 			{
+				bool identityMismatch = false;
+
 				if (ResolveLoadedMetamodGameDll(metamodGameDll, baseAddress,
-					pathBuffer, pathBufferSize))
+					pathBuffer, pathBufferSize, &identityMismatch))
 				{
 					return true;
 				}
 
-				AMXXLOG_Error("Unable to prove declared mm_gamedll \"%s\" is the loaded server library",
+				if (identityMismatch)
+				{
+					// The declared object is mapped but could not be proven to
+					// be the file the localinfo names. Trusting anything here
+					// risks CRC'ing the wrong binary -- keep failing closed.
+					AMXXLOG_Error("Unable to prove declared mm_gamedll \"%s\" is the loaded server library",
+						metamodGameDll);
+					return false;
+				}
+
+				// The declared DLL is not mapped in this process at all:
+				// localinfo is settable from any cfg or rcon and survives map
+				// changes, so this is a stale value, not a split-loader
+				// topology. Hard-failing here permanently null-caches "server"
+				// resolution for the whole process; fall back to the engine
+				// entity interface the non-declared path already trusts.
+				AMXXLOG_Log("Declared mm_gamedll \"%s\" is not loaded in this process; ignoring stale localinfo and resolving via the engine entity interface",
 					metamodGameDll);
-				return false;
 			}
 		}
 #endif
