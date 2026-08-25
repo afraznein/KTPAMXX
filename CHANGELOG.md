@@ -358,6 +358,42 @@ no longer describes this tree. See the 2.7.32 note.
   `DODX_ReadBSPPointIndices` to `DODX_ReadBSPControlPoints`, and a textually clean merge produced a
   loop iterating an array nothing populated.
 
+### Added
+- **`dodx_cp_identity_resolved()`** — reports whether `mObjects` is in the game DLL's control
+  point index space, i.e. whether `DODX_ResolveCPIdentityFromDLL` committed on this map. It is a
+  plain read of `g_cpOrderingFinalized`, the same latch the resolver sets and that the InitObj
+  message path tests.
+
+  It exists because the CP-identity change cannot roll out safely without it. `KTPHudObserver` is
+  enabled on all 24 instances and its `init_cp_index_remap()` hardcodes the `dod_saints2_b3e` /
+  `dod_saints2_b2` / `dod_donner` permutations that the resolver now derives from the DLL. Module
+  and plugin cannot be swapped in one atomic step, so **both orderings of a staged rollout are
+  broken without a query**: new module with old plugin double-permutes those maps, old module with
+  new plugin un-permutes them. Gating the remap on this native makes one plugin build correct
+  against either module.
+
+  0 is returned for three distinct conditions, deliberately collapsed because the consumer's
+  response is the same in all of them: the resolve has not landed yet (it needs 2s of game time
+  after the map loads), it gave up — no `dod_control_point_master`, or more than one — or the
+  module is running under Metamod, where neither the entity scan nor the resolver runs at all.
+  The latch is cleared on `PF_changelevel_I` and again by the entity scan inside
+  `SV_ActivateServer`, so it cannot carry a stale 1 into a map the resolver then gives up on.
+
+  ⚠️ **Read it at the point of use, not once from `controlpoints_init`.** The resolver re-fires
+  that forward only when it actually *changes* the order; on a map whose scan order was already
+  correct — `dod_anzio`, `dod_jagd` — the latch flips to 1 and no second fire follows, so a
+  consumer that samples it only at init would read 0 for the rest of the map.
+
+### Changed
+- **`dodx.inc`: the `CP_index` invariant is now scoped to extension mode.** The block stated
+  unconditionally that `CP_index` reads back the DLL's cp index + 1. That holds only where the
+  entity scan and the DLL resolve supply the ordering. On the Metamod path `Client_InitObj` case 2
+  assigns `index` straight off the wire, and the resolver is armed only from the extension-mode
+  `SV_ActivateServer` hook (`DODX_SetupExtensionHooks` runs behind `MF_IsExtensionMode()`, and
+  `DODX_InitCPFromEntities` returns at its own `g_bExtensionMode` gate), so neither runs there.
+- The same block said of an unresolvable map that *"there is no way to ask for it from a plugin"*.
+  It now points at `dodx_cp_identity_resolved()`.
+
 ## [2.7.31] - 2026-08-16
 
 **DODX only. The core module is NOT part of this cut** — it stays 2.7.27
