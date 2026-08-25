@@ -495,7 +495,7 @@ def test_physical_boundaries_do_not_use_stats_pause_gate() -> None:
 
 
 def test_plugin_version() -> None:
-    assert re.search(r'#define\s+PLUGIN_VERSION\s+"1\.16\.2"', STATS)
+    assert re.search(r'#define\s+PLUGIN_VERSION\s+"1\.17\.0"', STATS)
 
 
 def test_capout_requires_a_complete_two_team_partition() -> None:
