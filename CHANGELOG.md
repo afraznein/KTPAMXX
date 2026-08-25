@@ -36,6 +36,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fired and nothing proved the emit happened, so the two halves lived in different log files and
   could not be compared.
 
+### Fixed — `mp_timelimit 0` disabled cap-break attribution with no diagnostic
+
+- `dodx_get_round_time()` documents `-1.0` for "no time limit", so `mp_timelimit 0` — a
+  legitimate server setting — keeps `ksc_break_observe_round_clock()`'s unavailable
+  branch taken on every poll. That branch is deliberately fail-closed (an occupancy drop
+  cannot be told apart from a round-reset collapse without the clock) and stays so; the
+  defect was that nothing anywhere said the feature was off.
+- The producer now announces a **sustained** unavailability once per episode
+  (`KSC_ROUND_CLOCK_WARN_POLLS` consecutive polls, ~10s — short bursts around gamerules
+  setup stay quiet), and a valid reading re-arms the diagnostic. Behavior of the
+  suppression itself is unchanged.
+
 ### Fixed — the cap-break containment test could not load on this fleet
 
 - **`stats_logging.amxx` was built with `#include <fakemeta>` and would have failed to load on all
