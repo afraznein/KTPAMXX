@@ -30,6 +30,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which is the honest outcome; a zeroed victim renders as `"-"` in `break_context`,
   which that emitter already defines for an unavailable victim.
 
+### Changed — `dodx_give_grenade` distinguishes "already holds one" from a real refusal
+
+- The DLL's refusal signature is identical whether the player is at capacity or something
+  is genuinely wrong, so every refused pickup returned `-1` and plugins logged it as a
+  failure — ~75k fleet-wide "failures", most of them benign. The native now reads the
+  grenade's ammo slot **before** spawning the entity: a refusal with the slot already
+  holding one returns **`2`** (benign); `-1` now means refused with an empty or unreadable
+  slot — the case actually worth logging.
+- Success (`1`) and error (`0`) paths are unchanged, and every non-`1` still means
+  "entity not granted", so existing callers (`KTPGrenadeLoadout` `:307`,
+  `KTPPracticeMode` `.grenade`) keep working — they just keep mislabelling `2` as failed
+  until their own follow-up change consumes the new code.
+- ⛔ **Not part of the pinned 2.7.32 ABI-wave artifacts.** Those are hash-pinned to their
+  review; this rides the next dodx cut.
+
 ### Fixed — dodx: CP ownership was never re-seeded after a round restart (#10)
 
 - **From round 2 onward, `CP_owner` reported the pre-restart ownership on every
@@ -76,6 +91,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ksc_flag_positions_task` now logs once when it emits. The forward's own diagnostic proved it
   fired and nothing proved the emit happened, so the two halves lived in different log files and
   could not be compared.
+
+### Fixed — `mp_timelimit 0` disabled cap-break attribution with no diagnostic
+
+- `dodx_get_round_time()` documents `-1.0` for "no time limit", so `mp_timelimit 0` — a
+  legitimate server setting — keeps `ksc_break_observe_round_clock()`'s unavailable
+  branch taken on every poll. That branch is deliberately fail-closed (an occupancy drop
+  cannot be told apart from a round-reset collapse without the clock) and stays so; the
+  defect was that nothing anywhere said the feature was off.
+- The producer now announces a **sustained** unavailability once per episode
+  (`KSC_ROUND_CLOCK_WARN_POLLS` consecutive polls, ~10s — short bursts around gamerules
+  setup stay quiet), and a valid reading re-arms the diagnostic. Behavior of the
+  suppression itself is unchanged.
 
 ### Fixed — the cap-break containment test could not load on this fleet
 

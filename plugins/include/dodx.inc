@@ -580,11 +580,14 @@ native dodx_send_ammox(id, ammo_slot, count);
  *
  * @param id            Player index
  * @param grenade_type  Grenade weapon ID: DODW_HANDGRENADE (13), DODW_STICKGRENADE (14), DODW_MILLS_BOMB (36)
- * @return              1 on success, 0 on failure, -1 if the created weapon
- *                      entity was removed on pickup (typically the player
- *                      already has that grenade weapon). Callers set ammo
- *                      separately, so treat -1 as "entity not granted",
- *                      not success.
+ * @return              1 on success. 2 if the pickup was refused but the
+ *                      player's slot already held that grenade before the
+ *                      give — benign, not a failure. -1 if the pickup was
+ *                      refused with an empty (or unreadable) slot — a real
+ *                      refusal worth logging. 0 on failure (bad args, dead
+ *                      player, DLL unavailable). Callers set ammo
+ *                      separately, so treat every non-1 as "entity not
+ *                      granted".
  * @error               Invalid grenade_type raises a native error that
  *                      aborts the calling public — the 0 return is not
  *                      observable for that case.

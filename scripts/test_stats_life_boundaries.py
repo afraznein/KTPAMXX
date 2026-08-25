@@ -402,6 +402,25 @@ def _effective_teamkill_model(*, tk: bool, killer: int, victim: int,
     return killer_team in (1, 2) and killer_team == victim_team
 
 
+def test_sustained_round_clock_unavailability_is_announced_once() -> None:
+    # mp_timelimit 0 keeps dodx_get_round_time() at -1.0 forever, which keeps
+    # break suppression fail-closed on every poll. That stays deliberate, but
+    # it must announce itself: one log_amx per unavailable episode, re-armed
+    # only by a valid clock reading.
+    assert re.search(
+        r"#define\s+KSC_ROUND_CLOCK_WARN_POLLS\s+\d+", CAPTURE)
+    observe = function_body(CAPTURE, "stock bool:ksc_break_observe_round_clock")
+    unavailable = observe[observe.index("if (current < 0.0)"):
+                          observe.index("new Float:limit")]
+    assert "KSC_ROUND_CLOCK_WARN_POLLS" in unavailable
+    assert "log_amx(" in unavailable
+    # One-shot: the counter parks at -1 after warning...
+    before(unavailable, "log_amx(", "g_kscRoundClockUnavailPolls = -1")
+    # ...and only a valid reading re-arms it, after the unavailable branch.
+    before(observe, "return true", "g_kscRoundClockUnavailPolls = 0")
+    assert "g_kscRoundClockUnavailPolls = 0" in observe
+
+
 def test_effective_teamkill_covers_degraded_deathmsg_path() -> None:
     both = {1, 2}
     # The regression case: DeathMsg reports TK=0, but two live Allies are still
