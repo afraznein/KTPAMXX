@@ -2866,8 +2866,7 @@ static void DODX_InitCPFromEntities()
 //
 // Offsets are raw byte offsets from
 // gamedata/common.games/entities.games/dod/offsets-ccontrolpoint{,master}.txt.
-// Deliberately NOT read through pd_dcp: its Linux padding is one int short, so every
-// field from `owner` onward reads 4 bytes early.
+// Raw rather than through pd_dcp: CControlPointMaster has no pdata struct at all.
 #if defined(_WIN32)
 	#define CPM_OFF_ARRAY      328   // CControlPoint*[20]
 	#define CPM_OFF_NUMPOINTS  408
