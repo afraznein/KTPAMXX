@@ -13,6 +13,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.7.32] - unreleased
 
+### Fixed — per-half `KTP_CAPTURE_HEALTH` was silently lost on H2→OT and OT→OT
+
+- KTPMatchHandler's `ktp_half_end` fires exactly once, hardcoded `half=1`, and
+  `ktp_match_end` fires only at true match end — so the only signal an H2→OT or OT→OT
+  boundary sends the producer is the next `ktp_match_start`. `ksc_on_match_start` reset
+  the health counters there without emitting them, so the outgoing half's health record
+  (the reconciliation row for every event type) never reached the log. Observability
+  loss only: the data lines themselves were flushed before the reset.
+- `ksc_on_match_start` now flushes and emits the outgoing half's health record first,
+  guarded on a still-populated producer context. The normal H1 end is unaffected —
+  `ktp_half_end` already emits and clears the context, so the guard is false there. A
+  half aborted and restarted under the same id now produces a health record set for
+  each segment; the daemon already keys health on (matchid, half, sequence) and the
+  later set's `sequence_last` supersedes.
+
 ### Fixed — `KTP_FLAG_POSITION` only ever emitted for the map the server booted into
 
 - **The one-shot task that emits flag positions was armed from `controlpoints_init`, and in
