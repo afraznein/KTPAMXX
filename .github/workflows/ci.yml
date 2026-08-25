@@ -60,6 +60,10 @@ jobs:
         with:
           python-version: '3.9'
 
+      - name: Test stats life-boundary contract
+        working-directory: KTPAMXX
+        run: python3 scripts/test_stats_life_boundaries.py
+
       - name: Install 32-bit toolchain + compiler
         run: |
           sudo dpkg --add-architecture i386
