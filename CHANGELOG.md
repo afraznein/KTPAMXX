@@ -20,12 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   live candidate pointing at a slot the engine can hand to the next player to connect.
   `ksc_emit_break`'s `is_user_connected` check passes for the new occupant, so the break
   was credited to a player who never made it.
-- Disconnect now zeroes the slot's queued killer entries (`ksc_break_purge_player`,
-  called from `ksc_clear_player`). The entries are zeroed rather than removed: the dead
-  victim's delayed zone decrement still consumes a queue slot in FIFO order, so removing
-  the entry would shift that drop onto the next queued candidate — a different
-  misattribution. A zeroed breaker fails `ksc_emit_break`'s existing range guard and the
-  break goes uncredited, which is the honest outcome.
+- Disconnect now zeroes the slot's queued killer **and victim** entries
+  (`ksc_break_purge_player`, called from `ksc_clear_player`; `g_kscBreakVictim` feeds
+  `break_context`'s victim identity, which would otherwise name a recycled slot's new
+  occupant). The entries are zeroed rather than removed: the dead victim's delayed zone
+  decrement still consumes a queue slot in FIFO order, so removing the entry would shift
+  that drop onto the next queued candidate — a different misattribution. A zeroed
+  breaker fails `ksc_emit_break`'s existing range guard and the break goes uncredited,
+  which is the honest outcome; a zeroed victim renders as `"-"` in `break_context`,
+  which that emitter already defines for an unavailable victim.
 
 ### Fixed — `KTP_FLAG_POSITION` only ever emitted for the map the server booted into
 
@@ -194,7 +197,115 @@ The `main` fixes and the 2.7.31 cut were developed in parallel and neither shipp
 with the other; merging them changes the compiled module, so 2.7.31's pinned md5
 no longer describes this tree. See the 2.7.32 note.
 
+### Added
+- **Capture observability contract** (`stats_logging.sma` 1.16.2 -> 1.17.0).
+  Every half emits its producer version, schema contract, capability set,
+  position cadence, and buffer sizes. All custom markers carry one monotonic
+  producer sequence; end-of-half records report attempted, enqueued, dropped,
+  and emitted counts for eight event classes. Static flag positions are
+  idempotently re-emitted after the authoritative match context is confirmed,
+  and cap-break context carries exact flag, victim, and incident identity.
+- **Durable private life-boundary markers for continuous-respawn analytics**
+  (`ktp_stats_capture.inc`, `stats_logging.sma` 1.15.6 -> 1.16.0). The plugin
+  now emits buffered `life_boundary` player actions for `start/spawn`,
+  `start/context_live`, `end/death`, and `end/disconnect`, carrying explicit
+  `matchid`, authoritative producer `half`, wall-clock `event_epoch`,
+  map-relative `game_time`, team, class, and client slot. Producer context is
+  cached only from KTPMatchHandler's `ktp_match_start` multi-forward and must
+  agree with DODX's exact match id; empty/mismatched DODX context invalidates
+  the cache and capture never infers a half mid-match. This is canonical capture only;
+  it does not add a rating or publish player paths.
+  - Warmup remains fail-closed: an empty DODX match id emits no boundary.
+    Round-freeze events are not discarded. This first increment deliberately
+    does not stamp `round_live`: MatchHandler's `dodx_set_stats_paused()` state
+    is private to DODX and is not mirrored authoritatively by the public
+    `dodstats_pause` cvar. Emitting that cvar would create false data; adding a
+    trustworthy state field requires a later API or producer change.
+  - The existing 0.5-second task detects empty-to-populated and changed match
+    contexts before its no-flags early return. It baselines connected, alive
+    players as `context_live`, covering the production ordering where the clan
+    restart spawn precedes MatchHandler setting the match id. Observing the
+    empty gap makes the same id reusable for the next half without suppressing
+    its baseline.
+  - Live disconnects close the life before recycled-slot capture state is
+    cleared. Death ends are emitted from the existing `client_death` path, and
+    spawns retain the existing assist-ledger reset before opening the new life.
+  - Life markers use their own 64-entry high-priority ring instead of sharing
+    the bursty damage/frag ring. Its enqueue API reports failure truthfully,
+    baseline starts retry without marking a slot open, and its independent
+    drop counter remains loud in the AMXX log.
+  - `dod_stats_flush` now drains the private capture ring before every
+    connected/bot/stats-pause early return. MatchHandler invokes that forward
+    before clearing context, so already-buffered boundaries cannot arrive late
+    and lose attribution.
+  - `frag_context` and `damage` now also carry producer match/half plus
+    `event_epoch`/`game_time`; the existing `assist` action carries the same
+    four fields for a canonical companion ledger while retaining its generic
+    rating-neutral action. The general line buffer is 768 bytes so the
+    maximum-width clocked frag marker cannot be silently truncated.
+  - `scripts/test_stats_life_boundaries.py` locks the marker schema and the
+    ordering/gating invariants; CI runs it with Python before the native build.
+
+  Deployment requires a full HLDS/AMXX process restart: MatchHandler's
+  multi-forward consumer list is snapshotted when created, so late-loading only
+  `stats_logging.amxx` correctly leaves producer context fail-closed.
+
 ### Fixed
+- **Capout and last-flag-defense telemetry now requires the attacker to own
+  every other flag** (`ktp_stats_capture.inc`, `stats_logging.sma` 1.16.1 ->
+  1.16.2). The previous test only required the defender to own one flag. On a
+  neutral or incompletely represented topology that one-sided condition could
+  label ordinary central-point play as a capout threat. The shared predicate
+  now requires at least two flags, exactly one defender-owned flag, and all
+  remaining flags owned by the opposing team. Raw ownership telemetry is
+  unchanged; ambiguous states fail closed instead of producing a derived tag.
+
+- **Extension-mode gameconfig lookup now resolves the real game DLL through
+  Metamod's declared `mm_gamedll` path when the engine-facing callbacks are
+  anonymous trampolines** (`CGameConfigs.cpp`). This is the split-loader shape
+  used by the bot lane: KTP AMX remains a ReHLDS extension while Metamod hosts
+  the bot and loads `dod.so`. The fallback canonicalizes only the declared game
+  DLL, opens it with `RTLD_NOLOAD`, verifies the `GiveFnptrsToDll` anchor belongs
+  to that exact file, and then exposes its base to the existing signature
+  resolver. It neither guesses via entity wrappers nor loads a second DLL.
+  Direct production extension mode and ordinary Metamod-hosted KTP AMX retain
+  their existing `pfnSpawn`/`MDLL_Spawn` paths. Lane B now fails before gameplay
+  unless this resolves `g_pGameRules` and a valid DODX round clock.
+
+- **Round restarts in timed match configurations can no longer drain stale
+  cap-break candidates into phantom actions** (`ktp_stats_capture.inc`,
+  `stats_logging.sma` 1.16.0 -> 1.16.1).
+  The existing 0.5-second objective poll now observes DODX's authoritative
+  half clock before evaluating any per-flag count drop. An upward engine rebase
+  clears every pending killer; the projected clan-restart countdown and its
+  completion baseline remain suppressed until zeroed occupancies have been
+  refreshed. Match/half start and matching context end also clear the queue and
+  force a fresh baseline, preventing warmup or previous-half candidates from
+  crossing producer boundaries. If the authoritative clock is unavailable,
+  the producer now remains persistently fail-safe: every poll clears pending
+  candidates and refreshes live count baselines, and the first valid clock
+  sample after recovery is consumed as a fresh baseline before attribution
+  resumes. This intentionally disables cap-break attribution on untimed maps
+  or while gamerules/clock resolution is unavailable rather than risking a
+  phantom action. This uses the existing
+  `dodx_get_round_time()` native and does not add a RoundState, ReAPI, or core
+  module dependency.
+  Disabling `ktp_stats_capture` now clears the same queue and arms a fresh
+  baseline, so stale credit cannot cross a disabled/re-enabled interval.
+  Confirmed DODX context loss/mismatch also resets the queue and clock baseline,
+  covering force-reset and abandon teardown paths that intentionally do not fire
+  the normal half/match-end forwards.
+
+- **Teamkills no longer produce false missing-Frags diagnostics or cap-break
+  candidates when DODX's DeathMsg fallback loses its TK bit**
+  (`ktp_stats_capture.inc`, `stats_logging.sma` 1.16.1).
+  The producer derives an effective teamkill from either the forward's TK flag
+  or two valid, connected players on the same Allies/Axis team. That result is
+  shared by both candidate exclusion and `frag_context` emission. HLStatsX
+  stores teamkills in `hlstats_Events_Teamkills`, while `frag_context` is an
+  UPDATE contract for `hlstats_Events_Frags`; suppressing that marker is the
+  only truthful behavior until Teamkills has an explicit context schema.
+
 - **A newly started capture can no longer be missed by cap-break candidate
   selection** (`ktp_stats_capture.inc`, `stats_logging.sma` 1.15.5 ->
   1.15.6). Selection previously read the last 0.2-second cached capping team,
@@ -253,6 +364,136 @@ no longer describes this tree. See the 2.7.32 note.
   No gamedata change. `mObjects` seeding is left exactly as-is: the BSP `point_default_owner`
   pass still overwrites `owner`/`default_owner` after the scan, so this narrows the blast radius
   to making the pdata fallback correct rather than re-plumbing CP init.
+
+### Fixed
+- **Control point identity now comes from the game DLL instead of the BSP** (issues #5, #8, #11).
+  The entity scan runs before the DLL has stamped anything: `FoundPoints`, `m_iNumPoints`,
+  `m_bActive`, the whole `CControlPointMaster::ControlPointArray` and every `CControlPoint::m_iIndex`
+  are zero at `SV_ActivateServer` and land together **2.0s of game time later**, when the master
+  claims its points. Measured by raw pdata dump on a throwaway scratch server across `dod_anzio`,
+  `dod_jagd`, `dod_saints2_b3e` and `dod_merderet`, on a cold boot and on a changelevel. The trigger
+  is game time, not frames — frame 103 at ticrate 60 on boot, frame 58 after a changelevel, both at
+  `t=3.000` — so the new resolver polls `FoundPoints` rather than counting frames.
+
+  Ordering therefore had to be inferred from BSP `point_index`, which **25 of 97 shipped maps do not
+  carry**. On `dod_saints2_b3e` all five points read `-1`, the reorder short-circuits, and CP order
+  falls back to entity-scan order — so `SetObj(0)` ("allied 1st captured") landed on `flagmid`.
+
+  `DODX_ResolveCPIdentityFromDLL` now reorders `mObjects` from the master's `ControlPointArray`,
+  keyed on the `CControlPoint*` matched against the edict's `pvPrivateData` — exact pointer identity,
+  not a heuristic, which is what makes it work where all three candidate keys fail (`point_index`
+  absent, `targetname` collides — `dod_merderet` has two entities both named `flag 5` — and `flag_id`
+  is 0 this early). It commits only on a complete bijection, retries until a 30s deadline, and leaves
+  the existing order alone otherwise. Verified live: `dod_anzio`/`dod_jagd` report *order already
+  correct* (no regression where the BSP path worked), `dod_saints2_b3e` reorders to a distinct 0..4,
+  and `dod_merderet` follows the DLL down from 6 tracked points to the 5 the master actually claims.
+
+  ⚠️ **The DLL's set is authoritative and is not always every `dod_control_point` on the map.**
+  `dod_merderet` spawns six and the master claims five; tracking the extra one shifted every index
+  after it. Side effect: `KTPScoreTracker`'s `check_all_cps_owned()` iterated all six on that map,
+  including one the DLL never flips, so capout detection could never fire there. It can now.
+
+  ⚠️ **A map with more than one `dod_control_point_master` is refused, not guessed at.** DoD supports
+  grouped masters — that is why `m_sMaster` and `m_szGroup` exist on both classes — and **3 of the 72
+  maps on the test tree ship two**: `dod_heutau`, `dod_overlord`, `dod_schwetz`. Taking the first
+  produces a *perfect* bijection over that master's own subset, so the commit gate passes and every
+  point the other master governs is silently dropped, with a log line identical to the legitimate
+  `dod_merderet` case. `mObjects` is one flat index space and cannot represent grouped masters, so
+  the resolver keeps the BSP order and logs why. Verified on `dod_schwetz` (12 CPs, 2 masters):
+  refused, order untouched. (`dod_heutau` and `dod_overlord` do not load on this tree at all — 512
+  precache limit and a missing sprite respectively, both reproduced identically with the stock
+  module, so unrelated.)
+
+- **`CObjective::SetObj` and `CObjective::InitObj` wrote the wrong cp id on the wire.** Both wrote
+  `obj[].index`, while `Client_SetObj` parses the wire id as a direct array subscript — so with
+  `index` defined as position + 1 every control point would land one slot out on the client. They now
+  write the position. Not reachable from the fleet today (no deployed plugin calls
+  `dodx_objective_set_data` or `dodx_objectives_reinit`), and it was equally wrong before this cut,
+  when `index` held `flag_id`.
+
+- **`InitObj` no longer reorders control points** (issue #11). Message field 3 is the DLL's *current*
+  team, not the default owner, and the DLL has not applied default ownership when it sends this —
+  measured on `dod_jagd`, where pdata `m_iDefaultOwner` reads 1/1/2 while field 3 arrives as 0 for
+  all three. The reorder branch wrote that 0 into both `default_owner` and `owner`, so every control
+  point read neutral until the first capture, wiping the BSP-seeded defaults for the whole first
+  round. The branch is deleted rather than patched: it also needed `newCount == mObjects.count`,
+  which fails on `dod_merderet`, and on `dod_saints2_b3e` the parse desynchronises and reads a CP's
+  icon field as the count. The DLL-master resolve covers every map instead.
+
+### Changed
+- **`objinfo_t::index` has one meaning now: the 1-based control point number, always equal to the
+  array position + 1**, from the first frame of the map. It previously meant three different things
+  (raw pdata `flag_id` from the entity scan, 1-based `point_index` after the BSP reorder, and the
+  DLL message value after an `InitObj` reorder). It is no longer sourced from `pd_dcp` at all — the
+  seed read 0 for every CP that early anyway, measured — so array position is always the DLL's
+  `SetObj` cp_index. Unchanged on every map where the BSP reorder already worked; on saints2-class
+  maps it moves from a meaningless value to a correct one.
+- `controlpoints_init` fires a second time only when the resolve actually changes the order, so
+  consumers must re-read there rather than caching from the first fire. Maps whose order was already
+  correct now fire it once, where an `InitObj` reorder used to fire it twice.
+
+  🔻 **`KTPHudObserver` must drop its hardcoded CP remap in the same wave**, or it will double-permute
+  saints2 and donner. Its `init_cp_index_remap()` carries `g_cp_dodx_of_dll = [1,2,0,3,4]` for
+  `dod_saints2_b3e`/`_b2` and `[3,2,4,1,0]` for `dod_donner`. **Both are exactly what the resolver
+  reads out of the DLL** — the saints2 table was derived from 65 recorded production matches by three
+  independent statistical methods, the donner one from geometry and flagged in its own comment as
+  never confirmed from event data. Reading `m_iIndex` directly reproduces both, which confirms the
+  donner permutation and is a strong independent check on the mechanism; it also means the workaround
+  and the fix now cancel each other out.
+- **DODX CP-init diagnostic (`DODX_DEBUG_CP_INIT`) now logs `flag_id` and fires even when the
+  reorder short-circuits.** Previously it sat *inside* the `bspCount == mObjects.count` gate, so on
+  exactly the maps worth investigating — duplicate `point_index`, pseudo-CP count mismatch — it
+  printed nothing. It now runs before the gate, records the gate's own decision, logs the
+  DLL-assigned `flag_id` per scanned entity, and dumps the **full** BSP set rather than the
+  point_index-filtered view (an entry dropped for a missing index is what a master/slave collapse
+  looks like, so hiding it defeats the purpose).
+
+  **No version bump: the shipped binary is unchanged.** The block is compile-time-gated and absent
+  from a default build — verified by preprocessing both ways (`CP scan:` reachable 3× with
+  `-DDODX_DEBUG_CP_INIT=1`, **0×** without). Enable with `-DDODX_DEBUG_CP_INIT=1`; costs ~25 log
+  lines per map load, which is why it stays off in production.
+
+  Warning set identical to master at `-m32 -O2 -Wall -Wextra` in all three builds (master baseline,
+  ported-plain, ported-with-define): 46 warnings, byte-identical. Supersedes the parked
+  `wip/dodx-cp-init-issue5` branch, which could no longer be merged — PR #9 renamed
+  `DODX_ReadBSPPointIndices` to `DODX_ReadBSPControlPoints`, and a textually clean merge produced a
+  loop iterating an array nothing populated.
+
+### Added
+- **`dodx_cp_identity_resolved()`** — reports whether `mObjects` is in the game DLL's control
+  point index space, i.e. whether `DODX_ResolveCPIdentityFromDLL` committed on this map. It is a
+  plain read of `g_cpOrderingFinalized`, the same latch the resolver sets and that the InitObj
+  message path tests.
+
+  It exists because the CP-identity change cannot roll out safely without it. `KTPHudObserver` is
+  enabled on all 24 instances and its `init_cp_index_remap()` hardcodes the `dod_saints2_b3e` /
+  `dod_saints2_b2` / `dod_donner` permutations that the resolver now derives from the DLL. Module
+  and plugin cannot be swapped in one atomic step, so **both orderings of a staged rollout are
+  broken without a query**: new module with old plugin double-permutes those maps, old module with
+  new plugin un-permutes them. Gating the remap on this native makes one plugin build correct
+  against either module.
+
+  0 is returned for three distinct conditions, deliberately collapsed because the consumer's
+  response is the same in all of them: the resolve has not landed yet (it needs 2s of game time
+  after the map loads), it gave up — no `dod_control_point_master`, or more than one — or the
+  module is running under Metamod, where neither the entity scan nor the resolver runs at all.
+  The latch is cleared on `PF_changelevel_I` and again by the entity scan inside
+  `SV_ActivateServer`, so it cannot carry a stale 1 into a map the resolver then gives up on.
+
+  ⚠️ **Read it at the point of use, not once from `controlpoints_init`.** The resolver re-fires
+  that forward only when it actually *changes* the order; on a map whose scan order was already
+  correct — `dod_anzio`, `dod_jagd` — the latch flips to 1 and no second fire follows, so a
+  consumer that samples it only at init would read 0 for the rest of the map.
+
+### Changed
+- **`dodx.inc`: the `CP_index` invariant is now scoped to extension mode.** The block stated
+  unconditionally that `CP_index` reads back the DLL's cp index + 1. That holds only where the
+  entity scan and the DLL resolve supply the ordering. On the Metamod path `Client_InitObj` case 2
+  assigns `index` straight off the wire, and the resolver is armed only from the extension-mode
+  `SV_ActivateServer` hook (`DODX_SetupExtensionHooks` runs behind `MF_IsExtensionMode()`, and
+  `DODX_InitCPFromEntities` returns at its own `g_bExtensionMode` gate), so neither runs there.
+- The same block said of an unresolvable map that *"there is no way to ask for it from a plugin"*.
+  It now points at `dodx_cp_identity_resolved()`.
 
 ## [2.7.31] - 2026-08-16
 

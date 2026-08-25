@@ -7,6 +7,10 @@
 // Additional exceptions apply. For full license details, see LICENSE.txt or visit:
 //     https://alliedmods.net/amxmodx-license
 
+#if defined __linux__ && !defined _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include "CGameConfigs.h"
 #include <amxmodx.h>
 #include <MemoryUtils.h>
@@ -17,6 +21,106 @@
 CGameConfigManager ConfigManager;
 static CGameMasterReader MasterReader;
 IGameConfig *CommonConfig;
+
+#if defined PLATFORM_LINUX && defined RTLD_NOLOAD
+/*
+ * In the Lane B split-loader topology the engine-facing game DLL is Metamod,
+ * while KTP AMX still runs as a ReHLDS extension.  Metamod exposes anonymous
+ * JIT trampolines through GetEntityAPI2, so dladdr() cannot identify the real
+ * game DLL from g_pGameEntityInterface->pfnSpawn.  The real DLL path is already
+ * supplied to Metamod through mm_gamedll.  Resolve only that already-loaded
+ * object (RTLD_NOLOAD is deliberate) and verify that the anchor symbol belongs
+ * to the same file before trusting its base address.
+ */
+static bool ResolveLoadedMetamodGameDll(const char *gameDll, void **baseAddress,
+	char *pathBuffer, size_t pathBufferSize)
+{
+	if (!gameDll || !gameDll[0])
+	{
+		return false;
+	}
+
+	char gameDir[PLATFORM_MAX_PATH];
+	char modRelative[PLATFORM_MAX_PATH];
+	const char *candidates[2];
+	size_t candidateCount = 0;
+
+	gameDir[0] = '\0';
+	modRelative[0] = '\0';
+
+	if (gameDll[0] == PLATFORM_SEP_CHAR)
+	{
+		candidates[candidateCount++] = gameDll;
+	}
+	else
+	{
+		GET_GAME_DIR(gameDir);
+		if (gameDir[0])
+		{
+			ke::SafeSprintf(modRelative, sizeof(modRelative), "%s%c%s",
+				gameDir, PLATFORM_SEP_CHAR, gameDll);
+			candidates[candidateCount++] = modRelative;
+		}
+		// GET_GAME_DIR can be relative on old engines. If the process already
+		// runs from the game directory, the raw declared path is the canonical
+		// fallback after the normal game-directory-relative interpretation.
+		candidates[candidateCount++] = gameDll;
+	}
+
+	for (size_t i = 0; i < candidateCount; i++)
+	{
+		char *resolvedPath = realpath(candidates[i], nullptr);
+
+		if (!resolvedPath)
+		{
+			continue;
+		}
+
+		void *handle = dlopen(resolvedPath, RTLD_NOW | RTLD_NOLOAD);
+		if (!handle)
+		{
+			free(resolvedPath);
+			continue;
+		}
+
+		void *anchor = dlsym(handle, "GiveFnptrsToDll");
+		Dl_info info;
+		struct stat requestedStat;
+		struct stat resolvedStat;
+		bool valid = anchor
+			&& dladdr(anchor, &info)
+			&& info.dli_fbase
+			&& info.dli_fname
+			&& stat(resolvedPath, &requestedStat) == 0
+			&& stat(info.dli_fname, &resolvedStat) == 0
+			&& requestedStat.st_dev == resolvedStat.st_dev
+			&& requestedStat.st_ino == resolvedStat.st_ino;
+
+		if (valid)
+		{
+			if (baseAddress)
+			{
+				*baseAddress = info.dli_fbase;
+			}
+
+			if (pathBuffer && pathBufferSize)
+			{
+				ke::SafeSprintf(pathBuffer, pathBufferSize, "%s", resolvedPath);
+			}
+		}
+
+		dlclose(handle);
+		free(resolvedPath);
+
+		if (valid)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+#endif
 
 //
 // GAME CONFIG
@@ -1280,6 +1384,33 @@ bool CGameConfigManager::ResolveLibraryInfo(const char *library, void **baseAddr
 		// KTP: Get server library base address
 		// In Metamod mode, use MDLL_Spawn from gpGamedllFuncs
 		// In extension mode, use g_pGameEntityInterface from ReHLDS
+#if defined PLATFORM_LINUX && defined RTLD_NOLOAD
+		// A nonempty mm_gamedll while KTP AMX itself is an extension identifies
+		// the split-loader topology. Prefer that declared real game DLL before
+		// accepting any engine-facing callback: some Metamod builds use
+		// dladdr-able wrappers while Metamod-R uses anonymous JIT trampolines.
+		// Either shape names Metamod, not the server binary gameconfigs target.
+		if (!g_bRunningWithMetamod)
+		{
+			// CGameConfigs is part of the core target, where the module-only
+			// GET_LOCALINFO convenience macro is not guaranteed to be visible.
+			// Use the core accessor already shared by the rest of AMXX.
+			const char *metamodGameDll = get_localinfo("mm_gamedll", "");
+			if (metamodGameDll && metamodGameDll[0])
+			{
+				if (ResolveLoadedMetamodGameDll(metamodGameDll, baseAddress,
+					pathBuffer, pathBufferSize))
+				{
+					return true;
+				}
+
+				AMXXLOG_Error("Unable to prove declared mm_gamedll \"%s\" is the loaded server library",
+					metamodGameDll);
+				return false;
+			}
+		}
+#endif
+
 		if (g_bRunningWithMetamod)
 		{
 			symbol = reinterpret_cast<void*>(MDLL_Spawn);
