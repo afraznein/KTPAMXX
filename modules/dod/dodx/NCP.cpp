@@ -417,6 +417,16 @@ static cell AMX_NATIVE_CALL dodx_area_get_bounds(AMX *amx, cell *params)
 	return 1;
 }
 
+// dodx_cp_identity_resolved()
+//
+// Lets a consumer that carries its own per-map CP remap decide whether to apply it.
+// 0 covers "the resolve has not run yet", "it gave up on this map" and "no resolver
+// at all under Metamod" — the remap is needed in all three.
+static cell AMX_NATIVE_CALL dodx_cp_identity_resolved(AMX *amx, cell *params)
+{
+	return g_cpOrderingFinalized ? 1 : 0;
+}
+
 AMX_NATIVE_INFO cp_Natives[] = {
 	{ "dodx_objectives_get_num",  dodx_objectives_get_num },
 	{ "dodx_objective_get_data",  dodx_objective_get_data },
@@ -425,5 +435,6 @@ AMX_NATIVE_INFO cp_Natives[] = {
 	{ "dodx_area_get_data",       dodx_area_get_data },
 	{ "dodx_area_set_data",       dodx_area_set_data },
 	{ "dodx_area_get_bounds",     dodx_area_get_bounds },
+	{ "dodx_cp_identity_resolved", dodx_cp_identity_resolved },
 	{ NULL, NULL }
 };
