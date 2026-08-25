@@ -137,10 +137,12 @@ enum {
 
 new g_kscBuffer[KSC_BUF_MAX_ENTRIES][KSC_BUF_LINE_LEN]
 new g_kscBufferType[KSC_BUF_MAX_ENTRIES]
+new g_kscBufferSequence[KSC_BUF_MAX_ENTRIES]
 new g_kscBufferCount = 0
 new g_kscDropped = 0
 new g_kscLifeBuffer[KSC_LIFE_BUF_MAX_ENTRIES][KSC_LIFE_BUF_LINE_LEN]
 new g_kscLifeBufferType[KSC_LIFE_BUF_MAX_ENTRIES]
+new g_kscLifeBufferSequence[KSC_LIFE_BUF_MAX_ENTRIES]
 new g_kscLifeBufferCount = 0
 new g_kscLifeDropped = 0
 new g_kscAttempted[KSC_EVENT_COUNT]
@@ -288,6 +290,7 @@ stock ksc_buffer(const line[], event_type) {
 
 	copy(g_kscBuffer[g_kscBufferCount], KSC_BUF_LINE_LEN - 1, line)
 	g_kscBufferType[g_kscBufferCount] = event_type
+	g_kscBufferSequence[g_kscBufferCount] = g_kscSequence
 	g_kscBufferCount++
 	g_kscEnqueued[event_type]++
 }
@@ -392,6 +395,7 @@ stock bool:ksc_life_buffer(const line[]) {
 
 	copy(g_kscLifeBuffer[g_kscLifeBufferCount], KSC_LIFE_BUF_LINE_LEN - 1, line)
 	g_kscLifeBufferType[g_kscLifeBufferCount] = KSC_EVENT_LIFE
+	g_kscLifeBufferSequence[g_kscLifeBufferCount] = g_kscSequence
 	g_kscLifeBufferCount++
 	g_kscEnqueued[KSC_EVENT_LIFE]++
 	return true
@@ -402,21 +406,24 @@ public ksc_flush_task() {
 }
 
 stock ksc_flush() {
-	// MatchHandler calls this before it clears context. Drain the durable,
-	// low-volume control-plane queue before the high-volume capture queue.
-	for (new i = 0; i < g_kscLifeBufferCount; i++) {
-		log_message("%s", g_kscLifeBuffer[i])
-		g_kscEmitted[g_kscLifeBufferType[i]]++
-	}
-
-	g_kscLifeBufferCount = 0
-
-	for (new i = 0; i < g_kscBufferCount; i++) {
-		log_message("%s", g_kscBuffer[i])
-		g_kscEmitted[g_kscBufferType[i]]++
+	// Both capacity pools share one producer sequence. Merge their already
+	// ordered contents so neither queue can jump ahead of the other on the wire.
+	new data_i = 0, life_i = 0
+	while (data_i < g_kscBufferCount || life_i < g_kscLifeBufferCount) {
+		if (life_i < g_kscLifeBufferCount &&
+			(data_i >= g_kscBufferCount || g_kscLifeBufferSequence[life_i] < g_kscBufferSequence[data_i])) {
+			log_message("%s", g_kscLifeBuffer[life_i])
+			g_kscEmitted[g_kscLifeBufferType[life_i]]++
+			life_i++
+		} else {
+			log_message("%s", g_kscBuffer[data_i])
+			g_kscEmitted[g_kscBufferType[data_i]]++
+			data_i++
+		}
 	}
 
 	g_kscBufferCount = 0
+	g_kscLifeBufferCount = 0
 
 	if (g_kscDropped > 0) {
 		log_amx("[KTP-STATS] dropped %d capture line(s) -- buffer full", g_kscDropped)
@@ -865,6 +872,7 @@ stock ksc_emit_flag_state(f, owner, is_initial) {
 	// Direct from the repeating zone task, not a player postthink callback.
 	// These lines are rare and their ordering relative to KTP_MATCH_START /
 	// KTP_ROUND_FREEZE matters, so do not hold them in the five-second buffer.
+	ksc_flush()
 	new sequence = ksc_next_sequence()
 	g_kscAttempted[KSC_EVENT_FLAG_STATE]++
 	g_kscEnqueued[KSC_EVENT_FLAG_STATE]++
@@ -1256,6 +1264,8 @@ stock ksc_emit_flag_position(f) {
 	if (!tracked)
 		copy(matchid, charsmax(matchid), "-")
 	else {
+		// A direct metadata record must follow every older buffered sequence.
+		ksc_flush()
 		sequence = ksc_next_sequence()
 		g_kscAttempted[KSC_EVENT_FLAG_POSITION]++
 		g_kscEnqueued[KSC_EVENT_FLAG_POSITION]++
