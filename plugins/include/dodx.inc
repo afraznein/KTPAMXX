@@ -700,6 +700,15 @@ native dodx_set_user_angles(id, Float:angles[3]);
 
 /**
  * Control point data keys for dodx_objective_get_data/dodx_objective_set_data.
+ *
+ * The control point index passed to these natives is the game DLL's own cp index —
+ * the same one SetObj carries — and CP_index reads back that index + 1, i.e. the
+ * 1-based control point number. Both hold on every map, including maps that ship no
+ * point_index keyvalue, where ordering used to fall back to entity-scan order.
+ *
+ * Ordering is provisional until the DLL claims its control points, 2s of game time
+ * after the map loads. controlpoints_init fires again if the order changes, so read
+ * it there rather than caching from the first fire.
  */
 enum CP_VALUE {
 	CP_edict = 1,
