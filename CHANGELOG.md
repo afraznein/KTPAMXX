@@ -366,6 +366,136 @@ no longer describes this tree. See the 2.7.32 note.
   pass still overwrites `owner`/`default_owner` after the scan, so this narrows the blast radius
   to making the pdata fallback correct rather than re-plumbing CP init.
 
+### Fixed
+- **Control point identity now comes from the game DLL instead of the BSP** (issues #5, #8, #11).
+  The entity scan runs before the DLL has stamped anything: `FoundPoints`, `m_iNumPoints`,
+  `m_bActive`, the whole `CControlPointMaster::ControlPointArray` and every `CControlPoint::m_iIndex`
+  are zero at `SV_ActivateServer` and land together **2.0s of game time later**, when the master
+  claims its points. Measured by raw pdata dump on a throwaway scratch server across `dod_anzio`,
+  `dod_jagd`, `dod_saints2_b3e` and `dod_merderet`, on a cold boot and on a changelevel. The trigger
+  is game time, not frames — frame 103 at ticrate 60 on boot, frame 58 after a changelevel, both at
+  `t=3.000` — so the new resolver polls `FoundPoints` rather than counting frames.
+
+  Ordering therefore had to be inferred from BSP `point_index`, which **25 of 97 shipped maps do not
+  carry**. On `dod_saints2_b3e` all five points read `-1`, the reorder short-circuits, and CP order
+  falls back to entity-scan order — so `SetObj(0)` ("allied 1st captured") landed on `flagmid`.
+
+  `DODX_ResolveCPIdentityFromDLL` now reorders `mObjects` from the master's `ControlPointArray`,
+  keyed on the `CControlPoint*` matched against the edict's `pvPrivateData` — exact pointer identity,
+  not a heuristic, which is what makes it work where all three candidate keys fail (`point_index`
+  absent, `targetname` collides — `dod_merderet` has two entities both named `flag 5` — and `flag_id`
+  is 0 this early). It commits only on a complete bijection, retries until a 30s deadline, and leaves
+  the existing order alone otherwise. Verified live: `dod_anzio`/`dod_jagd` report *order already
+  correct* (no regression where the BSP path worked), `dod_saints2_b3e` reorders to a distinct 0..4,
+  and `dod_merderet` follows the DLL down from 6 tracked points to the 5 the master actually claims.
+
+  ⚠️ **The DLL's set is authoritative and is not always every `dod_control_point` on the map.**
+  `dod_merderet` spawns six and the master claims five; tracking the extra one shifted every index
+  after it. Side effect: `KTPScoreTracker`'s `check_all_cps_owned()` iterated all six on that map,
+  including one the DLL never flips, so capout detection could never fire there. It can now.
+
+  ⚠️ **A map with more than one `dod_control_point_master` is refused, not guessed at.** DoD supports
+  grouped masters — that is why `m_sMaster` and `m_szGroup` exist on both classes — and **3 of the 72
+  maps on the test tree ship two**: `dod_heutau`, `dod_overlord`, `dod_schwetz`. Taking the first
+  produces a *perfect* bijection over that master's own subset, so the commit gate passes and every
+  point the other master governs is silently dropped, with a log line identical to the legitimate
+  `dod_merderet` case. `mObjects` is one flat index space and cannot represent grouped masters, so
+  the resolver keeps the BSP order and logs why. Verified on `dod_schwetz` (12 CPs, 2 masters):
+  refused, order untouched. (`dod_heutau` and `dod_overlord` do not load on this tree at all — 512
+  precache limit and a missing sprite respectively, both reproduced identically with the stock
+  module, so unrelated.)
+
+- **`CObjective::SetObj` and `CObjective::InitObj` wrote the wrong cp id on the wire.** Both wrote
+  `obj[].index`, while `Client_SetObj` parses the wire id as a direct array subscript — so with
+  `index` defined as position + 1 every control point would land one slot out on the client. They now
+  write the position. Not reachable from the fleet today (no deployed plugin calls
+  `dodx_objective_set_data` or `dodx_objectives_reinit`), and it was equally wrong before this cut,
+  when `index` held `flag_id`.
+
+- **`InitObj` no longer reorders control points** (issue #11). Message field 3 is the DLL's *current*
+  team, not the default owner, and the DLL has not applied default ownership when it sends this —
+  measured on `dod_jagd`, where pdata `m_iDefaultOwner` reads 1/1/2 while field 3 arrives as 0 for
+  all three. The reorder branch wrote that 0 into both `default_owner` and `owner`, so every control
+  point read neutral until the first capture, wiping the BSP-seeded defaults for the whole first
+  round. The branch is deleted rather than patched: it also needed `newCount == mObjects.count`,
+  which fails on `dod_merderet`, and on `dod_saints2_b3e` the parse desynchronises and reads a CP's
+  icon field as the count. The DLL-master resolve covers every map instead.
+
+### Changed
+- **`objinfo_t::index` has one meaning now: the 1-based control point number, always equal to the
+  array position + 1**, from the first frame of the map. It previously meant three different things
+  (raw pdata `flag_id` from the entity scan, 1-based `point_index` after the BSP reorder, and the
+  DLL message value after an `InitObj` reorder). It is no longer sourced from `pd_dcp` at all — the
+  seed read 0 for every CP that early anyway, measured — so array position is always the DLL's
+  `SetObj` cp_index. Unchanged on every map where the BSP reorder already worked; on saints2-class
+  maps it moves from a meaningless value to a correct one.
+- `controlpoints_init` fires a second time only when the resolve actually changes the order, so
+  consumers must re-read there rather than caching from the first fire. Maps whose order was already
+  correct now fire it once, where an `InitObj` reorder used to fire it twice.
+
+  🔻 **`KTPHudObserver` must drop its hardcoded CP remap in the same wave**, or it will double-permute
+  saints2 and donner. Its `init_cp_index_remap()` carries `g_cp_dodx_of_dll = [1,2,0,3,4]` for
+  `dod_saints2_b3e`/`_b2` and `[3,2,4,1,0]` for `dod_donner`. **Both are exactly what the resolver
+  reads out of the DLL** — the saints2 table was derived from 65 recorded production matches by three
+  independent statistical methods, the donner one from geometry and flagged in its own comment as
+  never confirmed from event data. Reading `m_iIndex` directly reproduces both, which confirms the
+  donner permutation and is a strong independent check on the mechanism; it also means the workaround
+  and the fix now cancel each other out.
+- **DODX CP-init diagnostic (`DODX_DEBUG_CP_INIT`) now logs `flag_id` and fires even when the
+  reorder short-circuits.** Previously it sat *inside* the `bspCount == mObjects.count` gate, so on
+  exactly the maps worth investigating — duplicate `point_index`, pseudo-CP count mismatch — it
+  printed nothing. It now runs before the gate, records the gate's own decision, logs the
+  DLL-assigned `flag_id` per scanned entity, and dumps the **full** BSP set rather than the
+  point_index-filtered view (an entry dropped for a missing index is what a master/slave collapse
+  looks like, so hiding it defeats the purpose).
+
+  **No version bump: the shipped binary is unchanged.** The block is compile-time-gated and absent
+  from a default build — verified by preprocessing both ways (`CP scan:` reachable 3× with
+  `-DDODX_DEBUG_CP_INIT=1`, **0×** without). Enable with `-DDODX_DEBUG_CP_INIT=1`; costs ~25 log
+  lines per map load, which is why it stays off in production.
+
+  Warning set identical to master at `-m32 -O2 -Wall -Wextra` in all three builds (master baseline,
+  ported-plain, ported-with-define): 46 warnings, byte-identical. Supersedes the parked
+  `wip/dodx-cp-init-issue5` branch, which could no longer be merged — PR #9 renamed
+  `DODX_ReadBSPPointIndices` to `DODX_ReadBSPControlPoints`, and a textually clean merge produced a
+  loop iterating an array nothing populated.
+
+### Added
+- **`dodx_cp_identity_resolved()`** — reports whether `mObjects` is in the game DLL's control
+  point index space, i.e. whether `DODX_ResolveCPIdentityFromDLL` committed on this map. It is a
+  plain read of `g_cpOrderingFinalized`, the same latch the resolver sets and that the InitObj
+  message path tests.
+
+  It exists because the CP-identity change cannot roll out safely without it. `KTPHudObserver` is
+  enabled on all 24 instances and its `init_cp_index_remap()` hardcodes the `dod_saints2_b3e` /
+  `dod_saints2_b2` / `dod_donner` permutations that the resolver now derives from the DLL. Module
+  and plugin cannot be swapped in one atomic step, so **both orderings of a staged rollout are
+  broken without a query**: new module with old plugin double-permutes those maps, old module with
+  new plugin un-permutes them. Gating the remap on this native makes one plugin build correct
+  against either module.
+
+  0 is returned for three distinct conditions, deliberately collapsed because the consumer's
+  response is the same in all of them: the resolve has not landed yet (it needs 2s of game time
+  after the map loads), it gave up — no `dod_control_point_master`, or more than one — or the
+  module is running under Metamod, where neither the entity scan nor the resolver runs at all.
+  The latch is cleared on `PF_changelevel_I` and again by the entity scan inside
+  `SV_ActivateServer`, so it cannot carry a stale 1 into a map the resolver then gives up on.
+
+  ⚠️ **Read it at the point of use, not once from `controlpoints_init`.** The resolver re-fires
+  that forward only when it actually *changes* the order; on a map whose scan order was already
+  correct — `dod_anzio`, `dod_jagd` — the latch flips to 1 and no second fire follows, so a
+  consumer that samples it only at init would read 0 for the rest of the map.
+
+### Changed
+- **`dodx.inc`: the `CP_index` invariant is now scoped to extension mode.** The block stated
+  unconditionally that `CP_index` reads back the DLL's cp index + 1. That holds only where the
+  entity scan and the DLL resolve supply the ordering. On the Metamod path `Client_InitObj` case 2
+  assigns `index` straight off the wire, and the resolver is armed only from the extension-mode
+  `SV_ActivateServer` hook (`DODX_SetupExtensionHooks` runs behind `MF_IsExtensionMode()`, and
+  `DODX_InitCPFromEntities` returns at its own `g_bExtensionMode` gate), so neither runs there.
+- The same block said of an unresolvable map that *"there is no way to ask for it from a plugin"*.
+  It now points at `dodx_cp_identity_resolved()`.
+
 ## [2.7.31] - 2026-08-16
 
 **DODX only. The core module is NOT part of this cut** — it stays 2.7.27

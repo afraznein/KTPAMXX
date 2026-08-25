@@ -570,16 +570,20 @@ void Client_Object_End(void* mValue)
 //
 // Two modes of operation, decided in case 0:
 //   1. mObjects.count == 0 — Metamod path. Use InitObj as the sole source.
-//   2. mObjects.count > 0  — Extension-mode path. Entity scan ran first and
-//      populated mObjects (and resolved pAreaEdict pairings via the lazy
-//      GET_CAPTURE_AREA macro). InitObj from the DLL carries the *correct*
-//      cp ordering — entity-scan order isn't guaranteed to match SetObj id.
-//      First matching InitObj (newCount == mObjects.count) reorders mObjects
-//      to DLL order while preserving each CP's resolved pAreaEdict, then
-//      re-fires iFInitCP so the SMA rebuilds its name cache in the new order.
-static objinfo_t s_initObjScanSnapshot[12];  // Saved entity-scan entries for area pairing
-static int s_initObjScanSnapshotCount = 0;
-static bool s_initObjReorderMode = false;    // True while consuming InitObj to reorder
+//   2. mObjects.count > 0  — Extension-mode path. The entity scan ran first and
+//      populated mObjects, and DODX_ResolveCPIdentityFromDLL owns the ordering
+//      from there. InitObj is read-only in this mode.
+//
+// This used to reorder mObjects from a matching InitObj, and that is issue #11:
+// message field 3 is the DLL's *current* team, not the default owner, and the DLL
+// has not applied default ownership when it sends this — measured on dod_jagd, where
+// pdata m_iDefaultOwner reads 1/1/2 while field 3 arrives as 0 for all three. The
+// parser wrote that 0 into default_owner AND owner, so every CP went neutral until
+// the first capture, wiping the BSP-seeded defaults. Reordering here also could not
+// be relied on: it needs newCount == mObjects.count, which fails on dod_merderet
+// (six entities, five claimed), and on dod_saints2_b3e the parse desynchronises and
+// reads a CP's icon field as the count. Resolving against CControlPointMaster has
+// none of those problems and covers every map, so this path is gone rather than fixed.
 
 void Client_InitObj(void* mValue)
 {
@@ -594,7 +598,6 @@ void Client_InitObj(void* mValue)
 	{
 	case 0:
 		num = 0;
-		s_initObjReorderMode = false;
 		{
 			int newCount = *(int*)mValue;
 #ifdef DODX_DEBUG_CP_INIT
@@ -602,24 +605,12 @@ void Client_InitObj(void* mValue)
 				newCount, mObjects.count, g_cpOrderingFinalized ? 1 : 0);
 #endif
 
-			if (mObjects.count > 0)
+			// Anything already scanned wins: the entity scan plus the DLL-master
+			// resolve is strictly better information than this message.
+			if (mObjects.count > 0 || g_cpOrderingFinalized)
 			{
-				// Already finalized OR partial/stale message — skip.
-				if (g_cpOrderingFinalized || newCount != mObjects.count)
-				{
-					MF_Log("[DODX] InitObj: skipped (finalized=%d, newCount=%d, existing=%d)",
-						g_cpOrderingFinalized ? 1 : 0, newCount, mObjects.count);
-					mState = 999;
-					return;
-				}
-
-				// Snapshot entity-scan results so we can rebuild pAreaEdict
-				// pairings after reordering.
-				s_initObjScanSnapshotCount = mObjects.count;
-				for (int i = 0; i < s_initObjScanSnapshotCount && i < 12; i++)
-					s_initObjScanSnapshot[i] = mObjects.obj[i];
-				s_initObjReorderMode = true;
-				mObjects.Clear();
+				mState = 999;
+				return;
 			}
 
 			mObjects.count = newCount;
@@ -638,33 +629,13 @@ void Client_InitObj(void* mValue)
 			mObjects.obj[num].index = *(int*)mValue;
 		break;
 	case 3:
+		// The DLL writes m_iTeam here — current owner, not the default. Only the
+		// Metamod path reaches this, where nothing else supplies either field, so
+		// both are set from it; do not copy this pattern anywhere that has a BSP seed.
 		if (num < 12)
 		{
-			// KTP: field 3 is the LIVE owner, not the default. dodfun's
-			// CObjective::InitObj (CMisc.cpp) writes obj[i].owner here, and its
-			// nine WRITE_* calls line up one-for-one with cases 0-9 below; this
-			// was the only field whose name disagreed, and the name was wrong.
-			//
-			// Writing it into default_owner destroys the BSP seed that
-			// DODX_InitCPFromEntities() applies at ServerActivate. That used to
-			// be invisible because the entity scan runs AFTER the map-load
-			// InitObj and re-Clear()s everything, so the bad write was always
-			// overwritten a moment later. It only bites on a LATER InitObj —
-			// reorder or refresh — and the scan never runs again, so from that
-			// point default_owner reports whoever happens to hold the flag.
-			//
-			// A corrupted default_owner fails silently rather than loudly —
-			// downstream readers take it at face value and never cross-check it.
-			//
-			// A FIRST parse still seeds default_owner from it because mObjects was
-			// empty and nothing better exists yet — NOT because live equals default
-			// here, which a pdata read on jagd contradicts. Also keeps non-extension
-			// mode
-			// working, where DODX_InitCPFromEntities() returns at the
-			// g_bExtensionMode gate and never provides a seed at all.
 			mObjects.obj[num].owner = *(int*)mValue;
-			if (!s_initObjReorderMode)
-				mObjects.obj[num].default_owner = mObjects.obj[num].owner;
+			mObjects.obj[num].default_owner = mObjects.obj[num].owner;
 		}
 		break;
 	case 4:
@@ -694,49 +665,7 @@ void Client_InitObj(void* mValue)
 		num++;
 		if (num == mObjects.count)
 		{
-			if (s_initObjReorderMode)
-			{
-				// Carry forward each CP's pAreaEdict pairing from the snapshot
-				// (matched by edict pointer — the only stable identifier).
-				//
-				// KTP: default_owner rides along for the same reason. A reorder
-				// Clear()s mObjects, and the message carries no default — field 3
-				// is the live owner (see case 3). The snapshot holds the BSP seed
-				// written by DODX_InitCPFromEntities(), which never runs again,
-				// so without this a reorder zeroes every CP's default for the
-				// rest of the map.
-				for (int i = 0; i < mObjects.count; i++)
-				{
-					for (int j = 0; j < s_initObjScanSnapshotCount; j++)
-					{
-						if (mObjects.obj[i].pEdict &&
-						    mObjects.obj[i].pEdict == s_initObjScanSnapshot[j].pEdict)
-						{
-							mObjects.obj[i].pAreaEdict    = s_initObjScanSnapshot[j].pAreaEdict;
-							mObjects.obj[i].areaflags     = s_initObjScanSnapshot[j].areaflags;
-							mObjects.obj[i].default_owner = s_initObjScanSnapshot[j].default_owner;
-							break;
-						}
-					}
-				}
-
-				g_cpOrderingFinalized = true;
-				s_initObjReorderMode = false;
-				MF_Log("[DODX] InitObj: reordered %d CPs to DLL order", mObjects.count);
-#ifdef DODX_DEBUG_CP_INIT
-				for (int i = 0; i < mObjects.count; i++)
-				{
-					edict_t *pe = mObjects.obj[i].pEdict;
-					const char *tn = pe ? STRING(pe->v.targetname) : "?";
-					MF_Log("[DODX]   CP[%d] index=%d owner=%d targetname='%s'",
-						i, mObjects.obj[i].index, mObjects.obj[i].owner, tn);
-				}
-#endif
-			}
-			else
-			{
-				MF_Log("[DODX] InitObj: parsed %d control points from message", mObjects.count);
-			}
+			MF_Log("[DODX] InitObj: parsed %d control points from message", mObjects.count);
 
 			if (iFInitCP >= 0)
 				MF_ExecuteForward(iFInitCP);
