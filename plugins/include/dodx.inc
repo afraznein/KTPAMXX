@@ -704,9 +704,11 @@ native dodx_set_user_angles(id, Float:angles[3]);
 /**
  * Control point data keys for dodx_objective_get_data/dodx_objective_set_data.
  *
- * The control point index passed to these natives is the game DLL's own cp index —
- * the same one SetObj carries — and CP_index reads back that index + 1, i.e. the
- * 1-based control point number.
+ * In extension mode the control point index passed to these natives is the game
+ * DLL's own cp index — the same one SetObj carries — and CP_index reads back that
+ * index + 1, i.e. the 1-based control point number. Under Metamod neither the entity
+ * scan nor the resolver runs, and index is taken straight off the InitObj message,
+ * so it is whatever the DLL wrote there and the +1 relation does not hold.
  *
  * Ordering is provisional until the DLL claims its control points, 2s of game time
  * after the map loads. controlpoints_init fires again if the order changes, so read
@@ -715,7 +717,8 @@ native dodx_set_user_angles(id, Float:angles[3]);
  * On a map the module cannot resolve — no control point master, or more than one, so
  * no single index space exists — ordering stays at the BSP/entity-scan result and may
  * not match the DLL. The module logs "CP indices may not match the DLL on this map"
- * when that happens; there is no way to ask for it from a plugin.
+ * when that happens, and dodx_cp_identity_resolved() answers the same question from
+ * a plugin.
  */
 enum CP_VALUE {
 	CP_edict = 1,
@@ -809,6 +812,22 @@ forward dod_score_event(id, score_delta, total_score, cp_index);
  * @return          Number of control points (0 if not yet initialized)
  */
 native dodx_objectives_get_num();
+
+/**
+ * Whether control point ordering is in the game DLL's own index space.
+ *
+ * 0 means it is not, and a consumer holding its own per-map CP remap should apply
+ * it. That covers three cases with one answer: the resolve has not landed yet
+ * (2s of game time after the map loads), it gave up on this map, or the module is
+ * running under Metamod, where nothing resolves identity at all.
+ *
+ * Read it at the point of use, not once from controlpoints_init: the forward
+ * re-fires only when the resolve *changes* the order, so on a map whose scan
+ * order was already right this flips to 1 with no second fire.
+ *
+ * @return          1 if control point ordering matches the DLL, 0 otherwise
+ */
+native dodx_cp_identity_resolved();
 
 /**
  * Get control point data.
