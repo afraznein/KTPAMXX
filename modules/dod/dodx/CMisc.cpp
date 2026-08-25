@@ -666,7 +666,10 @@ void CObjective::InitObj(int dest, edict_t* ed)
 	{
 		// KTP: Use ENTINDEX_SAFE for extension mode safety
 		WRITE_SHORT(ENTINDEX_SAFE(obj[i].pEdict));
-		WRITE_BYTE(obj[i].index);
+		// The cp id on the wire is the array position, which is what Client_SetObj
+		// subscripts with. obj[].index is that position + 1, so writing it would put
+		// every control point one slot out on the client.
+		WRITE_BYTE(i);
 		WRITE_BYTE(obj[i].owner);
 		WRITE_BYTE(obj[i].visible);
 		WRITE_BYTE(obj[i].icon_neutral);
@@ -684,7 +687,8 @@ void CObjective::SetObj(int index)
 		return;   // same Sys_Error hazard as InitObj above
 
 	MESSAGE_BEGIN(MSG_ALL, gmsgSetObj);
-	WRITE_BYTE(obj[index].index);
+	// Position, not obj[].index — same reason as InitObj above.
+	WRITE_BYTE(index);
 	WRITE_BYTE(obj[index].owner);
 	WRITE_BYTE(0);
 	MESSAGE_END();
