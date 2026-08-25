@@ -113,7 +113,7 @@
 // Increment when the producer/daemon storage contract changes. This is
 // emitted in every per-half manifest so mixed fleet deployments are visible
 // without reverse-engineering them from which rows happened to arrive.
-#define KSC_SCHEMA_CONTRACT 20
+#define KSC_SCHEMA_CONTRACT 21
 #define KSC_CAPABILITIES "frag_context,damage,position,assist,life,break,flag_state,flag_position,sequence,health"
 
 enum {
