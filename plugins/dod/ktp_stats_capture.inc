@@ -280,6 +280,22 @@ stock ksc_clear_damage_row(victim) {
 	g_kscLastEnemyAttacker[victim] = 0
 }
 
+// Break-queue slots hold raw client indices, and a candidate outlives its
+// killer by up to KSC_BREAK_WINDOW polls (~2.5s) -- long enough for a
+// reconnect to land in the freed slot and be credited someone else's break.
+// Zero the killer rather than removing the entry: the victim's delayed zone
+// decrement still consumes a queue slot, so dropping the entry would shift
+// that drop onto the NEXT queued candidate instead. ksc_emit_break already
+// treats an out-of-range breaker as uncreditable and skips the emit.
+stock ksc_break_purge_player(id) {
+	for (new f = 0; f < g_kscFlagCount; f++) {
+		for (new q = 0; q < g_kscBreakCount[f]; q++) {
+			if (g_kscBreakQ[f][q] == id)
+				g_kscBreakQ[f][q] = 0
+		}
+	}
+}
+
 // Slots get recycled. A player inheriting a disconnected one's index must not
 // inherit their pending assist credit either, so clear both directions.
 stock ksc_clear_player(id) {
@@ -296,6 +312,7 @@ stock ksc_clear_player(id) {
 
 	g_kscLastEnemyAttacker[id] = 0
 	g_kscScoped[id] = 0
+	ksc_break_purge_player(id)
 }
 
 // DODX forward. The only source for live scope state; there is no getter.

@@ -13,6 +13,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.7.32] - unreleased
 
+### Fixed — a break candidate could credit a `cap_break` to a reconnecting player
+
+- `g_kscBreakQ` holds raw client indices, and `ksc_clear_player` never swept it, so a
+  killer disconnecting inside the ~2.5s break window (`KSC_BREAK_WINDOW` polls) left a
+  live candidate pointing at a slot the engine can hand to the next player to connect.
+  `ksc_emit_break`'s `is_user_connected` check passes for the new occupant, so the break
+  was credited to a player who never made it.
+- Disconnect now zeroes the slot's queued killer entries (`ksc_break_purge_player`,
+  called from `ksc_clear_player`). The entries are zeroed rather than removed: the dead
+  victim's delayed zone decrement still consumes a queue slot in FIFO order, so removing
+  the entry would shift that drop onto the next queued candidate — a different
+  misattribution. A zeroed breaker fails `ksc_emit_break`'s existing range guard and the
+  break goes uncredited, which is the honest outcome.
+
 ### Fixed — `KTP_FLAG_POSITION` only ever emitted for the map the server booted into
 
 - **The one-shot task that emits flag positions was armed from `controlpoints_init`, and in
