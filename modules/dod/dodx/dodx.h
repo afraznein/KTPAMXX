@@ -522,7 +522,7 @@ extern int iFFlushStats;  // KTP: Forward for stats flush notification
 extern int iFDamagePre;   // KTP: Forward for damage modification (fires before client_damage)
 extern int iFInitCP;      // KTP: Forward for CP init
 extern int iFCPCaptured;  // KTP: Forward for CP ownership change
-extern bool g_cpOrderingFinalized;  // KTP: Has InitObj reordered mObjects to match DLL?
+extern bool g_cpOrderingFinalized;  // KTP: Is mObjects in the DLL's SetObj index order?
 extern int iFScoreEvent;  // KTP: Forward for enriched score event with CP context
 
 // KTP: Last CP capture tracking (for ObjScore correlation)

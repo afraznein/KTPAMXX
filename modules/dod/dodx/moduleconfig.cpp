@@ -63,6 +63,9 @@ void DODX_RegisterMessageHooks();
 static void DODX_InitCPFromEntities();
 static void DODX_SyncCPOwnersFromDLL();
 static float g_cpOwnerSyncNext = 0.0f;  // next owner-sync time, on sv.time
+static void DODX_ArmCPIdentityResolve();
+static void DODX_ForgetCPIdentity();
+static void DODX_ResolveCPIdentityFromDLL();
 
 funEventCall modMsgsEnd[MAX_REG_MSGS];
 funEventCall modMsgs[MAX_REG_MSGS];
@@ -79,7 +82,7 @@ edict_t* g_pFirstEdict = nullptr;
 
 // KTP: Server active flag - prevents message processing during map changes
 bool g_bServerActive = false;
-bool g_cpOrderingFinalized = false;  // KTP: Set true once Client_InitObj has reordered mObjects to match DLL's SetObj id space.
+bool g_cpOrderingFinalized = false;  // KTP: Set once mObjects is known to be in the DLL's SetObj id order. Nothing may reorder after it.
 
 // (g_bCPFromInitObj was removed — entity scan + BSP reorder is the sole CP ordering path)
 
@@ -1864,6 +1867,10 @@ static void DODX_OnChangelevel(IVoidHookChain<const char *, const char *> *chain
 
 	// Clear CP data — pEdict pointers become stale after map change
 	mObjects.Clear();
+	// The resolve latches describe the map being left, and the cached master edict is
+	// about to dangle. They are re-armed on activate; die with the map anyway.
+	g_cpOrderingFinalized = false;
+	DODX_ForgetCPIdentity();
 
 	// Clear grenade tracking — edict pointers become stale after map change
 	g_grenades.clear();
@@ -1967,12 +1974,26 @@ static void DODX_OnSV_ActivateServer(IVoidHookChain<int> *chain, int runPhysics)
 	// Entity scan as fallback if InitObj wasn't intercepted
 	DODX_InitCPFromEntities();
 
+	// The scan runs before the DLL has stamped CP identity, so what it produced is
+	// provisional. Arm the resolver that replaces it once the DLL has an answer.
+	// Registration lives here, not at attach, because this is the one extension-mode
+	// entry point that runs on every map before the resolver is needed; it is
+	// idempotent (MF_RegModuleFrameFunc scans for an existing entry first). Nothing on
+	// the extension path clears module frame callbacks — the only two clears are
+	// Metamod's reload table and process teardown.
+	DODX_ArmCPIdentityResolve();
+	if (MF_RegModuleFrameFunc)
+		MF_RegModuleFrameFunc(DODX_ResolveCPIdentityFromDLL);
+	else
+		MF_Log("[DODX] CP identity: no module frame callback available — CP order stays "
+			"at the BSP/entity-scan result");
+
 	// Ownership can change with no message we see — a round restart resets every
 	// CP to its default and broadcasts nothing extension mode intercepts — so poll
-	// the DLL's own per-CP team at a low rate and track its edges. Registered here,
-	// per map, because this is the one extension-mode entry point that always runs
-	// first; registration is idempotent (MF_RegModuleFrameFunc scans for the
-	// pointer before appending).
+	// the DLL's own per-CP team at a low rate under the same frame callback
+	// mechanism. Order-independent of the identity resolve above: the sync keys
+	// every read off the entry's own pEdict, and its tracker fields ride the
+	// resolver's whole-struct copies.
 	g_cpOwnerSyncNext = 0.0f;
 	if (MF_RegModuleFrameFunc)
 		MF_RegModuleFrameFunc(DODX_SyncCPOwnersFromDLL);
@@ -2610,7 +2631,7 @@ static void DODX_InitCPFromEntities()
 	MF_Log("[DODX] CP entity scan starting");
 
 	mObjects.Clear();
-	g_cpOrderingFinalized = false;  // KTP: Allow first matching InitObj to reorder mObjects to DLL order
+	g_cpOrderingFinalized = false;  // KTP: This map's order is provisional until the DLL resolve confirms it
 
 	// Use FindEntityByClassname instead of GETEDICT loop — pfnPEntityOfEntIndex
 	// hangs during OnPluginsLoaded in extension mode, but pfnFindEntityByString is safe.
@@ -2624,7 +2645,11 @@ static void DODX_InitCPFromEntities()
 		pd_dcp &cpd = GET_CP_PD(pEdict);
 
 		mObjects.obj[idx].pEdict = pEdict;
-		mObjects.obj[idx].index = cpd.flag_id;
+		// index is defined as the 1-based control point number, so it always equals
+		// the array position + 1 and the DLL's SetObj cp_index is always position.
+		// It used to be seeded from pdata flag_id, which is 0 for every CP this early
+		// — measured, not assumed — so the seed said nothing and cost a meaning.
+		mObjects.obj[idx].index = idx + 1;
 		mObjects.obj[idx].default_owner = cpd.owner;
 		mObjects.obj[idx].owner = cpd.owner;
 		mObjects.obj[idx].last_dll_owner = cpd.owner;
@@ -2714,8 +2739,10 @@ static void DODX_InitCPFromEntities()
 
 #ifdef DODX_DEBUG_CP_INIT
 			// Logged BEFORE the count gate so it still fires where the reorder short-circuits —
-			// those are the maps worth investigating. flag_id is the DLL-assigned pdata index,
-			// which separates a master/slave collapse from a coincidental point_index collision.
+			// those are the maps worth investigating. It used to also print flag_id as "the
+			// DLL-assigned pdata index"; that field reads 0 for every CP this early (measured),
+			// so it distinguished nothing and is gone. The DLL's index appears in the
+			// CP identity lines once the master has claimed its points.
 			// Build with -DDODX_DEBUG_CP_INIT=1; off in prod because it is ~25 lines per map load.
 			MF_Log("[DODX] CP scan: entities=%d bsp_total=%d bsp_with_index=%d filtered=%d gate=%s",
 				mObjects.count, bspTotal, bspWithIndex, bspCount,
@@ -2724,9 +2751,8 @@ static void DODX_InitCPFromEntities()
 			{
 				edict_t *pe = mObjects.obj[oi].pEdict;
 				const char *tn = pe ? STRING(pe->v.targetname) : "?";
-				MF_Log("[DODX] CP scan: entity[%d] flag_id=%d origin=(%.0f,%.0f) targetname='%s'",
-					oi, mObjects.obj[oi].index, mObjects.obj[oi].origin_x,
-					mObjects.obj[oi].origin_y, tn);
+				MF_Log("[DODX] CP scan: entity[%d] origin=(%.0f,%.0f) targetname='%s'",
+					oi, mObjects.obj[oi].origin_x, mObjects.obj[oi].origin_y, tn);
 			}
 			// bspAll, not the filtered view: an entry dropped for a missing point_index is
 			// exactly what a collapse looks like, so it has to be visible.
@@ -2772,7 +2798,11 @@ static void DODX_InitCPFromEntities()
 						if (dx > -1.0f && dx < 1.0f && dy > -1.0f && dy < 1.0f)
 						{
 							sortedObj[si] = mObjects.obj[oi];
-							sortedObj[si].index = bspCPs[si].point_index;
+							// Position + 1, not the raw point_index: the invariant is
+							// obj[i].index == i + 1, and a map is free to number its
+							// points 1,2,5. Identical to point_index whenever the map
+							// numbers them contiguously from 1, which is the normal case.
+							sortedObj[si].index = si + 1;
 							used[oi] = true;
 							found = true;
 							break;
@@ -2830,7 +2860,10 @@ static void DODX_InitCPFromEntities()
 			const char *nn = pe ? STRING(pe->v.netname) : "?";
 			// default_owner is near-redundant with owner here, but it is the one field
 			// that separates "seeded from the BSP" from "read 0 out of pdata" in a log.
-			MF_Log("[DODX]   CP[%d] point_index=%d owner=%d default_owner=%d targetname='%s' netname='%s'",
+			// index, not point_index: it is the array position + 1 by construction, so
+			// labelling it point_index would print 1..N on every map and read as
+			// "every map numbers its points contiguously".
+			MF_Log("[DODX]   CP[%d] index=%d owner=%d default_owner=%d targetname='%s' netname='%s'",
 				i, mObjects.obj[i].index, mObjects.obj[i].owner,
 				mObjects.obj[i].default_owner, tn, nn);
 		}
@@ -2842,6 +2875,271 @@ static void DODX_InitCPFromEntities()
 	{
 		MF_Log("[DODX] CP entity scan: no dod_control_point entities found");
 	}
+}
+
+// KTP: The game DLL does not stamp control point identity until CControlPointMaster
+// claims its points, 2.0s of game time after SV_ActivateServer. Measured on
+// dod_anzio, dod_jagd, dod_saints2_b3e and dod_merderet, on a cold boot and on a
+// changelevel: FoundPoints, m_iNumPoints, m_bActive, the whole ControlPointArray and
+// every m_iIndex go from zero to their final values in one frame. So everything the
+// entity scan reads is pre-stamp — which is why identity had to be inferred from the
+// BSP, and why it had nothing to work with on maps that ship no point_index.
+//
+// The trigger is game time, not a frame count (frame 103 at ticrate 60 on boot,
+// frame 58 after a changelevel, both at t=3.000), so this polls FoundPoints rather
+// than counting frames.
+//
+// Offsets are raw byte offsets from
+// gamedata/common.games/entities.games/dod/offsets-ccontrolpoint{,master}.txt.
+// Raw rather than through pd_dcp: CControlPointMaster has no pdata struct at all.
+#if defined(_WIN32)
+	#define CPM_OFF_ARRAY      328   // CControlPoint*[20]
+	#define CPM_OFF_NUMPOINTS  408
+	#define CPM_OFF_FOUND      412
+	#define CP_OFF_INDEX       376   // m_iIndex
+#else
+	#define CPM_OFF_ARRAY      344
+	#define CPM_OFF_NUMPOINTS  424
+	#define CPM_OFF_FOUND      428
+	#define CP_OFF_INDEX       392
+#endif
+
+// The offsets above are 32-bit reads, and ControlPointArray holds pointers stored in
+// the same 4 bytes. Every DoD server binary is i386; make the assumption refuse to
+// compile rather than read half a pointer.
+static_assert(sizeof(void *) == 4, "raw pdata offsets assume a 32-bit build");
+
+#define CP_SECONDS_TO_WAIT 30.0f
+
+static bool  g_cpIdentityResolved = false;
+static bool  g_cpIdentityGaveUp   = false;
+static float g_cpResolveNextTry   = 0.0f;
+static float g_cpResolveDeadline  = 0.0f;
+// Found once and then read every frame. The master entity exists from map spawn; it
+// is FoundPoints that arrives late, so re-running the entity search per frame would
+// buy nothing and searching only every 0.25s would leave a window in which SetObj is
+// subscripted into a still-provisional mObjects.
+static edict_t *g_cpMaster = NULL;
+
+static inline int DODX_RawInt(void *base, int byteOffset)
+{
+	return *(int *)((char *)base + byteOffset);
+}
+
+// Drop everything describing the current map. Separate from the arm below so the
+// changelevel path can run it without inventing a deadline on a clock about to reset.
+static void DODX_ForgetCPIdentity()
+{
+	g_cpIdentityResolved = false;
+	g_cpIdentityGaveUp   = false;
+	g_cpResolveNextTry   = 0.0f;
+	g_cpMaster           = NULL;
+}
+
+// Re-arm per map. Called from SV_ActivateServer after the entity scan.
+static void DODX_ArmCPIdentityResolve()
+{
+	DODX_ForgetCPIdentity();
+	g_cpResolveDeadline = (gpGlobals ? gpGlobals->time : 0.0f) + CP_SECONDS_TO_WAIT;
+}
+
+// A failure that a later frame could still resolve: the DLL fills FoundPoints,
+// m_iNumPoints and the whole array together, so a read that catches it half-built is
+// possible in principle even though all six maps measured landed it in one frame.
+// Retry silently until the map's deadline, then report once.
+static void DODX_CPResolveRetry(const char *why)
+{
+	if (!gpGlobals || gpGlobals->time <= g_cpResolveDeadline)
+		return;
+
+	g_cpIdentityGaveUp = true;
+	MF_Log("[DODX] CP identity: %s after %.0fs — keeping BSP/entity-scan order "
+		"(CP indices may not match the DLL on this map)", why, CP_SECONDS_TO_WAIT);
+}
+
+// A failure no retry can change. Reported immediately.
+static void DODX_CPResolveAbandon(const char *why)
+{
+	g_cpIdentityGaveUp = true;
+	MF_Log("[DODX] CP identity: %s — keeping BSP/entity-scan order "
+		"(CP indices may not match the DLL on this map)", why);
+}
+
+// Locate the master, and refuse to guess when there is more than one.
+//
+// DoD supports grouped masters — that is why m_sMaster and m_szGroup exist on both
+// CControlPoint and CControlPointMaster — and 3 of the 72 maps on the test tree ship
+// two (dod_heutau, dod_overlord, dod_schwetz). Taking the first would produce a
+// PERFECT bijection over that master's own subset and commit it, silently dropping
+// every point the other master governs, with a log line identical to the legitimate
+// dod_merderet 5-of-6 case. mObjects is a flat array with one index space and cannot
+// represent grouped masters at all, so the honest answer is to keep the BSP order.
+static bool DODX_FindSoleCPMaster()
+{
+	if (g_cpMaster)
+		return true;
+	if (gpGlobals->time < g_cpResolveNextTry)
+		return false;
+	g_cpResolveNextTry = gpGlobals->time + 0.25f;
+
+	edict_t *pe = NULL, *first = NULL;
+	int found = 0;
+	while ((pe = FindEntityByClassname(pe, "dod_control_point_master")) != NULL)
+	{
+		if (pe->free)
+			continue;
+		if (!first)
+			first = pe;
+		found++;
+	}
+
+	if (found > 1)
+	{
+		char why[96];
+		snprintf(why, sizeof(why), "%d control point masters on this map, so no single "
+			"index space exists", found);
+		DODX_CPResolveAbandon(why);
+		return false;
+	}
+	if (found == 0)
+	{
+		DODX_CPResolveRetry("no dod_control_point_master on the map");
+		return false;
+	}
+
+	g_cpMaster = first;
+	return true;
+}
+
+// Reorder mObjects into the DLL's own CP index space, once the DLL has one.
+//
+// Identity is the CControlPoint object pointer, which is the edict's pvPrivateData —
+// an exact match, not a heuristic. That is what makes this work where the three
+// candidate keys do not: point_index is absent on 25 of 97 shipped maps (all five
+// saints2_b3e CPs read -1), targetname collides (dod_merderet has two entities both
+// named 'flag 5'), and flag_id is 0 for every CP at scan time.
+static void DODX_ResolveCPIdentityFromDLL()
+{
+	if (g_cpIdentityResolved || g_cpIdentityGaveUp || mObjects.count <= 0 || !gpGlobals)
+		return;
+
+	if (!DODX_FindSoleCPMaster())
+		return;
+
+	void *md = g_cpMaster->free ? NULL : g_cpMaster->pvPrivateData;
+	if (!md)
+	{
+		g_cpMaster = NULL;   // gone or not yet built; look again
+		DODX_CPResolveRetry("the control point master has no private data");
+		return;
+	}
+
+	if (DODX_RawInt(md, CPM_OFF_FOUND) == 0)
+	{
+		DODX_CPResolveRetry("the master never claimed its points");
+		return;
+	}
+
+	int n = DODX_RawInt(md, CPM_OFF_NUMPOINTS);
+	if (n <= 0 || n > 12)
+	{
+		char why[96];
+		snprintf(why, sizeof(why), "the master reported %d points, outside 1..12", n);
+		DODX_CPResolveRetry(why);
+		return;
+	}
+
+	objinfo_t ordered[12];
+	bool filled[12] = {};
+	int matched = 0;
+
+	for (int a = 0; a < n; a++)
+	{
+		void *cppd = (void *)(intptr_t)DODX_RawInt(md, CPM_OFF_ARRAY + a * 4);
+		if (!cppd)
+			break;
+
+		int scanned = -1;
+		for (int i = 0; i < mObjects.count; i++)
+		{
+			if (mObjects.obj[i].pEdict && !mObjects.obj[i].pEdict->free &&
+			    mObjects.obj[i].pEdict->pvPrivateData == cppd)
+			{
+				scanned = i;
+				break;
+			}
+		}
+		if (scanned < 0)
+			break;
+
+		int dllIndex = DODX_RawInt(cppd, CP_OFF_INDEX);
+		if (dllIndex < 0 || dllIndex >= n || filled[dllIndex])
+			break;
+
+		ordered[dllIndex] = mObjects.obj[scanned];
+		// One meaning, everywhere: obj[i].index == i + 1, i.e. the 1-based control
+		// point number, and array position == the SetObj cp_index the DLL uses.
+		ordered[dllIndex].index = dllIndex + 1;
+		filled[dllIndex] = true;
+		matched++;
+	}
+
+	// Commit only on a complete bijection. A partial mapping is worse than the order
+	// we already have, because it looks authoritative.
+	if (matched != n)
+	{
+		char why[112];
+		snprintf(why, sizeof(why), "the master claims %d points but %d resolved to a "
+			"distinct index among %d scanned", n, matched, mObjects.count);
+		DODX_CPResolveRetry(why);
+		return;
+	}
+
+	bool changed = (n != mObjects.count);
+	for (int i = 0; !changed && i < n; i++)
+		changed = (ordered[i].pEdict != mObjects.obj[i].pEdict) ||
+		          (ordered[i].index  != mObjects.obj[i].index);
+
+	// The DLL's set is authoritative and is not always every dod_control_point on the
+	// map: dod_merderet spawns six and the sole master claims five. Tracking the extra
+	// one shifts every index after it. This is only sound because DODX_FindSoleCPMaster
+	// has established there is exactly one master — with two, a subset looks identical.
+	if (n != mObjects.count)
+		MF_Log("[DODX] CP identity: the one master claims %d of the %d dod_control_point "
+			"entities — following the DLL", n, mObjects.count);
+
+	memcpy(mObjects.obj, ordered, sizeof(objinfo_t) * n);
+	// Entries past the new count still hold pre-reorder copies, duplicate pEdict
+	// included. Nothing reads past count today; do not leave that as the only defence.
+	if (n < mObjects.count)
+		memset(&mObjects.obj[n], 0, sizeof(objinfo_t) * (mObjects.count - n));
+	mObjects.count = n;
+	g_cpIdentityResolved = true;
+
+	// Nothing may reorder behind this. The InitObj message is the other claimant and
+	// it is the less reliable one.
+	g_cpOrderingFinalized = true;
+
+	if (!changed)
+	{
+		MF_Log("[DODX] CP identity: confirmed %d CPs, order already correct", n);
+		return;
+	}
+
+	MF_Log("[DODX] CP identity: reordered %d CPs to the DLL's index space", n);
+	for (int i = 0; i < mObjects.count; i++)
+	{
+		// netname, not just targetname: dod_donner leaves every CP's targetname
+		// empty but names them all, so a targetname-only line cannot be read.
+		edict_t *pe = mObjects.obj[i].pEdict;
+		MF_Log("[DODX]   CP[%d] index=%d owner=%d targetname='%s' netname='%s'",
+			i, mObjects.obj[i].index, mObjects.obj[i].owner,
+			pe ? STRING(pe->v.targetname) : "?", pe ? STRING(pe->v.netname) : "?");
+	}
+
+	// Consumers cached names and indices against the provisional order.
+	if (iFInitCP >= 0)
+		MF_ExecuteForward(iFInitCP);
 }
 
 // KTP: Re-seed CP ownership when the game DLL changes it without a SetObj we can
