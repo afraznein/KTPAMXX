@@ -13,6 +13,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.7.32] - unreleased
 
+### Fixed — dodx: CP ownership was never re-seeded after a round restart (#10)
+
+- **From round 2 onward, `CP_owner` reported the pre-restart ownership on every
+  default-owned map** (`dod_donner`, `dod_kalt`, `dod_flash`, `dod_saints2_*`). The DLL
+  resets each CP's `m_iTeam` to its default on `sv_restartround` but broadcasts nothing
+  extension mode intercepts: the only InitObj that arrives carries `newCount=0` (38,903
+  such messages over 9 days on Denver 27015, zero usable ones), and no SetObj is sent.
+  Both halves of the message path are therefore unreachable, which is why the reviewed
+  latch-split candidate (`8d818deaf`, reverted) could not fix it either.
+- dodx now polls each CP's own pdata `m_iTeam` (~2/s, via the module frame callback) and
+  tracks its **edges**: a change that no SetObj delivered — the restart reset — is
+  written into `owner`, and `controlpoints_init` re-fires so consumers re-read the full
+  snapshot. A change SetObj already delivered is a no-op. Edge- rather than
+  level-triggered because `m_iTeam` reads 0 until the DLL stamps CP state ~2s into the
+  map, and a level copy in that window would wipe the BSP-seeded defaults (#9).
+- The sync writes `owner` only — never `default_owner` (the BSP seed) and never the
+  `dod_control_point_captured` forward, which would invent captures in stats. Reads
+  outside 0..2 are discarded, so a wrong per-platform layout degrades to today's
+  behaviour instead of corrupting `owner`.
+
 ### Fixed — `KTP_FLAG_POSITION` only ever emitted for the map the server booted into
 
 - **The one-shot task that emits flag positions was armed from `controlpoints_init`, and in

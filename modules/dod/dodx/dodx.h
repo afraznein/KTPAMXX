@@ -356,6 +356,10 @@ typedef struct objinfo_s {
 	float origin_y;
 	// setobj
 	int owner;
+	// Last m_iTeam read out of this CP's pdata — edge detector for ownership
+	// changes that arrive with no SetObj (round restarts). Travels with the
+	// struct across any reorder.
+	int last_dll_owner;
 	// control area
 	int areaflags; // 0-need check , 1-no area , 2-found area
 	edict_t* pAreaEdict;
