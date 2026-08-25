@@ -13,6 +13,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.7.32] - unreleased
 
+### Fixed — a break candidate could credit a `cap_break` to a reconnecting player
+
+- `g_kscBreakQ` holds raw client indices, and `ksc_clear_player` never swept it, so a
+  killer disconnecting inside the ~2.5s break window (`KSC_BREAK_WINDOW` polls) left a
+  live candidate pointing at a slot the engine can hand to the next player to connect.
+  `ksc_emit_break`'s `is_user_connected` check passes for the new occupant, so the break
+  was credited to a player who never made it.
+- Disconnect now zeroes the slot's queued killer **and victim** entries
+  (`ksc_break_purge_player`, called from `ksc_clear_player`; `g_kscBreakVictim` feeds
+  `break_context`'s victim identity, which would otherwise name a recycled slot's new
+  occupant). The entries are zeroed rather than removed: the dead victim's delayed zone
+  decrement still consumes a queue slot in FIFO order, so removing the entry would shift
+  that drop onto the next queued candidate — a different misattribution. A zeroed
+  breaker fails `ksc_emit_break`'s existing range guard and the break goes uncredited,
+  which is the honest outcome; a zeroed victim renders as `"-"` in `break_context`,
+  which that emitter already defines for an unavailable victim.
+
 ### Changed — `dodx_give_grenade` distinguishes "already holds one" from a real refusal
 
 - The DLL's refusal signature is identical whether the player is at capacity or something
