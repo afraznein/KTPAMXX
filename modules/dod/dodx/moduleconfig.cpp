@@ -2275,6 +2275,12 @@ static bool DODX_SetupExtensionHooks()
 	// the boot map after every restart runs with detect_* = 0 until a changelevel.
 	DODX_ReadBSPMapInfo();
 
+	// Same gap for the CP owner sync: if the activate hook missed the boot map,
+	// nothing registers the frame callback until a changelevel. Idempotent.
+	g_cpOwnerSyncNext = 0.0f;
+	if (MF_RegModuleFrameFunc)
+		MF_RegModuleFrameFunc(DODX_SyncCPOwnersFromDLL);
+
 	return true;
 }
 
@@ -2622,6 +2628,7 @@ static void DODX_InitCPFromEntities()
 		mObjects.obj[idx].default_owner = cpd.owner;
 		mObjects.obj[idx].owner = cpd.owner;
 		mObjects.obj[idx].last_dll_owner = cpd.owner;
+		mObjects.obj[idx].owner_sync_armed = 0;
 		mObjects.obj[idx].visible = 1;
 		mObjects.obj[idx].icon_neutral = cpd.icon_neutral;
 		mObjects.obj[idx].icon_allies = cpd.icon_allies;
@@ -2674,6 +2681,8 @@ static void DODX_InitCPFromEntities()
 				{
 					mObjects.obj[oi].default_owner = bspAll[bi].default_owner;
 					mObjects.obj[oi].owner = bspAll[bi].default_owner;
+					// last_dll_owner deliberately keeps the raw pdata read: the
+					// DLL's ~2s stamp must arrive as an edge to the owner sync.
 					bspUsed[bi] = true;
 					matched = true;
 					break;
@@ -2839,12 +2848,18 @@ static void DODX_InitCPFromEntities()
 // observe. On a round restart the DLL resets every CP's m_iTeam to its default,
 // but the only InitObj that reaches extension mode carries newCount=0 and no
 // SetObj is broadcast, so mObjects kept the pre-restart owners for the rest of
-// the map. m_iTeam IS the DLL's live state, so tracking its edges catches every
-// restart flavour (sv_restartround, clan-timer resets, match live-restarts).
+// the map. m_iTeam IS the DLL's live state, so it is the one source that covers
+// every restart flavour (sv_restartround, clan-timer resets, match live-restarts).
 //
-// Edge-triggered on the pdata value, never level-triggered against
-// mObjects.owner: m_iTeam reads 0 until the DLL stamps CP state ~2s into the
-// map, and a level copy in that window would wipe the BSP-seeded defaults.
+// Arm-then-level, not pure edge detection: m_iTeam reads 0 until the DLL stamps
+// CP state ~2s into the map, and a level copy in that window would wipe the
+// BSP-seeded defaults — so a CP arms only on proof the stamp happened (a nonzero
+// read, or any change from the scan-time read). Once armed it level-compares,
+// so a change the 0.5s sampling missed entirely (captured and reset inside one
+// window) is still corrected on the next tick. Until a neutral-default CP's
+// first-ever change is sampled, coverage has not begun for it; that window
+// closes on any subsequent change.
+//
 // Writes owner ONLY — never default_owner (the BSP seed), and never
 // iFCPCaptured: a reset is not a capture, and firing the capture forward here
 // would invent captures in every consumer's stats.
@@ -2863,25 +2878,32 @@ static void DODX_SyncCPOwnersFromDLL()
 	int corrected = 0;
 	for (int i = 0; i < mObjects.count; i++)
 	{
-		edict_t *pe = mObjects.obj[i].pEdict;
+		objinfo_t &o = mObjects.obj[i];
+		edict_t *pe = o.pEdict;
 		if (!pe || pe->free || !pe->pvPrivateData)
 			continue;
 
 		int dllOwner = GET_CP_PD(pe).owner;
 		// A team is 0..2; anything else means the read missed (wrong layout for
-		// this platform's DLL build) and must not be written into owner.
+		// this platform's DLL build) and must not be written into owner. This
+		// also keeps a garbage read from arming the level compare below.
 		if (dllOwner < 0 || dllOwner > 2)
 			continue;
-		if (dllOwner == mObjects.obj[i].last_dll_owner)
-			continue;
-		mObjects.obj[i].last_dll_owner = dllOwner;
 
-		// SetObj normally lands first, so mObjects already agrees and this is
-		// just the edge tracker catching up. Only a change nothing delivered —
-		// the round-restart reset — leaves a stale owner to correct.
-		if (mObjects.obj[i].owner != dllOwner)
+		if (!o.owner_sync_armed)
 		{
-			mObjects.obj[i].owner = dllOwner;
+			if (dllOwner == 0 && dllOwner == o.last_dll_owner)
+				continue;   // still indistinguishable from pre-stamp
+			o.owner_sync_armed = 1;
+		}
+		o.last_dll_owner = dllOwner;
+
+		// SetObj normally lands first, so mObjects already agrees. Only a change
+		// nothing delivered — the round-restart reset — leaves this divergent,
+		// and the write makes them agree again, so it cannot re-fire next tick.
+		if (o.owner != dllOwner)
+		{
+			o.owner = dllOwner;
 			corrected++;
 		}
 	}

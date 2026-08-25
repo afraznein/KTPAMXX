@@ -715,6 +715,10 @@ void Client_InitObj(void* mValue)
 							mObjects.obj[i].pAreaEdict    = s_initObjScanSnapshot[j].pAreaEdict;
 							mObjects.obj[i].areaflags     = s_initObjScanSnapshot[j].areaflags;
 							mObjects.obj[i].default_owner = s_initObjScanSnapshot[j].default_owner;
+							// The owner-sync tracker is per-pEdict state exactly like
+							// pAreaEdict; leaving it zeroed would fake a pre-stamp CP.
+							mObjects.obj[i].last_dll_owner   = s_initObjScanSnapshot[j].last_dll_owner;
+							mObjects.obj[i].owner_sync_armed = s_initObjScanSnapshot[j].owner_sync_armed;
 							break;
 						}
 					}
