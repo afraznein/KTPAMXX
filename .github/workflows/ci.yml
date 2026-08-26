@@ -75,6 +75,17 @@ jobs:
         working-directory: KTPAMXX
         run: python3 scripts/test_reentry_guards.py
 
+      # Selftest first: it reintroduces the unbounded-slot shape and the doc/code
+      # drift and requires rejection, so a check that stopped matching the source
+      # fails here instead of passing forever on text it no longer understands.
+      - name: Prove the native contract checks discriminate
+        working-directory: KTPAMXX
+        run: python3 scripts/test_native_param_contracts.py --selftest
+
+      - name: Test native parameter contracts
+        working-directory: KTPAMXX
+        run: python3 scripts/test_native_param_contracts.py
+
       - name: Install 32-bit toolchain + compiler
         run: |
           sudo dpkg --add-architecture i386
