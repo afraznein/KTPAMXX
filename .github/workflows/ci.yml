@@ -64,6 +64,17 @@ jobs:
         working-directory: KTPAMXX
         run: python3 scripts/test_stats_life_boundaries.py
 
+      # Selftest first: it reintroduces each historical re-entry defect and requires
+      # the check to reject it, so a check that silently stopped matching the source
+      # shows up here instead of passing forever on text it no longer understands.
+      - name: Prove the re-entry guard checks discriminate
+        working-directory: KTPAMXX
+        run: python3 scripts/test_reentry_guards.py --selftest
+
+      - name: Test re-entry depth guards
+        working-directory: KTPAMXX
+        run: python3 scripts/test_reentry_guards.py
+
       - name: Install 32-bit toolchain + compiler
         run: |
           sudo dpkg --add-architecture i386
