@@ -1156,8 +1156,13 @@ static cell AMX_NATIVE_CALL dodx_get_round_time(AMX *amx, cell *params)
 // A map has at most one. FindEntityByClassname wraps pfnFindEntityByString,
 // which is the extension-mode-safe way to walk entities (pfnPEntityOfEntIndex
 // hangs during OnPluginsLoaded there — see DODX_InitCPFromEntities). The cache
-// is cleared per map in DODX_OnSV_ActivateServer, so a freed edict is never
-// read; the revalidation below covers the rest.
+// is cleared per map on both lifecycle paths — DODX_OnSV_ActivateServer and
+// ServerDeactivate — so a freed edict is never read; the revalidation below
+// covers the rest.
+//
+// ⚠️ Those clears are LOAD-BEARING, not belt-and-braces: the revalidation cannot
+// stand in for them, because it dereferences the cached pointer before it has
+// established the pointer is live. Do not drop either one as redundant.
 static edict_t *DODX_GetCPMaster()
 {
 	if (g_pCPMasterEdict)

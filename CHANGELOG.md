@@ -274,6 +274,34 @@ load failure, not a degraded mode.
 Merge conflict resolution: one hunk in this file, both sides kept. `dodx.h` and
 `moduleconfig.cpp` merged cleanly.
 
+### Fixed — the `g_pCPMasterEdict` clear had no Metamod counterpart, and the reason it did not matter was recorded wrongly
+
+- `DODX_OnSV_ActivateServer` clears the cached control-point-master edict per map;
+  `ServerDeactivate` never did. Note the polarity is the reverse of this fork's usual
+  trap — here the **Metamod** path is the deficient one — which is why the standing
+  extension-mode parity audit would not have surfaced it.
+- **It is genuinely harmless on this fleet, but not for the recorded reason, and the wrong
+  reason was the dangerous part.** It was recorded as harmless because `DODX_GetCPMaster`
+  self-revalidates. It does re-derive on a failed check — but its *first* action is
+  `g_pCPMasterEdict->free`, a dereference of the very pointer that would be dangling. The
+  revalidation cannot establish the liveness it depends on. Taken at face value, that
+  rationale would justify deleting the extension-path clear as redundant, which would
+  introduce a use-after-free on the only path the fleet actually runs.
+- The real reason is mutual exclusion: `DODX_SetupExtensionHooks` registers the
+  `SV_ActivateServer` hook only under `g_bExtensionMode`, and dodx's `DLL_FUNCTIONS` table
+  is installed only when Metamod calls `GetEntityAPI2`, which nothing does in extension
+  mode. The two teardown paths cannot both be live, and the fleet only ever runs the one
+  that has the clear. `ServerDeactivate` is compiled into the shipped `.so` (`USE_METAMOD`
+  is defined for the vendored headers) — dead code, not absent code.
+- `ServerDeactivate` now clears it too, so the invariant its declaration comment asserts
+  ("cleared on map change so a freed edict from the previous map can never be read") is
+  true on both paths rather than only one. Zero runtime effect on the fleet.
+- `DODX_GetCPMaster` carries the tripwire, in the shape `KTPTriggerGeom.h` already uses
+  for the analogous reset: the clears are load-bearing, the in-function guard does not
+  substitute for them, do not drop either as redundant.
+- Pre-existing at `16464b57` on the tier-2 lineage, byte-identical, so this is not recent
+  drift.
+
 ## [Unreleased]
 
 **These entries are now part of the 2.7.32 re-cut below-the-line, not of 2.7.31.**

@@ -476,6 +476,9 @@ void ServerDeactivate()
 	mObjects.Clear();
 	g_lastCapturedCP = -1;
 	g_lastCapturedTime = 0.0f;
+	// Parity with DODX_OnSV_ActivateServer. DODX_GetCPMaster cannot cover this itself:
+	// it dereferences the cached pointer before it can revalidate anything.
+	g_pCPMasterEdict = nullptr;
 	DODX_ClearAmmoRegistry();
 
 	RETURN_META(MRES_IGNORED);
@@ -1905,7 +1908,7 @@ static void DODX_OnSV_ActivateServer(IVoidHookChain<int> *chain, int runPhysics)
 
 	// KTP: the previous map's control-point master edict is freed by now, so the
 	// cached pointer must go with it — dodx_get_score_tick_time() re-finds it
-	// lazily on the new map.
+	// lazily on the new map. Load-bearing; DODX_GetCPMaster says why.
 	g_pCPMasterEdict = nullptr;
 
 	// Ammo indices are assigned by this map's precache order, so last map's are wrong.
