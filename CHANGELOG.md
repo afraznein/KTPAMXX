@@ -274,6 +274,30 @@ load failure, not a degraded mode.
 Merge conflict resolution: one hunk in this file, both sides kept. `dodx.h` and
 `moduleconfig.cpp` merged cleanly.
 
+### Fixed — `CTaskMngr`'s deferred clear ran on every frame depth, not just the outermost
+
+- `startFrame()` decrements `m_bInStartFrame` and then destroys `m_Tasks` gated only on
+  `m_bDeferredClear`. Since 2.7.25 that field is a depth counter rather than a bool, so a
+  nested `startFrame()` reaches the clear with outer frames still iterating the vector —
+  it frees the `CTask` objects an outer `executeIfRequired()` is standing on. That is the
+  same use-after-free the deferral was built to prevent (gdb-confirmed on a New York 2
+  core, 2.6.13); deferring merely moved *when* it happens.
+- Second-order: the inner frame also consumed `m_bDeferredClear`, so the outer loop's
+  break never fired and it kept indexing a now-empty vector against a `lastSize` cached
+  before the clear.
+- 2.7.25 converted `m_bInStartFrame` from bool to a counter on the stated reasoning that
+  "every existing test is against zero, so the consumers needed no change". That holds for
+  the producer in `clear()`; it does not hold here, because this site never tested the
+  counter at all. The guard is now `m_bInStartFrame == 0 && m_bDeferredClear`, matching
+  `CForward`'s `m_ToDelete && !m_InExec` and the message-hook `m_InExecution.size() == 0`
+  — one rule across all three: the outermost frame owns the terminal transition, which is
+  also how the 2.7.20 active-count double-decrement was resolved.
+- No behaviour change at depth 1, which is every non-nested frame: the decrement reaches 0
+  and the clear runs exactly as before.
+- `scripts/test_reentry_guards.py` locks the shape at all three sites and carries a
+  `--selftest` that reintroduces each historical defect and requires the check to reject
+  it. Run against `main` before this change, it fails on the CTask site.
+
 ### Fixed — the `g_pCPMasterEdict` clear had no Metamod counterpart, and the reason it did not matter was recorded wrongly
 
 - `DODX_OnSV_ActivateServer` clears the cached control-point-master edict per map;

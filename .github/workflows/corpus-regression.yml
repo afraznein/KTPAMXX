@@ -1,3 +1,25 @@
+# Calls KTPInfrastructure's Lane B harness to replay the deterministic stats
+# corpus against this PR's KTPAMXX.
+#
+# Every ref below except `amxx_ref` is pinned to the harness lineage, and that is
+# load-bearing rather than tidiness. GitHub requires the `uses:` ref to be a
+# literal — it cannot be an expression — so the harness is always preprod's. The
+# reusable workflow defaults each unsupplied `*_ref` to that same lineage, which
+# means any ref this file supplies from a GitHub context is a chance to assemble
+# one lineage's harness against another's repositories.
+#
+# `daemon_ref` used to be `github.event.pull_request.base.ref`. For a PR into
+# preprod that is the harness lineage and everything agreed; for a PR into main it
+# was not. The mismatch stayed invisible until preprod's harness began requiring a
+# schema migration main's daemon did not carry — after which the lane failed while
+# assembling artifacts on every PR into main, for a reason no PR had caused and no
+# PR could fix. preprod moving ahead of main is the normal direction of travel, so
+# that would have recurred on the next migration.
+#
+# `amxx_ref` is the one ref that must NOT be pinned: it is the artifact under
+# test, and pinning it would leave the lane reporting on code the PR never
+# touched. support/check_lane_refs.py enforces both halves of that rule.
+
 name: Corpus Regression
 
 on:
@@ -10,11 +32,30 @@ permissions:
   packages: read
 
 jobs:
+  # Cheap and deterministic, and deliberately NOT a dependency of the lane below.
+  # Gating the lane on it would leave the required `corpus-regression / Lane B`
+  # context skipped rather than failing, and a required check that never reports
+  # blocks the branch instead of reporting on it.
+  ref-pairing:
+    name: lane ref pairing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      # Run first. A gate that only ever passes proves nothing, so make it
+      # demonstrate that it still rejects a straddled call before believing the
+      # real result.
+      - name: Prove the gate discriminates
+        run: python3 support/check_lane_refs.py --selftest
+
+      - name: Check Lane B ref pairing
+        run: python3 support/check_lane_refs.py
+
   corpus-regression:
     uses: afraznein/KTPInfrastructure/.github/workflows/lane-b-stats-e2e.yml@preprod
     with:
       lane: corpus
       infrastructure_ref: preprod
       amxx_ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      daemon_ref: ${{ github.event.pull_request.base.ref || github.ref_name }}
+      daemon_ref: preprod
     secrets: inherit
