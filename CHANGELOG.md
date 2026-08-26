@@ -13,6 +13,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.7.32] - unreleased
 
+### Fixed — `ksc_buffer`'s truncating `copy()` had no way to tell you it truncated
+
+- `copy(g_kscBuffer[...], KSC_BUF_LINE_LEN - 1, line)` silently drops anything past
+  `KSC_BUF_LINE_LEN - 1`. A truncated line doesn't fail loudly -- it just stops matching
+  the daemon's regex, which is indistinguishable from the event never having fired. The
+  buffer-full path already had this covered (`g_kscDropped`/`[KTP-STATS] dropped ...
+  buffer full`); the length path did not.
+- `ksc_buffer` now checks `strlen(line) >= KSC_BUF_LINE_LEN - 1` before the `copy()` and
+  counts it in a new `g_kscTruncated`, reported by `ksc_flush` exactly like the existing
+  drop counter (`[KTP-STATS] truncated N capture line(s) -- exceeded KSC_BUF_LINE_LEN
+  (832), raise it`). The line is still enqueued truncated (partial data beats none) --
+  this only makes the loss observable instead of silent.
+  (`ktp_stats_capture.inc`, `stats_logging.sma` 1.17.0 -> 1.17.1)
+- Console-only counter, same lifecycle as `g_kscDropped` -- not part of the
+  `KTP_CAPTURE_HEALTH` per-half schema, so this needed no `KSC_SCHEMA_CONTRACT` bump and
+  no daemon-side change.
+
 ### Fixed — a break candidate could credit a `cap_break` to a reconnecting player
 
 - `g_kscBreakQ` holds raw client indices, and `ksc_clear_player` never swept it, so a
@@ -297,6 +314,37 @@ Merge conflict resolution: one hunk in this file, both sides kept. `dodx.h` and
 - `scripts/test_reentry_guards.py` locks the shape at all three sites and carries a
   `--selftest` that reintroduces each historical defect and requires the check to reject
   it. Run against `main` before this change, it fails on the CTask site.
+
+### Fixed — `dodx_send_ammox` accepted any `ammo_slot`, including the failure sentinel it tells callers to use
+
+- The native clamped `count` and left `ammo_slot` entirely unvalidated, while its own
+  include directs callers to take the slot from `dodx_get_grenade_ammo_index()` — whose
+  documented failure return is `-1`. A caller doing exactly what the docs said could pass
+  `-1` straight through.
+- Nothing downstream catches it. `MSG_WriteByte` casts to `byte` with no range check, so
+  `-1` is transmitted as `255` and an out-of-range slot silently becomes some other slot.
+  Server-side this is truncation rather than memory corruption; the consequences are a
+  client HUD desync on whatever ammo type owns the resulting slot — which does not
+  self-correct until that type genuinely changes — and DODX's own `AmmoX` hook matching
+  the bogus slot against `weaponData[].ammoSlot` and corrupting its tracked ammo.
+- `ammo_slot` is now bounded to `0 .. DODX_MAX_AMMO_SLOTS - 1` and **rejected rather than
+  clamped**, with `MF_LogError(AMX_ERR_NATIVE)`. Clamping was the tempting option and is
+  the wrong one: slot 0 is a real ammo type, so clamping a failed lookup would write real
+  ammo to the wrong slot — a silent, persistent wrong answer instead of a loud refusal.
+  Rejecting also matches the house split (indices abort, values clamp) and this native's
+  own `CHECK_PLAYER`, which already aborts for its other index parameter.
+- Note this is not a regression of the 2.7.21 cleanup that converted this native's
+  AmmoX-not-registered branch from an abort to `MF_Log` + `return 0`. That branch is an
+  environmental failure with a documented `0` return; an out-of-range index is a caller
+  bug, and the same entry kept out-of-range ids as genuine aborts.
+- `dodx.inc` now states the accepted range, tells callers to check for `-1` first, and
+  carries the `@error` line the abort requires — following `dodx_give_grenade`'s
+  precedent. No in-repo plugin calls this native; `KTPGrenadeLoadout` and
+  `KTPPracticeMode` pass in-range literals today, so nothing in the fleet begins aborting.
+- `scripts/test_native_param_contracts.py` asserts the enforced range and the documented
+  range agree, since the defect was the include and the native disagreeing rather than a
+  missing check. Its `--selftest` reintroduces each shape and requires rejection; run
+  against `main` both checks fail.
 
 ### Fixed — the `g_pCPMasterEdict` clear had no Metamod counterpart, and the reason it did not matter was recorded wrongly
 
