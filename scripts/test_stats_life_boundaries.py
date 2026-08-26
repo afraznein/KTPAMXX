@@ -19,6 +19,9 @@ ROOT = Path(__file__).resolve().parents[1]
 STATS = (ROOT / "plugins" / "dod" / "stats_logging.sma").read_text(encoding="utf-8")
 CAPTURE = (ROOT / "plugins" / "dod" / "ktp_stats_capture.inc").read_text(encoding="utf-8")
 GAMECONFIGS = (ROOT / "amxmodx" / "CGameConfigs.cpp").read_text(encoding="utf-8")
+DODX_MODULE = (ROOT / "modules" / "dod" / "dodx" / "moduleconfig.cpp").read_text(encoding="utf-8")
+DODX_NATIVE = (ROOT / "modules" / "dod" / "dodx" / "NBase.cpp").read_text(encoding="utf-8")
+DODX_INCLUDE = (ROOT / "plugins" / "include" / "dodx.inc").read_text(encoding="utf-8")
 
 
 def function_body(source: str, signature: str) -> str:
@@ -37,6 +40,13 @@ def function_body(source: str, signature: str) -> str:
             if depth == 0:
                 return source[brace + 1 : index]
     raise AssertionError(f"missing closing brace: {signature}")
+
+
+def function_body_last(source: str, signature: str) -> str:
+    """Return the last definition body when C++ also has a prototype."""
+    start = source.rfind(signature)
+    assert start >= 0, f"missing function: {signature}"
+    return function_body(source[start:], signature)
 
 
 def before(body: str, earlier: str, later: str) -> None:
@@ -228,7 +238,10 @@ def test_authoritative_producer_context_and_clocks() -> None:
 
 def test_plugin_end_drains_private_capture() -> None:
     plugin_end = function_body(STATS, "public plugin_end")
-    assert "ksc_flush()" in plugin_end
+    assert "ksc_shutdown()" in plugin_end
+    shutdown = function_body(CAPTURE, "stock ksc_shutdown")
+    before(shutdown, "ksc_objective_reset_all(true)", "ksc_flush()")
+    assert "ksc_grenade_cache_clear_all()" in shutdown
 
 
 def _round_clock_model(previous: float, current: float, limit: float,
@@ -495,7 +508,335 @@ def test_physical_boundaries_do_not_use_stats_pause_gate() -> None:
 
 
 def test_plugin_version() -> None:
-    assert re.search(r'#define\s+PLUGIN_VERSION\s+"1\.17\.0"', STATS)
+    assert re.search(r'#define\s+PLUGIN_VERSION\s+"1\.18\.0"', STATS)
+
+
+def test_schema22_manifest_and_two_second_position_contract() -> None:
+    assert re.search(r"#define\s+KSC_SCHEMA_CONTRACT\s+22(?:\s|$)", CAPTURE)
+    assert re.search(r"#define\s+KSC_POSITION_BROADCAST_SECS\s+2\.0(?:\s|$)", CAPTURE)
+    for capability in ("objective_attempt", "grenade_entity"):
+        assert capability in re.search(
+            r'#define\s+KSC_CAPABILITIES\s+"([^"]+)"', CAPTURE).group(1)
+        assert f'"{capability}"' in CAPTURE
+    assert re.search(r"#define\s+KSC_BUF_FLUSH_SECS\s+5\.0", CAPTURE)
+    assert re.search(r"#define\s+KSC_BUF_MAX_ENTRIES\s+128", CAPTURE)
+    positions = function_body(CAPTURE, "public ksc_position_broadcast_task")
+    before(positions, "if (!is_user_connected(id))", "if (!is_user_alive(id))")
+
+
+def _objective_model(active, owner: int, is_capping: bool, team: int,
+                     allies: int, axis: int):
+    """Executable truth table matching ksc_objective_observe."""
+    occupancy = allies if team == 1 else axis
+    valid = is_capping and team in (1, 2) and team != owner and occupancy > 0
+    events = []
+    if active is None:
+        return (["start"], (team, owner)) if valid else (events, None)
+    old_team, owner_before = active
+    if owner == old_team and owner != owner_before:
+        return ["complete"], None
+    if not valid:
+        return ["stop"], None
+    if team != old_team:
+        return ["stop", "start"], (team, owner)
+    return events, active
+
+
+def test_objective_attempt_transition_contract() -> None:
+    events, active = _objective_model(None, 2, True, 1, 2, 0)
+    assert events == ["start"] and active == (1, 2)
+    assert _objective_model(active, 2, True, 1, 2, 0) == ([], active)
+    assert _objective_model(active, 1, False, 0, 0, 0) == (["complete"], None)
+    assert _objective_model(active, 2, False, 0, 0, 0) == (["stop"], None)
+    assert _objective_model(active, 0, True, 2, 1, 1) == (
+        ["stop", "start"], (2, 0))
+    assert _objective_model(None, 0, True, 1, 0, 0) == ([], None)
+
+    observe = function_body(CAPTURE, "stock ksc_objective_observe")
+    assert "active_occupancy > 0" in observe
+    assert "owner == g_kscAttemptTeam[f]" in observe
+    assert "owner != g_kscAttemptOwnerBefore[f]" in observe
+    team_flip = observe[observe.index("if (capturing_team != g_kscAttemptTeam[f])"):]
+    before(team_flip, 'ksc_objective_finish(f, "stop", "capture_stopped"',
+           "ksc_objective_start(f, capturing_team")
+    for forbidden in ("participant", "walked_off", "killed", "cap_break"):
+        assert forbidden not in observe
+
+
+def test_objective_attempt_restart_state_machine() -> None:
+    # Restart suppression is a hard context edge: an open attempt closes once,
+    # no start/complete is admitted during countdown, and ordinary observation
+    # resumes only after the fresh-baseline poll has been consumed.
+    active = (1, 2)
+    events = [("stop", "context_reset")] if active else []
+    active = None
+    assert events == [("stop", "context_reset")] and active is None
+    assert ([] if active is None else ["complete"]) == []
+    assert ([] if True else _objective_model(None, 2, True, 1, 2, 0)[0]) == []
+    assert _objective_model(None, 2, True, 1, 2, 0)[0] == ["start"]
+
+    poll = function_body(CAPTURE, "public ksc_zone_poll_task")
+    suppression = poll[poll.index("if (suppress_breaks)"):
+                       poll.index("for (new f = 0;")]
+    assert "ksc_objective_reset_all(true)" in suppression
+    observe_call = poll.index("ksc_objective_observe(f")
+    guard = poll.rfind("if (!suppress_breaks)", 0, observe_call)
+    assert guard >= 0
+    before(poll, "ksc_objective_reset_all(true)", "for (new f = 0;")
+
+
+def test_objective_attempt_wire_identity_and_enum_contract() -> None:
+    emit = function_body(CAPTURE, "stock bool:ksc_emit_objective_attempt")
+    expected = (
+        "kind", "matchid", "half", "map", "attempt_id", "flag_index",
+        "flag_name", "capturing_team", "owner_before", "allies_in_zone",
+        "axis_in_zone", "stop_reason", "game_time", "event_epoch", "sequence",
+    )
+    cursor = -1
+    for field in expected:
+        cursor = emit.index(f'({field} ^"%', cursor + 1)
+    assert "wire_attempt_id = attempt_id ? attempt_id : event_sequence" in emit
+    start = function_body(CAPTURE, "stock ksc_objective_start")
+    assert "g_kscAttemptId[f] = sequence" in start
+    finish = function_body(CAPTURE, "stock bool:ksc_objective_finish")
+    assert "g_kscAttemptId[f]" in finish
+    assert '"capture_stopped"' in CAPTURE
+    assert '"context_reset"' in CAPTURE
+    assert "walked_off" not in emit and "killed" not in emit
+
+
+def _wire_sanitize(value: str) -> str:
+    return "".join(
+        "_" if ord(ch) < 32 or ord(ch) in (34, 40, 41, 92, 127) else ch
+        for ch in value
+    )
+
+
+def _player_name_sanitize(value: str) -> str:
+    return "".join(
+        "_" if ord(ch) < 32 or ord(ch) in (34, 40, 41, 60, 62, 92, 127)
+        else ch
+        for ch in value
+    )
+
+
+def _parse_player_identity(value: str):
+    # Exact field boundaries used by KTPHLStatsX ktpParsePlayerIdentity.
+    return re.match(
+        r'^(.*?)<(\d+)><([^<>]*)><([^<>]*)>(?:<([^<>]*)>)?.*$', value
+    )
+
+
+def _parse_marker_properties(line: str) -> dict[str, str]:
+    # Same flat `(field "value")` convention consumed by the stats daemon.
+    return dict(re.findall(r'\(([a-z_]+) "([^"]*)"\)', line))
+
+
+def test_new_marker_strings_are_protocol_safe() -> None:
+    sanitize = function_body(CAPTURE, "stock ksc_wire_sanitize")
+    for unsafe in ("ch < 32", "ch == 34", "ch == 40", "ch == 41",
+                   "ch == 92", "ch == 127"):
+        assert unsafe in sanitize
+
+    hostile_flag = 'Middle ") (sequence "999")\\\r\n'
+    hostile_name = 'Bad\\Name") (kind "removed")<42><STEAM_0:1:9><Allies>'
+    safe_flag = _wire_sanitize(hostile_flag)
+    safe_owner = (
+        _player_name_sanitize(hostile_name) +
+        '<7><STEAM_0:1:123><Axis>'
+    )
+    line = (
+        'KTP_TEST (flag_name "' + safe_flag + '") '
+        '(owner "' + safe_owner + '") (sequence "7")'
+    )
+    parsed = _parse_marker_properties(line)
+    assert parsed == {
+        "flag_name": safe_flag,
+        "owner": safe_owner,
+        "sequence": "7",
+    }
+    assert parsed["sequence"] == "7"  # hostile text did not inject 999
+    assert "<7><STEAM_0:1:123><Axis>" in parsed["owner"]
+    for value in parsed.values():
+        assert not any(ord(ch) < 32 or ord(ch) in (34, 40, 41, 92, 127)
+                       for ch in value)
+
+    objective = function_body(CAPTURE, "stock bool:ksc_emit_objective_attempt")
+    for wire in ("wire_kind", "wire_matchid", "wire_map",
+                 "wire_flag_name", "wire_stop_reason"):
+        assert f"ksc_wire_sanitize(" in objective and wire in objective
+    grenade = function_body(CAPTURE, "stock bool:ksc_emit_grenade_entity")
+    for wire in ("wire_kind", "wire_matchid", "wire_map",
+                 "wire_weapon_type", "wire_owner"):
+        assert wire in grenade
+    player = function_body(CAPTURE, "stock ksc_player_str")
+    before(player, "ksc_player_name_sanitize(name", "formatex(raw")
+    assert "safe_name, get_user_userid(id), safe_authid, safe_team" in player
+    assert "ksc_wire_sanitize(raw, out, len)" in player
+
+
+def test_hostile_player_name_cannot_spoof_identity_fields() -> None:
+    hostile_name = 'Mallory<42><STEAM_0:1:999><Allies>'
+    unsafe = hostile_name + '<7><STEAM_0:1:123><Axis>'
+    unsafe_match = _parse_player_identity(unsafe)
+    assert unsafe_match and unsafe_match.groups()[:4] == (
+        "Mallory", "42", "STEAM_0:1:999", "Allies")
+
+    safe = _player_name_sanitize(hostile_name) + '<7><STEAM_0:1:123><Axis>'
+    safe_match = _parse_player_identity(safe)
+    assert safe_match and safe_match.groups()[:4] == (
+        "Mallory_42__STEAM_0:1:999__Allies_",
+        "7", "STEAM_0:1:123", "Axis")
+
+    sanitizer = function_body(CAPTURE, "stock ksc_player_name_sanitize")
+    assert "ch == 60" in sanitizer and "ch == 62" in sanitizer
+
+
+def test_grenade_entity_producer_contract() -> None:
+    tracked = function_body(CAPTURE, "public dod_grenade_entity_tracked")
+    removed = function_body(CAPTURE, "public dod_grenade_entity_removed")
+    emit = function_body(CAPTURE, "stock bool:ksc_emit_grenade_entity")
+    assert "ksc_grenade_cache_find(entindex, serial)" in tracked
+    assert "ksc_player_str(owner" in tracked
+    assert "g_kscGrenadeCacheOwner[slot]" in removed
+    assert "ksc_grenade_cache_clear(slot)" in removed
+    assert "public dod_grenade_explosion" not in CAPTURE
+    for weapon in (13, 14, 36):
+        assert f"wpnid == {weapon}" in function_body(
+            CAPTURE, "stock bool:ksc_grenade_weapon_valid")
+    for field in (
+        "kind", "matchid", "half", "map", "entindex", "serial", "weapon_id",
+        "weapon_type", "owner", "position", "game_time", "event_epoch", "sequence",
+    ):
+        assert f'({field} ^"%' in emit
+    assert 'ksc_emit_grenade_entity("removed"' in removed
+    assert "detonation" not in emit.lower()
+    drop = function_body(CAPTURE, "public dod_grenade_entity_tracker_drop")
+    assert "ksc_event_context" in drop
+    assert "ksc_grenade_record_drop()" in drop
+    record_drop = function_body(CAPTURE, "stock ksc_grenade_record_drop")
+    assert "g_kscAttempted[KSC_EVENT_GRENADE_ENTITY]++" in record_drop
+    assert "g_kscDroppedByType[KSC_EVENT_GRENADE_ENTITY]++" in record_drop
+
+
+def _grenade_tracker_model(events, capacity=2, max_edicts=128):
+    active: dict[tuple[int, int], int] = {}
+    overflow_serial = [0] * max_edicts
+    emitted = []
+    for action, entindex, serial, weapon in events:
+        key = (entindex, serial)
+        if action == "clear":
+            active.clear()
+            overflow_serial = [0] * max_edicts
+        elif action == "track":
+            if (entindex <= 0 or entindex >= max_edicts or serial <= 0 or
+                    weapon not in (13, 14, 36)):
+                continue
+            if key in active or overflow_serial[entindex] == serial:
+                continue
+            if len(active) < capacity:
+                active[key] = weapon
+                emitted.append(("tracked", key))
+            else:
+                overflow_serial[entindex] = serial
+                emitted.append(("drop", key))
+        elif action == "remove":
+            if key in active:
+                active.pop(key)
+                emitted.append(("removed", key))
+            elif 0 < entindex < max_edicts and overflow_serial[entindex] == serial:
+                overflow_serial[entindex] = 0
+    return emitted, active, overflow_serial
+
+
+def test_grenade_tracker_saturation_reuse_and_recovery_model() -> None:
+    emitted, active, overflow = _grenade_tracker_model([
+        ("track", 40, 1, 13), ("track", 40, 1, 13),
+        ("track", 41, 1, 14), ("track", 42, 1, 36),
+        ("track", 42, 1, 36), ("track", 43, 0, 13),
+        ("track", 44, 1, 29), ("track", 45, 1, 40),
+        ("remove", 40, 1, 13), ("remove", 40, 1, 13),
+        ("track", 40, 2, 13),  # same index, new serial is a new entity
+        ("track", 42, 1, 36),  # dropped key stays dropped after recovery
+        ("remove", 42, 1, 36),
+        ("track", 42, 2, 36),
+    ])
+    assert emitted.count(("tracked", (40, 1))) == 1
+    assert emitted.count(("removed", (40, 1))) == 1
+    assert emitted.count(("drop", (42, 1))) == 1
+    assert ("tracked", (40, 2)) in emitted
+    assert ("tracked", (42, 2)) not in emitted  # capacity still truthfully full
+
+    emitted, active, overflow = _grenade_tracker_model([
+        ("track", 40, 1, 13), ("track", 41, 1, 14),
+        ("track", 42, 1, 13), ("track", 43, 1, 14),
+        ("track", 44, 1, 36), ("track", 42, 1, 13),
+        ("track", 43, 1, 14), ("track", 44, 1, 36),
+        ("remove", 40, 1, 13), ("track", 45, 1, 13),
+        ("track", 42, 1, 13),  # old dropped key stays deduped
+        ("remove", 42, 1, 13), ("remove", 41, 1, 14),
+        ("track", 42, 2, 13),  # index reuse with new serial recovers
+    ])
+    for key in ((42, 1), (43, 1), (44, 1)):
+        assert emitted.count(("drop", key)) == 1
+    assert ("tracked", (45, 1)) in emitted
+    assert ("tracked", (42, 2)) in emitted
+
+
+def test_dodx_grenade_entity_tracking_and_removal_contract() -> None:
+    track = function_body(DODX_MODULE, "static void DODX_TrackGrenadeEntity")
+    remove = function_body(DODX_MODULE, "static void DODX_RemoveTrackedGrenadeEntity")
+    hook = function_body_last(DODX_MODULE, "static void DODX_OnEdictFree")
+    valid = function_body(DODX_MODULE, "static bool DODX_IsTelemetryGrenadeWeapon")
+    assert 'strcmp(classname, "grenade")' in track
+    assert 'strcmp(classname, "grenade2")' in track
+    assert "entindex" in track and "serial" in track
+    assert "serial <= 0" in track
+    assert "return; // same entity, later TraceLine: tracked exactly once" in track
+    assert "weapon == 13 || weapon == 14 || weapon == 36" in valid
+    assert "monster_mortar" not in track
+    assert "record.entindex != entindex || record.serial != serial" in remove
+    before(remove, "record.active = false", "DODX_EmitGrenadeEntityForward")
+    before(hook, "DODX_RemoveTrackedGrenadeEntity(entity)", "chain->callNext(entity)")
+    assert "ED_Free()->registerHook(DODX_OnEdictFree" in DODX_MODULE
+    assert "ED_Free()->unregisterHook(DODX_OnEdictFree" in DODX_MODULE
+    assert "PF_Remove_I()->registerHook" not in DODX_MODULE
+    assert "g_grenades" not in track and "g_grenades" not in remove
+
+    overflow = function_body(DODX_MODULE, "static bool DODX_RecordGrenadeOverflow")
+    assert "g_ktpGrenadeOverflowSerial[entindex] == serial" in overflow
+    assert "g_ktpGrenadeOverflowSerial[entindex] = serial" in overflow
+    assert "return false" in overflow  # exact index+serial duplicate suppression
+    assert "g_ktpGrenadeOverflowSerial[MAX_EDICTS]" in DODX_MODULE
+    assert "g_ktpGrenadeOverflowFailClosed" not in DODX_MODULE
+    assert "DODX_HasGrenadeOverflow(entindex, serial)" in track
+    assert "DODX_EmitGrenadeTrackerDrop" in track
+    assert "DODX_ClearGrenadeOverflow(entindex, serial)" in remove
+    clear = function_body(DODX_MODULE, "static void DODX_ClearGrenadeEntityTracker")
+    assert "g_ktpGrenadeEntities[i].active = false" in clear
+    assert "i < MAX_EDICTS" in clear
+    assert "g_ktpGrenadeOverflowSerial[i] = 0" in clear
+
+
+def test_dodx_grenade_entity_forward_and_direct_dispatch_contract() -> None:
+    for name in ("dod_grenade_entity_tracked", "dod_grenade_entity_removed"):
+        assert f'forward {name}(owner, entindex, serial, Float:pos[3], wpnid, Float:gametime);' in DODX_INCLUDE
+        assert f'MF_RegisterForward("{name}"' in DODX_MODULE
+        assert f'"dodx_test_dispatch_grenade_entity_{name.rsplit("_", 1)[-1]}"' in DODX_NATIVE
+    dispatch = function_body(DODX_NATIVE, "static cell DODX_TestDispatchGrenadeEntity")
+    assert "wpnid != 13 && wpnid != 14 && wpnid != 36" in dispatch
+    assert "MF_ExecuteForward(forward, owner, entindex, serial, pos, wpnid, gametime)" in dispatch
+    assert "serial <= 0" in dispatch
+    drop_name = "dod_grenade_entity_tracker_drop"
+    assert f"forward {drop_name}(owner, entindex, serial, wpnid, Float:gametime);" in DODX_INCLUDE
+    assert f'MF_RegisterForward("{drop_name}"' in DODX_MODULE
+    assert '"dodx_test_dispatch_grenade_entity_tracker_drop"' in DODX_NATIVE
+    drop_dispatch = function_body(
+        DODX_NATIVE,
+        "static cell AMX_NATIVE_CALL dodx_test_dispatch_grenade_entity_tracker_drop",
+    )
+    assert "serial <= 0" in drop_dispatch
+    assert "wpnid != 13 && wpnid != 14 && wpnid != 36" in drop_dispatch
 
 
 def test_capout_requires_a_complete_two_team_partition() -> None:

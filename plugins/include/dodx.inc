@@ -117,8 +117,32 @@ forward dod_client_weaponswitch(id, wpnew, wpnold);
    gametime is gpGlobals->time at the fire. */
 forward dod_client_weapon_fire(id, weapon, Float:gametime);
 
-/* Forward for when a grenade explodes and its location */
+/* Legacy grenade TraceLine heuristic used by damage attribution and practice
+   refill. Despite its historical name, this is NOT proof of detonation and
+   must not be persisted as one. New telemetry should use the factual entity
+   lifecycle forwards below. */
 forward dod_grenade_explosion(id, Float:pos[3], wpnid);
+
+/* Fired once when extension-mode DODX first recognizes a live grenade/grenade2
+   entity in TraceLine. Identity is (entindex, serial); wpnid is normalized to
+   13=handgrenade, 14=stickgrenade, or 36=Mills. pos is the entity origin and
+   gametime is gpGlobals->time. Rockets, monster_mortar, and other entities are
+   excluded. */
+forward dod_grenade_entity_tracked(owner, entindex, serial, Float:pos[3], wpnid, Float:gametime);
+
+/* Fired once from the ReHLDS ED_Free pre-call hook for a matching tracked
+   (entindex, serial). Removal is generic and does NOT imply detonation. The
+   owner slot may have disconnected/recycled; consumers needing durable owner
+   identity must cache it from dod_grenade_entity_tracked. Map-change bulk
+   invalidation clears the tracker without fabricating removal callbacks. */
+forward dod_grenade_entity_removed(owner, entindex, serial, Float:pos[3], wpnid, Float:gametime);
+
+/* Fired when the bounded native entity tracker cannot admit a recognized
+   grenade. A per-engine-edict serial tombstone dedupes every dropped
+   (entindex, serial) until ED_Free.
+   Consumers should account this as a dropped grenade_entity lifecycle; no
+   tracked or removed edge will be fabricated for that entity. */
+forward dod_grenade_entity_tracker_drop(owner, entindex, serial, wpnid, Float:gametime);
 
 /* Forward for when a rocket explodes and its location */
 forward dod_rocket_explosion(id, Float:pos[3], wpnid);
@@ -879,6 +903,27 @@ native dodx_test_dispatch_damage(attacker, victim, damage, wpnindex, hitplace, T
  * @return          1 on success, 0 if forward not registered
  */
 native dodx_test_dispatch_grenade_explosion(id, Float:pos[3], wpnid);
+
+/**
+ * Test-only: dispatch `dod_grenade_entity_tracked` directly.
+ * Accepts only grenade IDs 13, 14, and 36; rockets/mortar return 0.
+ */
+native dodx_test_dispatch_grenade_entity_tracked(owner, entindex, serial,
+	Float:pos[3], wpnid, Float:gametime);
+
+/**
+ * Test-only: dispatch `dod_grenade_entity_removed` directly.
+ * Accepts only grenade IDs 13, 14, and 36; rockets/mortar return 0.
+ */
+native dodx_test_dispatch_grenade_entity_removed(owner, entindex, serial,
+	Float:pos[3], wpnid, Float:gametime);
+
+/**
+ * Test-only: dispatch `dod_grenade_entity_tracker_drop` directly.
+ * Accepts only grenade IDs 13, 14, and 36; rockets/mortar return 0.
+ */
+native dodx_test_dispatch_grenade_entity_tracker_drop(owner, entindex, serial,
+	wpnid, Float:gametime);
 
 /**
  * Test-only: dispatch BOTH `client_score` (id, score, total) and

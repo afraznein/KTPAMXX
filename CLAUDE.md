@@ -116,6 +116,9 @@ Synthetic dispatchers for AC/integration tests — fire a forward directly (no f
 | `dodx_test_dispatch_weapon_fire(id, weapon, Float:gametime)` | Exercises the `dod_client_weapon_fire` forward (mirrors `dodx_test_dispatch_damage`) |
 | `dodx_test_dispatch_damage(att, vic, dmg, wpn, hit, TA)` | Exercises `client_damage` |
 | `dodx_test_dispatch_grenade_explosion(id, Float:pos[3], wpnid)` | Exercises `dod_grenade_explosion` |
+| `dodx_test_dispatch_grenade_entity_tracked(owner, entindex, serial, Float:pos[3], wpnid, Float:gametime)` | Exercises factual grenade tracking; IDs 13/14/36 only |
+| `dodx_test_dispatch_grenade_entity_removed(owner, entindex, serial, Float:pos[3], wpnid, Float:gametime)` | Exercises generic grenade removal; not a detonation claim |
+| `dodx_test_dispatch_grenade_entity_tracker_drop(owner, entindex, serial, wpnid, Float:gametime)` | Exercises native tracker saturation accounting; IDs 13/14/36 only |
 | `dodx_test_dispatch_score(id, delta, total, cp_index)` | Exercises `client_score` + `dod_score_event` (tandem, matches production) |
 | `dodx_test_dispatch_cp_captured(cp_index, new_owner, old_owner)` | Exercises `dod_control_point_captured` |
 | `dodx_test_dispatch_client_spawn(id)` | Exercises `dod_client_spawn` (added `127f39fc`, 2026-07-04) |
