@@ -274,6 +274,37 @@ load failure, not a degraded mode.
 Merge conflict resolution: one hunk in this file, both sides kept. `dodx.h` and
 `moduleconfig.cpp` merged cleanly.
 
+### Fixed — `dodx_send_ammox` accepted any `ammo_slot`, including the failure sentinel it tells callers to use
+
+- The native clamped `count` and left `ammo_slot` entirely unvalidated, while its own
+  include directs callers to take the slot from `dodx_get_grenade_ammo_index()` — whose
+  documented failure return is `-1`. A caller doing exactly what the docs said could pass
+  `-1` straight through.
+- Nothing downstream catches it. `MSG_WriteByte` casts to `byte` with no range check, so
+  `-1` is transmitted as `255` and an out-of-range slot silently becomes some other slot.
+  Server-side this is truncation rather than memory corruption; the consequences are a
+  client HUD desync on whatever ammo type owns the resulting slot — which does not
+  self-correct until that type genuinely changes — and DODX's own `AmmoX` hook matching
+  the bogus slot against `weaponData[].ammoSlot` and corrupting its tracked ammo.
+- `ammo_slot` is now bounded to `0 .. DODX_MAX_AMMO_SLOTS - 1` and **rejected rather than
+  clamped**, with `MF_LogError(AMX_ERR_NATIVE)`. Clamping was the tempting option and is
+  the wrong one: slot 0 is a real ammo type, so clamping a failed lookup would write real
+  ammo to the wrong slot — a silent, persistent wrong answer instead of a loud refusal.
+  Rejecting also matches the house split (indices abort, values clamp) and this native's
+  own `CHECK_PLAYER`, which already aborts for its other index parameter.
+- Note this is not a regression of the 2.7.21 cleanup that converted this native's
+  AmmoX-not-registered branch from an abort to `MF_Log` + `return 0`. That branch is an
+  environmental failure with a documented `0` return; an out-of-range index is a caller
+  bug, and the same entry kept out-of-range ids as genuine aborts.
+- `dodx.inc` now states the accepted range, tells callers to check for `-1` first, and
+  carries the `@error` line the abort requires — following `dodx_give_grenade`'s
+  precedent. No in-repo plugin calls this native; `KTPGrenadeLoadout` and
+  `KTPPracticeMode` pass in-range literals today, so nothing in the fleet begins aborting.
+- `scripts/test_native_param_contracts.py` asserts the enforced range and the documented
+  range agree, since the defect was the include and the native disagreeing rather than a
+  missing check. Its `--selftest` reintroduces each shape and requires rejection; run
+  against `main` both checks fail.
+
 ## [Unreleased]
 
 **These entries are now part of the 2.7.32 re-cut below-the-line, not of 2.7.31.**

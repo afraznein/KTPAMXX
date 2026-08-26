@@ -565,11 +565,17 @@ native dodx_debug_player_state(id);
  * Use this after modifying grenade ammo to sync the client HUD.
  *
  * @param id         Player index
- * @param ammo_slot  Raw ammo-type index — take the grenade ones from
- *                   dodx_get_grenade_ammo_index() rather than repeating a literal
- * @param count      Ammo count to display (0-254)
+ * @param ammo_slot  Raw ammo-type index (0-31) — take the grenade ones from
+ *                   dodx_get_grenade_ammo_index() rather than repeating a literal.
+ *                   Check that native for -1 first; forwarding its failure return
+ *                   here is an error, not a no-op.
+ * @param count      Ammo count to display (0-254), clamped to that range
  * @return           1 on success, 0 on failure (AmmoX not registered logs
  *                   and returns 0, no abort)
+ * @error            ammo_slot outside 0-31 raises a native error that aborts the
+ *                   calling public — the 0 return is not observable for that case.
+ *                   It is not clamped: slot 0 is a real ammo type, so clamping a
+ *                   bad lookup would desync that type's HUD until it next changes.
  */
 native dodx_send_ammox(id, ammo_slot, count);
 

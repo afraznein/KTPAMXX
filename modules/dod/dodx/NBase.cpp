@@ -1521,8 +1521,9 @@ static cell AMX_NATIVE_CALL dodx_debug_player_state(AMX *amx, cell *params)
 // KTP: Send AmmoX message to update client HUD
 // dodx_send_ammox(id, ammo_slot, count)
 // ammo_slot is a raw ammo-type index and is NOT constant across maps — get the
-// grenade ones from dodx_get_grenade_ammo_index(). Setting ammo through
-// dodx_set_grenade_ammo already makes the DLL emit its own AmmoX.
+// grenade ones from dodx_get_grenade_ammo_index(), and check it for -1 before
+// passing it here. Setting ammo through dodx_set_grenade_ammo already makes the
+// DLL emit its own AmmoX.
 static cell AMX_NATIVE_CALL dodx_send_ammox(AMX *amx, cell *params)
 {
 	int index = params[1];
@@ -1540,6 +1541,17 @@ static cell AMX_NATIVE_CALL dodx_send_ammox(AMX *amx, cell *params)
 
 	int ammoSlot = params[2];
 	int count = params[3];
+
+	// Rejected, not clamped: -1 is dodx_get_grenade_ammo_index()'s failure return and
+	// this native's own docs send callers there, so clamping would turn a failed lookup
+	// into a real write on slot 0 — a HUD desync that persists until that ammo type
+	// genuinely changes. MSG_WriteByte truncates silently, so nothing downstream catches it.
+	if (ammoSlot < 0 || ammoSlot >= DODX_MAX_AMMO_SLOTS)
+	{
+		MF_LogError(amx, AMX_ERR_NATIVE, "dodx_send_ammox: ammo slot %d out of range (max %d)",
+			ammoSlot, DODX_MAX_AMMO_SLOTS - 1);
+		return 0;
+	}
 
 	// Clamp count to byte range
 	if (count < 0) count = 0;
