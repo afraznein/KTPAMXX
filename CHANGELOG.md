@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.7.33] - unreleased
 
+### Fixed
+
+- **Delayed DODX context confirmation no longer contaminates schema-22 health**
+  (`stats_logging.sma` 1.18.0 -> 1.18.1). MatchHandler's start forward can
+  precede DODX publishing the same match id by several live bot frags. The
+  forward now opens only a candidate: it emits no manifest, health, or per-half
+  flag metadata until `dodx_get_match_id` confirms exact equality. First
+  confirmation drains pending diagnostics, resets the new stream, emits its
+  manifest as sequence 1, and admits the triggering fact as sequence 2; the
+  existing zone poll then emits the armed life/ownership/flag baselines.
+  Optional damage, frag, assist, and break diagnostics retain their explicit
+  `matchid="-"`, `half=0`, `sequence=0` form while pending, but use an untracked
+  async-buffer path and cannot authorize a never-confirmed candidate. Buffer
+  ordering is independent of producer sequence, and direct flag positions fail
+  closed while a candidate is pending. End-of-half health is emitted only for a
+  confirmed stream; production authorization and strict health remain unchanged.
+
 ### Added
 
 - **Schema-22 match telemetry** (`stats_logging.sma` 1.17.0 -> 1.18.0).

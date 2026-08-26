@@ -128,6 +128,8 @@ enum {
 	KSC_EVENT_COUNT
 }
 
+#define KSC_EVENT_UNTRACKED -1
+
 // Distinct from stats_logging.sma's own flush task, which registers with the
 // default id -- sharing an id would make one remove_task() cancel both.
 #define KSC_TASK_FLUSH          88010
@@ -137,14 +139,15 @@ enum {
 
 new g_kscBuffer[KSC_BUF_MAX_ENTRIES][KSC_BUF_LINE_LEN]
 new g_kscBufferType[KSC_BUF_MAX_ENTRIES]
-new g_kscBufferSequence[KSC_BUF_MAX_ENTRIES]
+new g_kscBufferOrder[KSC_BUF_MAX_ENTRIES]
 new g_kscBufferCount = 0
 new g_kscDropped = 0
 new g_kscLifeBuffer[KSC_LIFE_BUF_MAX_ENTRIES][KSC_LIFE_BUF_LINE_LEN]
 new g_kscLifeBufferType[KSC_LIFE_BUF_MAX_ENTRIES]
-new g_kscLifeBufferSequence[KSC_LIFE_BUF_MAX_ENTRIES]
+new g_kscLifeBufferOrder[KSC_LIFE_BUF_MAX_ENTRIES]
 new g_kscLifeBufferCount = 0
 new g_kscLifeDropped = 0
+new g_kscBufferOrderNext = 0
 new g_kscAttempted[KSC_EVENT_COUNT]
 new g_kscEnqueued[KSC_EVENT_COUNT]
 new g_kscDroppedByType[KSC_EVENT_COUNT]
@@ -186,6 +189,7 @@ new bool:g_kscLifeBaselinePending = true
 new g_kscProducerMatchId[64]
 new g_kscProducerHalf = 0
 new bool:g_kscProducerContextConfirmed = false
+new bool:g_kscAllowUntrackedEvents = true
 
 new g_kscCvarEnabled
 
@@ -263,8 +267,14 @@ stock ksc_next_sequence() {
 	return g_kscSequence
 }
 
+stock ksc_next_buffer_order() {
+	g_kscBufferOrderNext++
+	return g_kscBufferOrderNext
+}
+
 stock ksc_reset_health() {
 	g_kscSequence = 0
+	g_kscBufferOrderNext = 0
 	for (new i = 0; i < KSC_EVENT_COUNT; i++) {
 		g_kscAttempted[i] = 0
 		g_kscEnqueued[i] = 0
@@ -310,10 +320,36 @@ stock bool:ksc_buffer(const line[], event_type) {
 
 	copy(g_kscBuffer[g_kscBufferCount], KSC_BUF_LINE_LEN - 1, line)
 	g_kscBufferType[g_kscBufferCount] = event_type
-	g_kscBufferSequence[g_kscBufferCount] = g_kscSequence
+	g_kscBufferOrder[g_kscBufferCount] = ksc_next_buffer_order()
 	g_kscBufferCount++
 	g_kscEnqueued[event_type]++
 	return true
+}
+
+// Damage/frag/assist/break markers remain useful factual diagnostics when the
+// MatchHandler start forward has fired but DODX has not confirmed the same id.
+// Keep those explicit matchid="-" / half=0 records on the existing async ring,
+// but never assign them a producer sequence or charge them to the pending
+// match's health counters. Buffer order is independent from producer sequence
+// so an untracked marker cannot reorder a tracked life/data marker at flush.
+stock bool:ksc_untracked_buffer(const line[]) {
+	if (g_kscBufferCount >= KSC_BUF_MAX_ENTRIES) {
+		g_kscDropped++
+		return false
+	}
+
+	copy(g_kscBuffer[g_kscBufferCount], KSC_BUF_LINE_LEN - 1, line)
+	g_kscBufferType[g_kscBufferCount] = KSC_EVENT_UNTRACKED
+	g_kscBufferOrder[g_kscBufferCount] = ksc_next_buffer_order()
+	g_kscBufferCount++
+	return true
+}
+
+stock bool:ksc_buffer_event(const line[], event_type, bool:tracked) {
+	if (tracked)
+		return ksc_buffer(line, event_type)
+
+	return ksc_untracked_buffer(line)
 }
 
 stock ksc_normalize_match_half(half) {
@@ -324,54 +360,58 @@ stock ksc_normalize_match_half(half) {
 	return 0
 }
 
+stock ksc_close_producer_context() {
+	// Close cached old-context facts before clearing the candidate. A start can
+	// be the only boundary delivered after an abandon/reset, so it must finish a
+	// previously confirmed stream rather than silently overwrite its health.
+	ksc_objective_reset_all(true)
+	ksc_grenade_cache_clear_all()
+	ksc_break_reset_boundary()
+	ksc_flush()
+	if (g_kscProducerContextConfirmed && g_kscProducerMatchId[0] &&
+			g_kscProducerHalf != 0)
+		ksc_emit_health(g_kscProducerMatchId, g_kscProducerHalf)
+
+	g_kscProducerMatchId[0] = 0
+	g_kscProducerHalf = 0
+	g_kscProducerContextConfirmed = false
+	g_kscAllowUntrackedEvents = false
+	g_kscLifeBaselinePending = true
+	ksc_clear_open_lives()
+	g_kscOwnershipMatchId[0] = 0
+	g_kscOwnershipBaselinePending = true
+}
+
 stock ksc_on_match_start(const matchid[], half) {
 	// A match/half boundary invalidates every observation made against the
 	// previous round. Suppress one fresh zone baseline even when the clock is
 	// unavailable, so a warmup candidate cannot drain into go-live counts.
-	ksc_objective_reset_all(true)
-	ksc_grenade_cache_clear_all()
-	ksc_break_reset_boundary()
+	ksc_close_producer_context()
 
 	new normalized_half = ksc_normalize_match_half(half)
-	if (!matchid[0] || normalized_half == 0) {
-		g_kscProducerMatchId[0] = 0
-		g_kscProducerHalf = 0
-		g_kscProducerContextConfirmed = false
-		g_kscLifeBaselinePending = true
-		ksc_clear_open_lives()
+	if (!matchid[0] || normalized_half == 0)
 		return
-	}
 
+	// This is only a candidate until DODX reports the exact same id. Do not
+	// reset health, emit a manifest, or publish per-half metadata here: the
+	// MatchHandler forward legitimately precedes DODX confirmation by frames.
 	copy(g_kscProducerMatchId, charsmax(g_kscProducerMatchId), matchid)
 	g_kscProducerHalf = normalized_half
 	g_kscProducerContextConfirmed = false
-	ksc_flush()
-	ksc_reset_health()
+	g_kscAllowUntrackedEvents = true
 	g_kscLifeBaselinePending = true
 	ksc_clear_open_lives()
-	ksc_emit_manifest(matchid, normalized_half)
-	// Static metadata is an idempotent upsert. Re-emit it at the authoritative
-	// match boundary so a map-load log-path miss cannot disable objective
-	// distance analytics for the whole half.
-	ksc_flag_positions_task()
+	g_kscOwnershipMatchId[0] = 0
+	g_kscOwnershipBaselinePending = true
 }
 
 stock ksc_on_match_context_end(const matchid[]) {
 	if (!g_kscProducerMatchId[0] || !equal(matchid, g_kscProducerMatchId))
 		return
-	ksc_objective_reset_all(true)
-	ksc_grenade_cache_clear_all()
-	ksc_break_reset_boundary()
 
-	// Preserve ordering: drain boundaries while this exact producer context is
-	// still known, then make later warmup/disconnect events fail closed.
-	ksc_flush()
-	ksc_emit_health(matchid, g_kscProducerHalf)
-	g_kscProducerMatchId[0] = 0
-	g_kscProducerHalf = 0
-	g_kscProducerContextConfirmed = false
-	g_kscLifeBaselinePending = true
-	ksc_clear_open_lives()
+	// Never-confirmed candidates have no manifest and therefore no health or
+	// authorization record. Their pending sentinel facts still drain in order.
+	ksc_close_producer_context()
 }
 
 stock ksc_shutdown() {
@@ -382,9 +422,23 @@ stock ksc_shutdown() {
 	ksc_flush()
 }
 
+stock ksc_activate_producer_context() {
+	// Pending matchid="-" facts are transport diagnostics, not members of the
+	// candidate stream. Drain them before sequence 1 so no buffered sentinel can
+	// appear after the authorization manifest on the wire.
+	ksc_flush()
+	ksc_reset_health()
+	g_kscProducerContextConfirmed = true
+	g_kscAllowUntrackedEvents = false
+	g_kscLifeBaselinePending = true
+	g_kscOwnershipMatchId[0] = 0
+	g_kscOwnershipBaselinePending = true
+	ksc_emit_manifest(g_kscProducerMatchId, g_kscProducerHalf)
+}
+
 stock bool:ksc_event_context(matchid[], len, &half) {
 	// `-` is an explicit non-context sentinel for the optional damage/frag/
-	// assist fields. Never emit an empty quoted property: older property parsers
+	// assist/break fields. Never emit an empty quoted property: older parsers
 	// could consume following fields when faced with `(matchid "")`.
 	copy(matchid, len, "-")
 	half = 0
@@ -402,22 +456,29 @@ stock bool:ksc_event_context(matchid[], len, &half) {
 			// Some force-reset/abandon exits clear DODX context without firing
 			// ktp_half_end/ktp_match_end. Treat that authoritative mismatch as
 			// the same capture boundary so a queued break cannot drain in warmup.
-			ksc_objective_reset_all(true)
-			ksc_grenade_cache_clear_all()
-			ksc_break_reset_boundary()
-			g_kscProducerMatchId[0] = 0
-			g_kscProducerHalf = 0
-			g_kscProducerContextConfirmed = false
-			g_kscLifeBaselinePending = true
-			ksc_clear_open_lives()
+			ksc_close_producer_context()
 		}
 		return false
 	}
 
-	g_kscProducerContextConfirmed = true
+	if (!g_kscProducerContextConfirmed)
+		ksc_activate_producer_context()
 	copy(matchid, len, g_kscProducerMatchId)
 	half = g_kscProducerHalf
 	return true
+}
+
+// Optional high-volume diagnostics retain a sentinel only while warmup or a
+// new candidate is still pending. Once a stream activates, an authoritative
+// mismatch closes it and later facts fail closed instead of reverting to '-'.
+stock bool:ksc_optional_event_context(matchid[], len, &half, &bool:untracked) {
+	if (ksc_event_context(matchid, len, half)) {
+		untracked = false
+		return true
+	}
+
+	untracked = g_kscAllowUntrackedEvents
+	return false
 }
 
 stock bool:ksc_life_buffer(const line[]) {
@@ -430,7 +491,7 @@ stock bool:ksc_life_buffer(const line[]) {
 
 	copy(g_kscLifeBuffer[g_kscLifeBufferCount], KSC_LIFE_BUF_LINE_LEN - 1, line)
 	g_kscLifeBufferType[g_kscLifeBufferCount] = KSC_EVENT_LIFE
-	g_kscLifeBufferSequence[g_kscLifeBufferCount] = g_kscSequence
+	g_kscLifeBufferOrder[g_kscLifeBufferCount] = ksc_next_buffer_order()
 	g_kscLifeBufferCount++
 	g_kscEnqueued[KSC_EVENT_LIFE]++
 	return true
@@ -441,18 +502,21 @@ public ksc_flush_task() {
 }
 
 stock ksc_flush() {
-	// Both capacity pools share one producer sequence. Merge their already
-	// ordered contents so neither queue can jump ahead of the other on the wire.
+	// Both capacity pools share one enqueue order. Merge their already ordered
+	// contents so neither queue can jump ahead of the other on the wire. This is
+	// deliberately separate from producer sequence: untracked sentinel records
+	// have sequence=0 and do not belong to a match health stream.
 	new data_i = 0, life_i = 0
 	while (data_i < g_kscBufferCount || life_i < g_kscLifeBufferCount) {
 		if (life_i < g_kscLifeBufferCount &&
-			(data_i >= g_kscBufferCount || g_kscLifeBufferSequence[life_i] < g_kscBufferSequence[data_i])) {
+			(data_i >= g_kscBufferCount || g_kscLifeBufferOrder[life_i] < g_kscBufferOrder[data_i])) {
 			log_message("%s", g_kscLifeBuffer[life_i])
 			g_kscEmitted[g_kscLifeBufferType[life_i]]++
 			life_i++
 		} else {
 			log_message("%s", g_kscBuffer[data_i])
-			g_kscEmitted[g_kscBufferType[data_i]]++
+			if (g_kscBufferType[data_i] >= 0 && g_kscBufferType[data_i] < KSC_EVENT_COUNT)
+				g_kscEmitted[g_kscBufferType[data_i]]++
 			data_i++
 		}
 	}
@@ -1325,10 +1389,13 @@ stock ksc_emit_break(f, breaker, victim, contester_count) {
 	new Float:time_remaining = Float:dodx_area_get_data(f, CA_time_remaining)
 	new defending_team = (g_kscBreakTeam[f] == KSC_TEAM_ALLIES) ? KSC_TEAM_AXIS : KSC_TEAM_ALLIES
 	new is_capout = ksc_is_full_capout_threat(defending_team) ? 1 : 0
-	new sequence = ksc_next_sequence()
 	new producer_matchid[64], producer_half
-	copy(producer_matchid, charsmax(producer_matchid), "-")
-	ksc_event_context(producer_matchid, charsmax(producer_matchid), producer_half)
+	new bool:untracked
+	new bool:tracked = ksc_optional_event_context(
+		producer_matchid, charsmax(producer_matchid), producer_half, untracked)
+	if (!tracked && !untracked)
+		return
+	new sequence = tracked ? ksc_next_sequence() : 0
 	new event_epoch = get_systime()
 	new Float:game_time = get_gametime()
 
@@ -1352,7 +1419,7 @@ stock ksc_emit_break(f, breaker, victim, contester_count) {
 			breaker_str, g_kscFlagName[f], f, producer_matchid,
 			producer_half, sequence, event_epoch, game_time)
 
-	ksc_buffer(line, KSC_EVENT_BREAK)
+	ksc_buffer_event(line, KSC_EVENT_BREAK, tracked)
 	ksc_emit_break_context(breaker, victim, f, contester_count, time_remaining, is_capout)
 }
 
@@ -1369,9 +1436,12 @@ stock ksc_emit_break_context(breaker, victim, flag_index, contester_count, Float
 	else
 		copy(victim_str, charsmax(victim_str), "-")
 	new producer_matchid[64], producer_half
-	copy(producer_matchid, charsmax(producer_matchid), "-")
-	ksc_event_context(producer_matchid, charsmax(producer_matchid), producer_half)
-	new sequence = ksc_next_sequence()
+	new bool:untracked
+	new bool:tracked = ksc_optional_event_context(
+		producer_matchid, charsmax(producer_matchid), producer_half, untracked)
+	if (!tracked && !untracked)
+		return
+	new sequence = tracked ? ksc_next_sequence() : 0
 
 	formatex(line, charsmax(line),
 		"^"%s^" triggered ^"break_context^" (victim ^"%s^") (flag ^"%s^") (flag_index ^"%d^") (contester_count ^"%d^") (time_remaining ^"%.1f^") (is_capout ^"%d^") (matchid ^"%s^") (half ^"%d^") (sequence ^"%d^") (event_epoch ^"%d^") (game_time ^"%.2f^")",
@@ -1379,7 +1449,7 @@ stock ksc_emit_break_context(breaker, victim, flag_index, contester_count, Float
 		time_remaining, is_capout, producer_matchid, producer_half, sequence,
 		get_systime(), get_gametime())
 
-	ksc_buffer(line, KSC_EVENT_BREAK)
+	ksc_buffer_event(line, KSC_EVENT_BREAK, tracked)
 }
 
 // The area API exposes aggregate team counts, not per-player membership.
@@ -1662,11 +1732,17 @@ stock ksc_emit_flag_position(f) {
 	new mapname[32]
 	get_mapname(mapname, charsmax(mapname))
 
+	new bool:had_candidate = g_kscProducerMatchId[0] && g_kscProducerHalf != 0
 	new matchid[64], half, sequence = 0
 	new bool:tracked = ksc_event_context(matchid, charsmax(matchid), half)
-	if (!tracked)
+	if (!tracked) {
+		// Map-load coordinates remain useful global metadata before any candidate.
+		// Once a MatchHandler candidate exists, however, no flag-position marker
+		// may leak before exact DODX equality activates that half.
+		if (had_candidate || !g_kscAllowUntrackedEvents)
+			return
 		copy(matchid, charsmax(matchid), "-")
-	else {
+	} else {
 		// A direct metadata record must follow every older buffered sequence.
 		ksc_flush()
 		sequence = ksc_next_sequence()
@@ -1774,9 +1850,12 @@ stock ksc_emit_damage(attacker, victim, damage, wpnindex, hitplace) {
 	new Float:gt = get_gametime()
 	new event_epoch = get_systime()
 	new producer_matchid[64], producer_half
-	copy(producer_matchid, charsmax(producer_matchid), "-")
-	ksc_event_context(producer_matchid, charsmax(producer_matchid), producer_half)
-	new sequence = ksc_next_sequence()
+	new bool:untracked
+	new bool:tracked = ksc_optional_event_context(
+		producer_matchid, charsmax(producer_matchid), producer_half, untracked)
+	if (!tracked && !untracked)
+		return
+	new sequence = tracked ? ksc_next_sequence() : 0
 
 	new line[KSC_BUF_LINE_LEN]
 	formatex(line, charsmax(line),
@@ -1784,7 +1863,7 @@ stock ksc_emit_damage(attacker, victim, damage, wpnindex, hitplace) {
 		attacker_str, victim_str, weapon,
 		damage, damage_capped, hitplace, producer_matchid, producer_half, gt, event_epoch, sequence)
 
-	ksc_buffer(line, KSC_EVENT_DAMAGE)
+	ksc_buffer_event(line, KSC_EVENT_DAMAGE, tracked)
 }
 
 // Radius (2D, world units) within which a kill counts as "near" a defended
@@ -1870,9 +1949,12 @@ stock ksc_emit_frag_context(killer, victim, wpnindex, hitplace) {
 	new event_epoch = get_systime()
 	new Float:game_time = get_gametime()
 	new producer_matchid[64], producer_half
-	copy(producer_matchid, charsmax(producer_matchid), "-")
-	ksc_event_context(producer_matchid, charsmax(producer_matchid), producer_half)
-	new sequence = ksc_next_sequence()
+	new bool:untracked
+	new bool:tracked = ksc_optional_event_context(
+		producer_matchid, charsmax(producer_matchid), producer_half, untracked)
+	if (!tracked && !untracked)
+		return
+	new sequence = tracked ? ksc_next_sequence() : 0
 
 	new line[KSC_BUF_LINE_LEN]
 	if (have_k_pos && have_v_pos)
@@ -1894,7 +1976,7 @@ stock ksc_emit_frag_context(killer, victim, wpnindex, hitplace) {
 			is_last_flag_defense,
 			producer_matchid, producer_half, game_time, event_epoch, sequence)
 
-	ksc_buffer(line, KSC_EVENT_FRAG)
+	ksc_buffer_event(line, KSC_EVENT_FRAG, tracked)
 }
 
 // Called from stats_logging.sma's client_death, ahead of its old headshot-only
@@ -1932,8 +2014,13 @@ stock ksc_on_death(killer, victim, wpnindex, hitplace, TK) {
 		new bool:built_victim_str = false
 		new bool:have_victim_pos = false
 		new producer_matchid[64], producer_half
-		copy(producer_matchid, charsmax(producer_matchid), "-")
-		ksc_event_context(producer_matchid, charsmax(producer_matchid), producer_half)
+		new bool:untracked
+		new bool:tracked = ksc_optional_event_context(
+			producer_matchid, charsmax(producer_matchid), producer_half, untracked)
+		if (!tracked && !untracked) {
+			ksc_clear_damage_row(victim)
+			return
+		}
 		new event_epoch = get_systime()
 		new Float:game_time = get_gametime()
 
@@ -1960,7 +2047,7 @@ stock ksc_on_death(killer, victim, wpnindex, hitplace, TK) {
 			new assister_str[96], line[KSC_BUF_LINE_LEN], assister_pos[40]
 			ksc_player_str(a, assister_str, charsmax(assister_str))
 			new bool:have_assister_pos = ksc_origin_str(a, assister_pos, charsmax(assister_pos))
-			new sequence = ksc_next_sequence()
+			new sequence = tracked ? ksc_next_sequence() : 0
 
 			// Player-vs-player action shape (hlstats.pl's "triggered ... against"
 			// regex). Requires an hlstats_Actions row for game='dod',
@@ -1992,7 +2079,7 @@ stock ksc_on_death(killer, victim, wpnindex, hitplace, TK) {
 					assister_str, victim_str,
 					producer_matchid, producer_half, event_epoch, game_time, sequence)
 
-			ksc_buffer(line, KSC_EVENT_ASSIST)
+			ksc_buffer_event(line, KSC_EVENT_ASSIST, tracked)
 		}
 	}
 
