@@ -199,11 +199,130 @@ def test_life_boundaries_have_truthful_ordered_queue() -> None:
     assert "ksc_buffer(line)" not in emit
 
     flush = function_body(CAPTURE, "stock ksc_flush")
-    assert "g_kscLifeBufferSequence[life_i] < g_kscBufferSequence[data_i]" in flush
+    assert "g_kscLifeBufferOrder[life_i] < g_kscBufferOrder[data_i]" in flush
     assert "while (data_i < g_kscBufferCount || life_i < g_kscLifeBufferCount)" in flush
     assert "g_kscLifeBuffer[life_i]" in flush
     assert "g_kscBuffer[data_i]" in flush
     assert "dropped %d LIFE boundary" in flush
+
+
+def _confirmation_activation_model(pending_facts: int, trigger: str,
+                                   confirms: bool = True):
+    """Executable truth table for candidate -> confirmed producer activation."""
+    wire = [
+        {"kind": "pending", "matchid": "-", "half": 0, "sequence": 0}
+        for _ in range(pending_facts)
+    ]
+    counters = {"attempted": 0, "enqueued": 0, "emitted": 0}
+
+    if not confirms:
+        # Context end drains diagnostics but emits no authorization or health.
+        return wire, counters, None
+
+    # Confirmation starts a fresh stream only after the pending ring drains.
+    wire.append({"kind": "manifest", "matchid": "confirmed",
+                 "half": 1, "sequence": 1})
+    counters = {"attempted": 1, "enqueued": 1, "emitted": 1}
+    wire.append({"kind": trigger, "matchid": "confirmed",
+                 "half": 1, "sequence": 2})
+    health = {**counters, "sequence_last": 2, "emitted_health": True}
+    return wire, counters, health
+
+
+def test_delayed_dodx_context_activates_only_on_exact_confirmation() -> None:
+    start = function_body(CAPTURE, "stock ksc_on_match_start")
+    assert "ksc_close_producer_context()" in start
+    assert "copy(g_kscProducerMatchId" in start
+    for forbidden in ("ksc_reset_health()", "ksc_emit_manifest(",
+                      "ksc_flag_positions_task()"):
+        assert forbidden not in start
+
+    activate = function_body(CAPTURE, "stock ksc_activate_producer_context")
+    before(activate, "ksc_flush()", "ksc_reset_health()")
+    before(activate, "ksc_reset_health()",
+           "g_kscProducerContextConfirmed = true")
+    before(activate, "g_kscProducerContextConfirmed = true",
+           "ksc_emit_manifest(")
+    assert "g_kscOwnershipBaselinePending = true" in activate
+    assert "g_kscLifeBaselinePending = true" in activate
+
+    context = function_body(CAPTURE, "stock bool:ksc_event_context")
+    before(context, "!equal(dodx_matchid, g_kscProducerMatchId)",
+           "ksc_activate_producer_context()")
+    before(context, "ksc_activate_producer_context()",
+           "copy(matchid, len, g_kscProducerMatchId)")
+
+    # Confirmation by an ordinary fact: 0-3 pending facts drain first, then the
+    # manifest is sequence 1 and the triggering fact sequence 2 every time.
+    for pending_facts in range(4):
+        wire, counters, health = _confirmation_activation_model(
+            pending_facts, "frag")
+        assert [row["sequence"] for row in wire[:pending_facts]] == (
+            [0] * pending_facts)
+        assert [row["kind"] for row in wire[pending_facts:]] == (
+            ["manifest", "frag"])
+        assert [row["sequence"] for row in wire[pending_facts:]] == [1, 2]
+        assert counters == {"attempted": 1, "enqueued": 1, "emitted": 1}
+        assert health == {"attempted": 1, "enqueued": 1, "emitted": 1,
+                          "sequence_last": 2, "emitted_health": True}
+
+    # Confirmation by the zone path has the same contract; its first direct
+    # flag-position fact is sequence 2, then the loop may emit the remainder.
+    wire, counters, health = _confirmation_activation_model(2, "flag_position")
+    assert [(row["kind"], row["sequence"]) for row in wire] == [
+        ("pending", 0), ("pending", 0),
+        ("manifest", 1), ("flag_position", 2),
+    ]
+    assert counters == {"attempted": 1, "enqueued": 1, "emitted": 1}
+    assert health["sequence_last"] == 2
+
+    # A candidate that never confirms has no manifest and no health record.
+    wire, counters, health = _confirmation_activation_model(
+        3, "frag", confirms=False)
+    assert [row["kind"] for row in wire] == ["pending"] * 3
+    assert [row["sequence"] for row in wire] == [0, 0, 0]
+    assert counters == {"attempted": 0, "enqueued": 0, "emitted": 0}
+    assert health is None
+
+    close = function_body(CAPTURE, "stock ksc_close_producer_context")
+    assert "if (g_kscProducerContextConfirmed" in close
+    before(close, "ksc_flush()", "ksc_emit_health(")
+
+    untracked = function_body(CAPTURE, "stock bool:ksc_untracked_buffer")
+    assert "g_kscAttempted" not in untracked
+    assert "g_kscEnqueued" not in untracked
+    assert "g_kscDroppedByType" not in untracked
+    assert "g_kscBufferType[g_kscBufferCount] = KSC_EVENT_UNTRACKED" in untracked
+
+    flush = function_body(CAPTURE, "stock ksc_flush")
+    assert "g_kscBufferType[data_i] >= 0" in flush
+    assert "g_kscBufferType[data_i] < KSC_EVENT_COUNT" in flush
+
+    for signature in (
+        "stock ksc_emit_damage",
+        "stock ksc_emit_frag_context",
+        "stock ksc_on_death",
+        "stock ksc_emit_break",
+        "stock ksc_emit_break_context",
+    ):
+        body = function_body(CAPTURE, signature)
+        assert "bool:tracked = ksc_optional_event_context(" in body
+        assert "if (!tracked && !untracked)" in body
+        assert "tracked ? ksc_next_sequence() : 0" in body
+        assert "ksc_buffer_event(" in body
+
+    # Candidate-unconfirmed direct flag metadata must not leak a claimed half
+    # (or even a sentinel per-half retry); map-load metadata without a candidate
+    # keeps its historical sequence-0 form.
+    flag = function_body(CAPTURE, "stock ksc_emit_flag_position")
+    assert "bool:had_candidate = g_kscProducerMatchId[0]" in flag
+    assert "if (had_candidate || !g_kscAllowUntrackedEvents)" in flag
+    before(flag, "if (had_candidate || !g_kscAllowUntrackedEvents)",
+           'log_message("KTP_FLAG_POSITION')
+    before(flag, "ksc_event_context(", "ksc_next_sequence()")
+
+    ownership = function_body(CAPTURE, "stock ksc_ensure_ownership_baseline")
+    before(ownership, "ksc_emit_flag_position(f)", "ksc_emit_flag_state(")
 
 
 def test_authoritative_producer_context_and_clocks() -> None:
@@ -219,10 +338,11 @@ def test_authoritative_producer_context_and_clocks() -> None:
     confirmed_start = context.index("if (g_kscProducerContextConfirmed)")
     confirmed_end = context.index("\t\treturn false", confirmed_start)
     confirmed_invalidation = context[confirmed_start:confirmed_end]
-    assert "ksc_break_reset_boundary()" in confirmed_invalidation
-    before(confirmed_invalidation, "ksc_break_reset_boundary()",
-           "g_kscProducerMatchId[0] = 0")
-    assert "g_kscProducerMatchId[0] = 0" in context
+    assert "ksc_close_producer_context()" in confirmed_invalidation
+    close = function_body(CAPTURE, "stock ksc_close_producer_context")
+    assert "ksc_break_reset_boundary()" in close
+    before(close, "ksc_break_reset_boundary()", "g_kscProducerMatchId[0] = 0")
+    assert "g_kscProducerMatchId[0] = 0" in close
     assert 'copy(matchid, len, "-")' in context
     assert "matchid[0] = 0" not in context
 
@@ -369,10 +489,11 @@ def test_round_clock_source_and_ordering_contract() -> None:
     assert "g_kscBreakBaselineSuppressed = true" in reset
 
     start = function_body(CAPTURE, "stock ksc_on_match_start")
-    before(start, "ksc_break_reset_boundary()", "ksc_normalize_match_half")
+    before(start, "ksc_close_producer_context()", "ksc_normalize_match_half")
     end = function_body(CAPTURE, "stock ksc_on_match_context_end")
-    assert "ksc_break_reset_boundary()" in end
-    before(end, "ksc_break_reset_boundary()", "ksc_flush()")
+    assert "ksc_close_producer_context()" in end
+    close = function_body(CAPTURE, "stock ksc_close_producer_context")
+    before(close, "ksc_break_reset_boundary()", "ksc_flush()")
 
     controlpoints = function_body(CAPTURE, "public controlpoints_init")
     assert "g_kscLastRoundTime = -1.0" in controlpoints
@@ -508,7 +629,7 @@ def test_physical_boundaries_do_not_use_stats_pause_gate() -> None:
 
 
 def test_plugin_version() -> None:
-    assert re.search(r'#define\s+PLUGIN_VERSION\s+"1\.18\.0"', STATS)
+    assert re.search(r'#define\s+PLUGIN_VERSION\s+"1\.18\.1"', STATS)
 
 
 def test_schema22_manifest_and_two_second_position_contract() -> None:
