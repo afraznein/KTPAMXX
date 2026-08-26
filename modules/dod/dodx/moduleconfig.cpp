@@ -44,6 +44,7 @@ int g_iScoreDeathsOffsetAdjust = 4;
 // KTP: Forward declarations for ReHLDS hook handlers
 static void DODX_OnTraceLine(IVoidHookChain<const float *, const float *, int, edict_t *, TraceResult *> *chain,
                               const float *v1, const float *v2, int fNoMonsters, edict_t *e, TraceResult *ptr);
+static void DODX_OnEdictFree(IVoidHookChain<edict_t *> *chain, edict_t *entity);
 static void DODX_OnSetClientKeyValue(IVoidHookChain<int, char *, const char *, const char *> *chain,
                                       int clientIndex, char *infobuffer, const char *key, const char *value);
 static int DODX_OnRegUserMsg(IHookChain<int, const char *, int> *chain, const char *pszName, int iSize);
@@ -102,6 +103,9 @@ int iFWpnPickupForward = -1;
 int iFCurWpnForward = -1;
 int iFWeaponFire = -1;     // KTP: Per-shot primary-attack actuation (every fire, incl. pure misses)
 int iFGrenadeExplode = -1;
+int iFGrenadeEntityTracked = -1;
+int iFGrenadeEntityRemoved = -1;
+int iFGrenadeEntityTrackerDrop = -1;
 int iFRocketExplode = -1;
 int iFObjectTouched = -1;
 int iFStaminaForward = -1;
@@ -231,6 +235,180 @@ void DODX_ObserveGrenadeAmmoIndex(int grenadeType, int slot)
 
 RankSystem g_rank;
 Grenades g_grenades;
+
+// Factual grenade lifecycle tracking is intentionally independent of
+// g_grenades, whose expiry-based pool exists for damage attribution. Sharing
+// entries would let telemetry removal mutate attribution state. This pool is
+// keyed by (entindex, edict serialnumber), so an index reuse is a new entity.
+static const int KTP_GRENADE_ENTITY_MAX = 64;
+struct KTPGrenadeEntityRecord
+{
+	bool active;
+	int entindex;
+	int serial;
+	int owner;
+	int weapon;
+};
+static KTPGrenadeEntityRecord g_ktpGrenadeEntities[KTP_GRENADE_ENTITY_MAX];
+
+// One serial tombstone for every engine edict index. This is bounded by the
+// SDK's authoritative MAX_EDICTS, not by event volume. A dropped entity remains
+// deduped until ED_Free clears its exact index+serial, even if the 64-entry live
+// tracker recovers capacity meanwhile. There is no secondary pool to saturate,
+// so every admitted production identity has an exact dropped count.
+static int g_ktpGrenadeOverflowSerial[MAX_EDICTS];
+
+static bool DODX_IsTelemetryGrenadeWeapon(int weapon)
+{
+	return weapon == 13 || weapon == 14 || weapon == 36;
+}
+
+static void DODX_ClearGrenadeEntityTracker()
+{
+	for (int i = 0; i < KTP_GRENADE_ENTITY_MAX; ++i)
+		g_ktpGrenadeEntities[i].active = false;
+	for (int i = 0; i < MAX_EDICTS; ++i)
+		g_ktpGrenadeOverflowSerial[i] = 0;
+}
+
+static void DODX_EmitGrenadeEntityForward(int forward, int owner, int entindex,
+	int serial, const float *origin, int weapon, float gametime)
+{
+	if (forward < 0 || !origin || !gpGlobals)
+		return;
+
+	cell position[3];
+	position[0] = amx_ftoc(origin[0]);
+	position[1] = amx_ftoc(origin[1]);
+	position[2] = amx_ftoc(origin[2]);
+	cell pos = MF_PrepareCellArray(position, 3);
+	MF_ExecuteForward(forward, owner, entindex, serial, pos, weapon,
+		amx_ftoc(gametime));
+}
+
+static bool DODX_RecordGrenadeOverflow(int entindex, int serial)
+{
+	if (entindex <= 0 || entindex >= MAX_EDICTS || serial <= 0)
+		return false;
+	if (g_ktpGrenadeOverflowSerial[entindex] == serial)
+		return false;
+	g_ktpGrenadeOverflowSerial[entindex] = serial;
+	return true;
+}
+
+static bool DODX_HasGrenadeOverflow(int entindex, int serial)
+{
+	return entindex > 0 && entindex < MAX_EDICTS && serial > 0 &&
+		g_ktpGrenadeOverflowSerial[entindex] == serial;
+}
+
+static bool DODX_ClearGrenadeOverflow(int entindex, int serial)
+{
+	if (!DODX_HasGrenadeOverflow(entindex, serial))
+		return false;
+	g_ktpGrenadeOverflowSerial[entindex] = 0;
+	return true;
+}
+
+static void DODX_EmitGrenadeTrackerDrop(int owner, int entindex, int serial,
+	int weapon, float gametime)
+{
+	if (iFGrenadeEntityTrackerDrop < 0 || !gpGlobals)
+		return;
+	MF_ExecuteForward(iFGrenadeEntityTrackerDrop, owner, entindex, serial,
+		weapon, amx_ftoc(gametime));
+}
+
+static void DODX_TrackGrenadeEntity(edict_t *entity, int owner, int weapon)
+{
+	if (!entity || entity->free || !g_pFirstEdict || !gpGlobals ||
+		!DODX_IsTelemetryGrenadeWeapon(weapon))
+		return;
+
+	const char *classname = STRING(entity->v.classname);
+	if (!classname || (strcmp(classname, "grenade") != 0 &&
+		strcmp(classname, "grenade2") != 0))
+		return;
+
+	const int entindex = ENTINDEX_SAFE(entity);
+	const int serial = entity->serialnumber;
+	if (entindex <= gpGlobals->maxClients || entindex >= gpGlobals->maxEntities ||
+		entindex >= MAX_EDICTS || serial <= 0)
+		return;
+	if (DODX_HasGrenadeOverflow(entindex, serial))
+		return;
+
+	int freeSlot = -1;
+	for (int i = 0; i < KTP_GRENADE_ENTITY_MAX; ++i)
+	{
+		if (!g_ktpGrenadeEntities[i].active)
+		{
+			if (freeSlot < 0)
+				freeSlot = i;
+			continue;
+		}
+		if (g_ktpGrenadeEntities[i].entindex == entindex &&
+			g_ktpGrenadeEntities[i].serial == serial)
+			return; // same entity, later TraceLine: tracked exactly once
+	}
+
+	// Never overwrite an identity whose removal callback may still arrive. The
+	// bounded overflow tombstone makes this loss observable to producer health
+	// exactly once for the ordinary case and prevents a later partial lifecycle.
+	if (freeSlot < 0)
+	{
+		if (DODX_RecordGrenadeOverflow(entindex, serial))
+			DODX_EmitGrenadeTrackerDrop(owner, entindex, serial, weapon,
+				gpGlobals->time);
+		return;
+	}
+
+	KTPGrenadeEntityRecord &record = g_ktpGrenadeEntities[freeSlot];
+	record.active = true;
+	record.entindex = entindex;
+	record.serial = serial;
+	record.owner = owner;
+	record.weapon = weapon;
+	DODX_EmitGrenadeEntityForward(iFGrenadeEntityTracked, owner, entindex,
+		serial, entity->v.origin, weapon, gpGlobals->time);
+}
+
+static void DODX_RemoveTrackedGrenadeEntity(edict_t *entity)
+{
+	if (!entity || !g_pFirstEdict || !gpGlobals)
+		return;
+
+	const int entindex = ENTINDEX_SAFE(entity);
+	const int serial = entity->serialnumber;
+	if (serial <= 0)
+		return;
+	for (int i = 0; i < KTP_GRENADE_ENTITY_MAX; ++i)
+	{
+		KTPGrenadeEntityRecord &record = g_ktpGrenadeEntities[i];
+		if (!record.active || record.entindex != entindex || record.serial != serial)
+			continue;
+
+		// Synchronous Pawn forwards may re-enter engine removal. Copy everything
+		// needed and deactivate before dispatch so a nested ED_Free sees no active
+		// identity and cannot emit the same removal twice.
+		const int owner = record.owner;
+		const int trackedEntindex = record.entindex;
+		const int trackedSerial = record.serial;
+		const int weapon = record.weapon;
+		const float gametime = gpGlobals->time;
+		float origin[3] = {
+			entity->v.origin[0], entity->v.origin[1], entity->v.origin[2]
+		};
+		record.active = false;
+		DODX_EmitGrenadeEntityForward(iFGrenadeEntityRemoved, owner,
+			trackedEntindex, trackedSerial, origin, weapon, gametime);
+		return;
+	}
+
+	// An overflowed entity had no tracked edge, so its ED_Free only releases the
+	// dedupe tombstone. It must not fabricate an orphan removed edge.
+	DODX_ClearGrenadeOverflow(entindex, serial);
+}
 
 // KTP: Gamerules access for scoreboard score modification
 IGameConfig *g_pCommonConfig = nullptr;
@@ -472,6 +650,7 @@ void ServerDeactivate()
 	g_lastCapturedCP = -1;
 	g_lastCapturedTime = 0.0f;
 	DODX_ClearAmmoRegistry();
+	DODX_ClearGrenadeEntityTracker();
 
 	RETURN_META(MRES_IGNORED);
 }
@@ -797,6 +976,7 @@ void OnAmxxDetach()
 
 	g_rank.clear();
 	g_grenades.clear();
+	DODX_ClearGrenadeEntityTracker();
 	g_rank.unloadCalc();
 }
 
@@ -814,6 +994,15 @@ void OnPluginsLoaded()
 	iFCurWpnForward = MF_RegisterForward("dod_client_weaponswitch",ET_IGNORE,FP_CELL/*id*/,FP_CELL/*wpnew*/,FP_CELL/*wpnold*/,FP_DONE);
 	iFWeaponFire = MF_RegisterForward("dod_client_weapon_fire",ET_IGNORE,FP_CELL/*id*/,FP_CELL/*weapon*/,FP_CELL/*gametime*/,FP_DONE);
 	iFGrenadeExplode = MF_RegisterForward("dod_grenade_explosion",ET_IGNORE,FP_CELL/*id*/,FP_ARRAY/*pos[3]*/,FP_CELL/*wpnid*/,FP_DONE);
+	iFGrenadeEntityTracked = MF_RegisterForward("dod_grenade_entity_tracked", ET_IGNORE,
+		FP_CELL/*owner*/, FP_CELL/*entindex*/, FP_CELL/*serial*/, FP_ARRAY/*pos[3]*/,
+		FP_CELL/*wpnid*/, FP_CELL/*gametime*/, FP_DONE);
+	iFGrenadeEntityRemoved = MF_RegisterForward("dod_grenade_entity_removed", ET_IGNORE,
+		FP_CELL/*owner*/, FP_CELL/*entindex*/, FP_CELL/*serial*/, FP_ARRAY/*pos[3]*/,
+		FP_CELL/*wpnid*/, FP_CELL/*gametime*/, FP_DONE);
+	iFGrenadeEntityTrackerDrop = MF_RegisterForward("dod_grenade_entity_tracker_drop", ET_IGNORE,
+		FP_CELL/*owner*/, FP_CELL/*entindex*/, FP_CELL/*serial*/, FP_CELL/*wpnid*/,
+		FP_CELL/*gametime*/, FP_DONE);
 	iFRocketExplode = MF_RegisterForward("dod_rocket_explosion",ET_IGNORE,FP_CELL/*id*/,FP_ARRAY/*pos[3]*/,FP_CELL/*wpnid*/,FP_DONE);
 	iFObjectTouched = MF_RegisterForward("dod_client_objectpickup",ET_IGNORE,FP_CELL/*id*/,FP_CELL/*object*/,FP_ARRAY/*pos[3]*/,FP_CELL/*value*/,FP_DONE);
 	iFStaminaForward = MF_RegisterForward("dod_client_stamina",ET_IGNORE,FP_CELL/*id*/,FP_CELL/*stamina*/,FP_DONE);
@@ -1439,6 +1628,9 @@ static void DODX_OnTraceLine(IVoidHookChain<const float *, const float *, int, e
 
 				if (traceData[i].iAction & ACT_NADE_PUT)
 				{
+					// Factual lifecycle is a separate index+serial tracker. Keep the
+					// legacy g_grenades attribution pool and historical forward intact.
+					DODX_TrackGrenadeEntity(e, pPlayer->index, grenId);
 					g_grenades.put(e, traceData[i].fDel, grenId, pPlayer);
 					MF_ExecuteForward(iFGrenadeExplode, pPlayer->index, pos, grenId);
 				}
@@ -1450,6 +1642,16 @@ static void DODX_OnTraceLine(IVoidHookChain<const float *, const float *, int, e
 			}
 		}
 	}
+}
+
+// ED_Free is the authoritative pre-free path used by normal FL_KILLME cleanup.
+// Snapshot identity/origin before the engine mutates them. This is a generic
+// removal edge, never labelled as an explosion. The tracker clears before
+// callNext, so even an unusual second free path cannot emit twice.
+static void DODX_OnEdictFree(IVoidHookChain<edict_t *> *chain, edict_t *entity)
+{
+	DODX_RemoveTrackedGrenadeEntity(entity);
+	chain->callNext(entity);
 }
 
 // KTP: SetClientKeyValue hook handler - replaces FN_SetClientKeyValue
@@ -1865,6 +2067,9 @@ static void DODX_OnChangelevel(IVoidHookChain<const char *, const char *> *chain
 
 	// Clear grenade tracking — edict pointers become stale after map change
 	g_grenades.clear();
+	// Bulk map invalidation is not a detonation/removal fact. Clear without
+	// fabricating callbacks; ordinary FL_KILLME cleanup is captured by ED_Free.
+	DODX_ClearGrenadeEntityTracker();
 
 	// NOTE: Do NOT reset AlliesScore/AxisScore here.
 	// KTPMatchHandler reads scores during its changelevel hook (save_first_half_scores).
@@ -1901,6 +2106,7 @@ static void DODX_OnSV_ActivateServer(IVoidHookChain<int> *chain, int runPhysics)
 
 	// Ammo indices are assigned by this map's precache order, so last map's are wrong.
 	DODX_ClearAmmoRegistry();
+	DODX_ClearGrenadeEntityTracker();
 
 	DODX_ReadBSPMapInfo();
 
@@ -2168,6 +2374,11 @@ static bool DODX_SetupExtensionHooks()
 	// Safe for wallpen because it never changes TraceResult or supercedes the call.
 	if (g_pRehldsHookchains->PF_TraceLine())
 		g_pRehldsHookchains->PF_TraceLine()->registerHook(DODX_OnTraceLine, HC_PRIORITY_DEFAULT);
+
+	// ED_Free is the bundled ReHLDS pre-free hook reached by normal FL_KILLME
+	// cleanup. serialnumber/origin are still trustworthy at this point.
+	if (g_pRehldsHookchains->ED_Free())
+		g_pRehldsHookchains->ED_Free()->registerHook(DODX_OnEdictFree, HC_PRIORITY_DEFAULT);
 
 	// KTP: Register SV_ActivateServer hook - fires after map entities are spawned.
 	// In extension mode, this replaces ServerActivate_Post for:
@@ -2824,6 +3035,9 @@ static void DODX_CleanupExtensionHooks()
 		if (g_pRehldsHookchains->PF_TraceLine())
 			g_pRehldsHookchains->PF_TraceLine()->unregisterHook(DODX_OnTraceLine);
 
+		if (g_pRehldsHookchains->ED_Free())
+			g_pRehldsHookchains->ED_Free()->unregisterHook(DODX_OnEdictFree);
+
 		// Unregister SV_ActivateServer hook
 		if (g_pRehldsHookchains->SV_ActivateServer())
 			g_pRehldsHookchains->SV_ActivateServer()->unregisterHook(DODX_OnSV_ActivateServer);
@@ -2857,5 +3071,6 @@ static void DODX_CleanupExtensionHooks()
 
 	g_pRehldsHookchains = nullptr;
 	g_pMessageManager = nullptr;
+	DODX_ClearGrenadeEntityTracker();
 }
 

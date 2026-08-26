@@ -510,6 +510,9 @@ extern int iFWpnPickupForward;
 extern int iFCurWpnForward;
 extern int iFWeaponFire;   // KTP: Per-shot primary-attack actuation forward
 extern int iFGrenadeExplode;
+extern int iFGrenadeEntityTracked; // KTP: factual grenade entity first-observed edge
+extern int iFGrenadeEntityRemoved; // KTP: generic ED_Free edge, not detonation
+extern int iFGrenadeEntityTrackerDrop; // KTP: native lifecycle pool exhaustion
 extern int iFRocketExplode;
 extern int iFObjectTouched;
 extern int iFStaminaForward;

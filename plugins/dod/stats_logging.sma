@@ -15,7 +15,7 @@
 #include <amxmodx>
 #include <dodx>
 
-#define PLUGIN_VERSION "1.17.0"
+#define PLUGIN_VERSION "1.18.0"
 
 // KTP: extra per-match stat capture for HLStatsX (assists, cap breaks,
 // positions and frag context today; the per-hit damage ledger in a later
@@ -64,7 +64,7 @@ public plugin_cfg() {
 public plugin_end() {
   // KTP: Flush any remaining buffered log entries before map change
   flush_log_buffer()
-  ksc_flush()
+  ksc_shutdown()
 }
 
 // KTPMatchHandler snapshots multi-forward consumers when it creates these

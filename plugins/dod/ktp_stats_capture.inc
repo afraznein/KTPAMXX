@@ -3,11 +3,11 @@
 // Scope today: assists, durable private life boundaries, cap breaks,
 // assist/break positions, frag context
 // (prone/scope/ammo/headshot at kill), the per-hit damage ledger, static
-// flag positions, flag-ownership changes, break context
+// flag positions, flag-ownership changes, factual objective-attempt and
+// grenade-entity lifecycles, break context
 // (contester count/time remaining/capout),
 // last-flag-defense (kill-position-based, not break-queue-based), and a
-// periodic roster-position broadcast for positional/"holding" stats and
-// (later) ninja-cap detection.
+// periodic roster-position broadcast for positional/"holding" stats.
 //
 // SELF-CONTAINED BY DESIGN. Everything below declares its own state and reads
 // nothing from stats_logging.sma's globals -- deliberately unlike
@@ -73,20 +73,13 @@
 // deferred items that need the exact same underlying data (see
 // tests/e2e_stats/NEXT_PHASES.md "Ninja-cap detection" in KTPInfrastructure).
 //
-// Raised from an initial 30s per the operator's call: at 30+ deaths/half over
-// a 20-minute half, 30s left too few samples per life to be useful for
-// holding/positional analysis. 5s is still a REASONED value, not a
-// live-EPS-profiled one: 2026-08-13's real match-1 data measured ~20 combined
-// damage+frag rows/min at full ~17-player rosters, and the damage ledger
-// alone already runs at 1,100-1,500 direct-INSERT rows/match -- at 5s and a
-// full roster this adds ~204 rows/min, well under that existing per-hit
-// volume, so it is not a new dominant source. That is arithmetic from
-// already-measured production volume, not a guess, but it is still NOT the
-// same as watching real EPS impact -- and specifically the KSC_BUF_MAX_ENTRIES
-// buffer's "[KTP-STATS] dropped" counter -- on a live Lane B run, which is
-// what KSC_LAST_FLAG_RADIUS's own unmeasured-constant precedent calls for.
-// Validate the same way before trusting this in production.
-#define KSC_POSITION_BROADCAST_SECS 5.0
+// Denver 4's four audited 12-mans produced 18,943 rows at the old five-second
+// cadence. Two seconds projects to about 47,358 rows across the same matches
+// (~4.9 inserts/s/match) while retaining useful buffer headroom. One second is
+// deliberately deferred until a soak proves it does not produce drops. The
+// alive-and-connected filter below, five-second flush, and 128-entry buffer are
+// unchanged; verify the health/drop counters on Lane B before production.
+#define KSC_POSITION_BROADCAST_SECS 2.0
 
 // Bumped 48 -> 128 for the damage ledger: ~1,100-1,500 hits/match (measured
 // on a prior live audit) dwarfs the ~150-400 kills/match that sized this
@@ -110,11 +103,16 @@
 #define KSC_LIFE_BUF_MAX_ENTRIES 64
 #define KSC_LIFE_BUF_LINE_LEN    416
 
+// Allocation-free owner cache for grenade lifecycle identity. This is double
+// the existing DODX damage-attribution grenade pool and comfortably above a
+// legal match's plausible concurrent grenade count.
+#define KSC_GRENADE_CACHE_MAX 64
+
 // Increment when the producer/daemon storage contract changes. This is
 // emitted in every per-half manifest so mixed fleet deployments are visible
 // without reverse-engineering them from which rows happened to arrive.
-#define KSC_SCHEMA_CONTRACT 21
-#define KSC_CAPABILITIES "frag_context,damage,position,assist,life,break,flag_state,flag_position,sequence,health"
+#define KSC_SCHEMA_CONTRACT 22
+#define KSC_CAPABILITIES "frag_context,damage,position,assist,life,break,flag_state,flag_position,objective_attempt,grenade_entity,sequence,health"
 
 enum {
 	KSC_EVENT_LIFE = 0,
@@ -125,6 +123,8 @@ enum {
 	KSC_EVENT_BREAK,
 	KSC_EVENT_FLAG_STATE,
 	KSC_EVENT_FLAG_POSITION,
+	KSC_EVENT_OBJECTIVE_ATTEMPT,
+	KSC_EVENT_GRENADE_ENTITY,
 	KSC_EVENT_COUNT
 }
 
@@ -152,7 +152,7 @@ new g_kscEmitted[KSC_EVENT_COUNT]
 new g_kscSequence = 0
 new const g_kscEventNames[KSC_EVENT_COUNT][] = {
 	"life", "damage", "position", "frag", "assist", "break",
-	"flag_state", "flag_position"
+	"flag_state", "flag_position", "objective_attempt", "grenade_entity"
 }
 
 // [victim][attacker] -- enemy damage dealt to victim since their last spawn.
@@ -199,6 +199,26 @@ new bool:g_kscOwnershipBaselinePending = true
 new g_kscOwnershipMatchId[64]
 new g_kscPrevAllies[KSC_MAX_FLAGS]  // in-zone counts as of the previous poll
 new g_kscPrevAxis[KSC_MAX_FLAGS]
+
+// Factual objective-attempt lifecycle from the existing DODX capture-area
+// state. attempt_id is the start marker's producer sequence and is scoped by
+// that marker's explicit (matchid, half).
+new bool:g_kscAttemptActive[KSC_MAX_FLAGS]
+new g_kscAttemptId[KSC_MAX_FLAGS]
+new g_kscAttemptTeam[KSC_MAX_FLAGS]
+new g_kscAttemptOwnerBefore[KSC_MAX_FLAGS]
+new g_kscAttemptAllies[KSC_MAX_FLAGS]
+new g_kscAttemptAxis[KSC_MAX_FLAGS]
+new g_kscAttemptMatchId[KSC_MAX_FLAGS][64]
+new g_kscAttemptHalf[KSC_MAX_FLAGS]
+
+// Owner identity must survive a disconnect between the tracked and removed
+// forwards. Edict indices are reused, so index+serial is the cache key.
+new bool:g_kscGrenadeCacheActive[KSC_GRENADE_CACHE_MAX]
+new g_kscGrenadeCacheEntindex[KSC_GRENADE_CACHE_MAX]
+new g_kscGrenadeCacheSerial[KSC_GRENADE_CACHE_MAX]
+new g_kscGrenadeCacheWeapon[KSC_GRENADE_CACHE_MAX]
+new g_kscGrenadeCacheOwner[KSC_GRENADE_CACHE_MAX][96]
 
 new g_kscBreakQ[KSC_MAX_FLAGS][KSC_BREAK_QUEUE_MAX]    // FIFO of candidate killers
 new g_kscBreakVictim[KSC_MAX_FLAGS][KSC_BREAK_QUEUE_MAX]
@@ -275,7 +295,7 @@ stock ksc_emit_health(const matchid[], half) {
 	}
 }
 
-stock ksc_buffer(const line[], event_type) {
+stock bool:ksc_buffer(const line[], event_type) {
 	g_kscAttempted[event_type]++
 	if (g_kscBufferCount >= KSC_BUF_MAX_ENTRIES) {
 		// Deliberately NOT an inline flush (which is what the stock buffer_log
@@ -285,7 +305,7 @@ stock ksc_buffer(const line[], event_type) {
 		// non-zero counter in the logs is the signal to raise the size.
 		g_kscDropped++
 		g_kscDroppedByType[event_type]++
-		return
+		return false
 	}
 
 	copy(g_kscBuffer[g_kscBufferCount], KSC_BUF_LINE_LEN - 1, line)
@@ -293,6 +313,7 @@ stock ksc_buffer(const line[], event_type) {
 	g_kscBufferSequence[g_kscBufferCount] = g_kscSequence
 	g_kscBufferCount++
 	g_kscEnqueued[event_type]++
+	return true
 }
 
 stock ksc_normalize_match_half(half) {
@@ -307,6 +328,8 @@ stock ksc_on_match_start(const matchid[], half) {
 	// A match/half boundary invalidates every observation made against the
 	// previous round. Suppress one fresh zone baseline even when the clock is
 	// unavailable, so a warmup candidate cannot drain into go-live counts.
+	ksc_objective_reset_all(true)
+	ksc_grenade_cache_clear_all()
 	ksc_break_reset_boundary()
 
 	new normalized_half = ksc_normalize_match_half(half)
@@ -336,6 +359,8 @@ stock ksc_on_match_start(const matchid[], half) {
 stock ksc_on_match_context_end(const matchid[]) {
 	if (!g_kscProducerMatchId[0] || !equal(matchid, g_kscProducerMatchId))
 		return
+	ksc_objective_reset_all(true)
+	ksc_grenade_cache_clear_all()
 	ksc_break_reset_boundary()
 
 	// Preserve ordering: drain boundaries while this exact producer context is
@@ -347,6 +372,14 @@ stock ksc_on_match_context_end(const matchid[]) {
 	g_kscProducerContextConfirmed = false
 	g_kscLifeBaselinePending = true
 	ksc_clear_open_lives()
+}
+
+stock ksc_shutdown() {
+	// plugin_end is the last reliable old-map point in the Pawn lifecycle.
+	// Close attempts while their cached context is still available, then drain.
+	ksc_objective_reset_all(true)
+	ksc_grenade_cache_clear_all()
+	ksc_flush()
 }
 
 stock bool:ksc_event_context(matchid[], len, &half) {
@@ -369,6 +402,8 @@ stock bool:ksc_event_context(matchid[], len, &half) {
 			// Some force-reset/abandon exits clear DODX context without firing
 			// ktp_half_end/ktp_match_end. Treat that authoritative mismatch as
 			// the same capture boundary so a queued break cannot drain in warmup.
+			ksc_objective_reset_all(true)
+			ksc_grenade_cache_clear_all()
 			ksc_break_reset_boundary()
 			g_kscProducerMatchId[0] = 0
 			g_kscProducerHalf = 0
@@ -426,13 +461,48 @@ stock ksc_flush() {
 	g_kscLifeBufferCount = 0
 
 	if (g_kscDropped > 0) {
-		log_amx("[KTP-STATS] dropped %d capture line(s) -- buffer full", g_kscDropped)
+		log_amx("[KTP-STATS] dropped %d capture event(s) -- buffer/tracker capacity full", g_kscDropped)
 		g_kscDropped = 0
 	}
 	if (g_kscLifeDropped > 0) {
 		log_amx("[KTP-STATS] dropped %d LIFE boundary line(s) -- dedicated buffer full", g_kscLifeDropped)
 		g_kscLifeDropped = 0
 	}
+}
+
+// Quoted marker properties are parsed structurally, not as arbitrary strings.
+// Replace every byte that can close/inject a property (quote, backslash, either
+// parenthesis, CR/LF/control/DEL) with a visible underscore. This is deliberately
+// one byte in/one byte out: it cannot expand past a caller's bounded buffer.
+// Printable UTF-8 bytes and durable auth/userid punctuation remain unchanged.
+stock ksc_wire_sanitize(const input[], output[], len) {
+	new out_pos = 0
+	for (new in_pos = 0; input[in_pos] && out_pos < len; in_pos++) {
+		new ch = input[in_pos]
+		if (ch < 32 || ch == 34 || ch == 40 || ch == 41 || ch == 92 || ch == 127)
+			output[out_pos++] = '_'
+		else
+			output[out_pos++] = ch
+	}
+	output[out_pos] = 0
+}
+
+// Player names are the only untrusted component placed before the structural
+// `<userid><auth><team>` delimiters. Strip angle brackets here, before assembly,
+// so a crafted name cannot make the daemon's non-greedy identity parser select
+// attacker-supplied userid/auth/team fields. Other protocol delimiters receive
+// the same treatment as every quoted marker string.
+stock ksc_player_name_sanitize(const input[], output[], len) {
+	new out_pos = 0
+	for (new in_pos = 0; input[in_pos] && out_pos < len; in_pos++) {
+		new ch = input[in_pos]
+		if (ch < 32 || ch == 34 || ch == 40 || ch == 41 || ch == 60 ||
+			ch == 62 || ch == 92 || ch == 127)
+			output[out_pos++] = '_'
+		else
+			output[out_pos++] = ch
+	}
+	output[out_pos] = 0
 }
 
 // "Name<userid><STEAM_x:y:z><Team>" -- the player string every hlstats.pl regex
@@ -449,7 +519,14 @@ stock ksc_player_str(id, out[], len) {
 	if (team[0] >= 'a' && team[0] <= 'z')
 		team[0] -= 32
 
-	formatex(out, len, "%s<%d><%s><%s>", name, get_user_userid(id), authid, team)
+	new safe_name[MAX_NAME_LENGTH], safe_authid[32], safe_team[16]
+	ksc_player_name_sanitize(name, safe_name, charsmax(safe_name))
+	ksc_wire_sanitize(authid, safe_authid, charsmax(safe_authid))
+	ksc_wire_sanitize(team, safe_team, charsmax(safe_team))
+	new raw[96]
+	formatex(raw, charsmax(raw), "%s<%d><%s><%s>",
+		safe_name, get_user_userid(id), safe_authid, safe_team)
+	ksc_wire_sanitize(raw, out, len)
 }
 
 // "X Y Z" for the (position ...) family of log-line properties. hlstats.pl
@@ -480,6 +557,162 @@ stock bool:ksc_origin_str(id, out[], len) {
 		floatround(origin[0]), floatround(origin[1]), floatround(origin[2]))
 
 	return true
+}
+
+// ---------------------------------------------------------------------------
+// Factual grenade-entity lifecycle
+//
+// `removed` is intentionally generic. ED_Free proves the entity is being
+// freed; it does not prove an explosion. The old dod_grenade_explosion forward
+// remains a legacy damage-attribution/practice hook and is never consumed here
+// as a detonation signal. Rockets, mortar entities, and every weapon outside
+// 13/14/36 are rejected by both DODX and this defensive consumer gate.
+
+stock bool:ksc_grenade_weapon_valid(wpnid) {
+	return wpnid == 13 || wpnid == 14 || wpnid == 36
+}
+
+stock ksc_grenade_weapon_type(wpnid, out[], len) {
+	switch (wpnid) {
+		case 13: copy(out, len, "handgrenade")
+		case 14: copy(out, len, "stickgrenade")
+		case 36: copy(out, len, "mills_bomb")
+		default: out[0] = 0
+	}
+}
+
+stock ksc_grenade_cache_clear(slot) {
+	g_kscGrenadeCacheActive[slot] = false
+	g_kscGrenadeCacheEntindex[slot] = 0
+	g_kscGrenadeCacheSerial[slot] = 0
+	g_kscGrenadeCacheWeapon[slot] = 0
+	g_kscGrenadeCacheOwner[slot][0] = 0
+}
+
+stock ksc_grenade_cache_clear_all() {
+	for (new slot = 0; slot < KSC_GRENADE_CACHE_MAX; slot++)
+		ksc_grenade_cache_clear(slot)
+}
+
+stock ksc_grenade_cache_find(entindex, serial) {
+	for (new slot = 0; slot < KSC_GRENADE_CACHE_MAX; slot++) {
+		if (g_kscGrenadeCacheActive[slot] &&
+			g_kscGrenadeCacheEntindex[slot] == entindex &&
+			g_kscGrenadeCacheSerial[slot] == serial)
+			return slot
+	}
+	return -1
+}
+
+stock ksc_grenade_cache_allocate() {
+	for (new slot = 0; slot < KSC_GRENADE_CACHE_MAX; slot++) {
+		if (!g_kscGrenadeCacheActive[slot])
+			return slot
+	}
+	return -1
+}
+
+stock ksc_grenade_record_drop() {
+	g_kscAttempted[KSC_EVENT_GRENADE_ENTITY]++
+	g_kscDroppedByType[KSC_EVENT_GRENADE_ENTITY]++
+	g_kscDropped++
+}
+
+stock bool:ksc_emit_grenade_entity(const kind[], entindex, serial, wpnid,
+		const owner_str[], const Float:pos[3], Float:game_time) {
+	new matchid[64], half
+	if (!ksc_event_context(matchid, charsmax(matchid), half))
+		return false
+
+	new weapon_type[20]
+	ksc_grenade_weapon_type(wpnid, weapon_type, charsmax(weapon_type))
+	if (!weapon_type[0])
+		return false
+
+	new mapname[32], position[40], line[KSC_BUF_LINE_LEN]
+	get_mapname(mapname, charsmax(mapname))
+	formatex(position, charsmax(position), "%d %d %d",
+		floatround(pos[0]), floatround(pos[1]), floatround(pos[2]))
+	new wire_kind[16], wire_matchid[64], wire_map[32]
+	new wire_weapon_type[20], wire_owner[96]
+	ksc_wire_sanitize(kind, wire_kind, charsmax(wire_kind))
+	ksc_wire_sanitize(matchid, wire_matchid, charsmax(wire_matchid))
+	ksc_wire_sanitize(mapname, wire_map, charsmax(wire_map))
+	ksc_wire_sanitize(weapon_type, wire_weapon_type, charsmax(wire_weapon_type))
+	ksc_wire_sanitize(owner_str, wire_owner, charsmax(wire_owner))
+	new sequence = ksc_next_sequence()
+
+	formatex(line, charsmax(line),
+		"KTP_GRENADE_ENTITY (kind ^"%s^") (matchid ^"%s^") (half ^"%d^") (map ^"%s^") (entindex ^"%d^") (serial ^"%d^") (weapon_id ^"%d^") (weapon_type ^"%s^") (owner ^"%s^") (position ^"%s^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^")",
+		wire_kind, wire_matchid, half, wire_map, entindex, serial, wpnid,
+		wire_weapon_type, wire_owner, position, game_time, get_systime(), sequence)
+
+	return ksc_buffer(line, KSC_EVENT_GRENADE_ENTITY)
+}
+
+public dod_grenade_entity_tracked(owner, entindex, serial, Float:pos[3],
+		wpnid, Float:gametime) {
+	if (!ksc_enabled() || !ksc_grenade_weapon_valid(wpnid))
+		return
+	if (owner < 1 || owner > MAX_PLAYERS || !is_user_connected(owner))
+		return
+	if (entindex <= 0 || serial <= 0)
+		return
+
+	// Same entity can issue many TraceLines. DODX dedupes at source; retain the
+	// exact key guard here so direct-dispatch tests and future module changes
+	// cannot create duplicate starts.
+	if (ksc_grenade_cache_find(entindex, serial) >= 0)
+		return
+
+	new slot = ksc_grenade_cache_allocate()
+	if (slot < 0) {
+		ksc_grenade_record_drop()
+		return
+	}
+
+	g_kscGrenadeCacheActive[slot] = true
+	g_kscGrenadeCacheEntindex[slot] = entindex
+	g_kscGrenadeCacheSerial[slot] = serial
+	g_kscGrenadeCacheWeapon[slot] = wpnid
+	ksc_player_str(owner, g_kscGrenadeCacheOwner[slot],
+		charsmax(g_kscGrenadeCacheOwner[]))
+
+	if (!ksc_emit_grenade_entity("tracked", entindex, serial, wpnid,
+			g_kscGrenadeCacheOwner[slot], pos, gametime))
+		ksc_grenade_cache_clear(slot)
+}
+
+public dod_grenade_entity_tracker_drop(owner, entindex, serial, wpnid,
+		Float:gametime) {
+	if (!ksc_enabled() || !ksc_grenade_weapon_valid(wpnid))
+		return
+	if (owner < 1 || owner > MAX_PLAYERS || entindex <= 0 || serial <= 0)
+		return
+
+	// Account only while an authoritative producer context is live; otherwise
+	// there is no half whose health record could truthfully own this loss.
+	new matchid[64], half
+	if (!ksc_event_context(matchid, charsmax(matchid), half))
+		return
+	ksc_grenade_record_drop()
+}
+
+public dod_grenade_entity_removed(owner, entindex, serial, Float:pos[3],
+		wpnid, Float:gametime) {
+	new slot = ksc_grenade_cache_find(entindex, serial)
+	if (slot < 0)
+		return
+	if (!ksc_enabled()) {
+		ksc_grenade_cache_clear(slot)
+		return
+	}
+
+	// Ignore the live owner slot and callback weapon on removal. A disconnect or
+	// slot reuse may have changed them; the tracked identity is authoritative.
+	ksc_emit_grenade_entity("removed", entindex, serial,
+		g_kscGrenadeCacheWeapon[slot], g_kscGrenadeCacheOwner[slot], pos, gametime)
+	ksc_grenade_cache_clear(slot)
 }
 
 stock ksc_clear_damage_row(victim) {
@@ -856,6 +1089,156 @@ stock ksc_normalize_owner(owner) {
 	return 0
 }
 
+// ---------------------------------------------------------------------------
+// Factual objective-attempt lifecycle
+//
+// This is deliberately a state ledger, not a judgement. DODX exposes only
+// aggregate team occupancy, so there is no participant list and no attempt to
+// infer who walked off or was killed. `capture_stopped` means only that the
+// area stopped reporting the same active capture. `context_reset` is reserved
+// for a producer/map boundary for which the old match/half was cached safely.
+
+stock ksc_objective_clear(f) {
+	g_kscAttemptActive[f] = false
+	g_kscAttemptId[f] = 0
+	g_kscAttemptTeam[f] = 0
+	g_kscAttemptOwnerBefore[f] = 0
+	g_kscAttemptAllies[f] = 0
+	g_kscAttemptAxis[f] = 0
+	g_kscAttemptMatchId[f][0] = 0
+	g_kscAttemptHalf[f] = 0
+}
+
+stock bool:ksc_emit_objective_attempt(const kind[], f, attempt_id,
+		capturing_team, owner_before, allies_in_zone, axis_in_zone,
+		const stop_reason[], const matchid[], half, &event_sequence) {
+	if (!matchid[0] || half <= 0)
+		return false
+
+	new mapname[32], line[KSC_BUF_LINE_LEN]
+	get_mapname(mapname, charsmax(mapname))
+	new wire_kind[16], wire_matchid[64], wire_map[32]
+	new wire_flag_name[32], wire_stop_reason[24]
+	ksc_wire_sanitize(kind, wire_kind, charsmax(wire_kind))
+	ksc_wire_sanitize(matchid, wire_matchid, charsmax(wire_matchid))
+	ksc_wire_sanitize(mapname, wire_map, charsmax(wire_map))
+	ksc_wire_sanitize(g_kscFlagName[f], wire_flag_name, charsmax(wire_flag_name))
+	ksc_wire_sanitize(stop_reason, wire_stop_reason, charsmax(wire_stop_reason))
+	event_sequence = ksc_next_sequence()
+	new wire_attempt_id = attempt_id ? attempt_id : event_sequence
+
+	formatex(line, charsmax(line),
+		"KTP_OBJECTIVE_ATTEMPT (kind ^"%s^") (matchid ^"%s^") (half ^"%d^") (map ^"%s^") (attempt_id ^"%d^") (flag_index ^"%d^") (flag_name ^"%s^") (capturing_team ^"%d^") (owner_before ^"%d^") (allies_in_zone ^"%d^") (axis_in_zone ^"%d^") (stop_reason ^"%s^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^")",
+		wire_kind, wire_matchid, half, wire_map, wire_attempt_id, f,
+		wire_flag_name, capturing_team, owner_before,
+		allies_in_zone, axis_in_zone, wire_stop_reason,
+		get_gametime(), get_systime(), event_sequence)
+
+	return ksc_buffer(line, KSC_EVENT_OBJECTIVE_ATTEMPT)
+}
+
+stock ksc_objective_start(f, team, owner, allies, axis,
+		const matchid[], half) {
+	new sequence = 0
+	if (!ksc_emit_objective_attempt("start", f, 0, team, owner,
+			allies, axis, "", matchid, half, sequence))
+		return
+
+	g_kscAttemptActive[f] = true
+	g_kscAttemptId[f] = sequence
+	g_kscAttemptTeam[f] = team
+	g_kscAttemptOwnerBefore[f] = owner
+	g_kscAttemptAllies[f] = allies
+	g_kscAttemptAxis[f] = axis
+	copy(g_kscAttemptMatchId[f], charsmax(g_kscAttemptMatchId[]), matchid)
+	g_kscAttemptHalf[f] = half
+}
+
+stock bool:ksc_objective_finish(f, const kind[], const stop_reason[], allies, axis) {
+	if (!g_kscAttemptActive[f])
+		return true
+
+	new sequence = 0
+	if (!ksc_emit_objective_attempt(kind, f, g_kscAttemptId[f],
+			g_kscAttemptTeam[f], g_kscAttemptOwnerBefore[f], allies, axis,
+			stop_reason, g_kscAttemptMatchId[f], g_kscAttemptHalf[f], sequence))
+		return false
+
+	ksc_objective_clear(f)
+	return true
+}
+
+stock ksc_objective_reset_all(bool:emit_context_reset) {
+	for (new f = 0; f < KSC_MAX_FLAGS; f++) {
+		if (!g_kscAttemptActive[f])
+			continue
+
+		// An open attempt always cached the context that admitted its start.
+		// Map-load init can run before log_message is reliable, so its caller
+		// requests a silent reset instead of fabricating a terminal marker.
+		if (emit_context_reset) {
+			new sequence = 0
+			ksc_emit_objective_attempt("stop", f, g_kscAttemptId[f],
+				g_kscAttemptTeam[f], g_kscAttemptOwnerBefore[f],
+				g_kscAttemptAllies[f], g_kscAttemptAxis[f], "context_reset",
+				g_kscAttemptMatchId[f], g_kscAttemptHalf[f], sequence)
+		}
+
+		// A boundary is terminal even when the bounded buffer reports a drop;
+		// health exposes that loss and stale state must never cross contexts.
+		ksc_objective_clear(f)
+	}
+}
+
+stock ksc_objective_observe(f, owner, is_capping, capturing_team, allies, axis) {
+	new matchid[64], half
+	new bool:have_context = ksc_event_context(matchid, charsmax(matchid), half)
+	new active_occupancy = (capturing_team == KSC_TEAM_ALLIES) ? allies : axis
+	new bool:valid_capture = have_context && is_capping &&
+		(capturing_team == KSC_TEAM_ALLIES || capturing_team == KSC_TEAM_AXIS) &&
+		capturing_team != owner && active_occupancy > 0
+
+	if (!g_kscAttemptActive[f]) {
+		if (valid_capture)
+			ksc_objective_start(f, capturing_team, owner, allies, axis, matchid, half)
+		return
+	}
+
+	g_kscAttemptAllies[f] = allies
+	g_kscAttemptAxis[f] = axis
+
+	// Completion is intentionally narrow: only an ownership change to the team
+	// latched by the start event qualifies.
+	if (owner == g_kscAttemptTeam[f] && owner != g_kscAttemptOwnerBefore[f]) {
+		ksc_objective_finish(f, "complete", "", allies, axis)
+		return
+	}
+
+	if (!have_context) {
+		// ksc_event_context already closes reliably stamped old context on a
+		// confirmed mismatch. A never-confirmed/unstampable state is cleared
+		// silently rather than assigning it to the new context.
+		ksc_objective_clear(f)
+		return
+	}
+
+	if (!valid_capture) {
+		// An unrelated ownership flip is a reset, not evidence that the active
+		// team simply stopped capturing.
+		if (owner != g_kscAttemptOwnerBefore[f])
+			ksc_objective_finish(f, "stop", "context_reset", allies, axis)
+		else
+			ksc_objective_finish(f, "stop", "capture_stopped", allies, axis)
+		return
+	}
+
+	if (capturing_team != g_kscAttemptTeam[f]) {
+		// Team flip is two factual edges in order: stop old, then start new.
+		if (ksc_objective_finish(f, "stop", "capture_stopped", allies, axis))
+			ksc_objective_start(f, capturing_team, owner, allies, axis, matchid, half)
+	}
+}
+
 // Compact ownership timeline. One baseline row per flag when a KTP match
 // context first becomes available, then one row only when the owner changes.
 // This makes hold intervals reconstructable without polling ownership into
@@ -1111,6 +1494,8 @@ public ksc_zone_poll_task() {
 		// a queued candidate or an old count baseline survive a disabled
 		// restart and drain when capture is enabled again.
 		ksc_break_clear_all()
+		ksc_objective_reset_all(false)
+		ksc_grenade_cache_clear_all()
 		g_kscBreakBaselineSuppressed = true
 		return
 	}
@@ -1123,14 +1508,22 @@ public ksc_zone_poll_task() {
 	// loop still refreshes owner/capping/count caches, but pending killers are
 	// empty and break evaluation is explicitly suppressed for this baseline.
 	new bool:suppress_breaks = ksc_break_observe_round_clock()
-	if (suppress_breaks)
+	if (suppress_breaks) {
 		ksc_break_clear_all()
+		// A restart/countdown invalidates the old capture-area state just as
+		// authoritatively as it invalidates break candidates. Close any active
+		// attempt against its cached old context, then suppress all lifecycle
+		// starts/completions until the fresh-baseline poll has been consumed.
+		ksc_objective_reset_all(true)
+	}
 
 	for (new f = 0; f < g_kscFlagCount; f++) {
 		new ac = dodx_area_get_data(f, CA_num_allies)
 		new xc = dodx_area_get_data(f, CA_num_axis)
 		if (ac < 0) ac = 0
 		if (xc < 0) xc = 0
+		if (ac > MAX_PLAYERS) ac = MAX_PLAYERS
+		if (xc > MAX_PLAYERS) xc = MAX_PLAYERS
 
 		// A completed capture is not a break: ownership flipping means the cap
 		// succeeded, so the cappers leaving afterwards must not be credited to
@@ -1145,7 +1538,10 @@ public ksc_zone_poll_task() {
 		}
 
 		new is_capping = dodx_area_get_data(f, CA_is_capturing)
-		g_kscCapTeam[f] = is_capping ? dodx_area_get_data(f, CA_capturing_team) : 0
+		new capturing_team = is_capping ? dodx_area_get_data(f, CA_capturing_team) : 0
+		g_kscCapTeam[f] = capturing_team
+		if (!suppress_breaks)
+			ksc_objective_observe(f, owner, is_capping, capturing_team, ac, xc)
 
 		if (!suppress_breaks && g_kscBreakCount[f] > 0) {
 			new bt = g_kscBreakTeam[f]
@@ -1186,6 +1582,11 @@ public ksc_zone_poll_task() {
 }
 
 public controlpoints_init() {
+	// This forward fires too early for reliable log_message output. Normal
+	// plugin/match teardown already emitted context_reset where possible; clear
+	// any residual state silently rather than stamping it onto the new map.
+	ksc_objective_reset_all(false)
+	ksc_grenade_cache_clear_all()
 	g_kscFlagCount = dodx_objectives_get_num()
 	g_kscOwnershipBaselinePending = true
 	g_kscOwnershipMatchId[0] = 0
@@ -1206,7 +1607,9 @@ public controlpoints_init() {
 		g_kscFlagCount = 0
 
 	for (new f = 0; f < g_kscFlagCount; f++) {
-		dodx_objective_get_data(f, CP_name, g_kscFlagName[f], charsmax(g_kscFlagName[]))
+		new raw_flag_name[32]
+		dodx_objective_get_data(f, CP_name, raw_flag_name, charsmax(raw_flag_name))
+		ksc_wire_sanitize(raw_flag_name, g_kscFlagName[f], charsmax(g_kscFlagName[]))
 		if (!g_kscFlagName[f][0])
 			formatex(g_kscFlagName[f], charsmax(g_kscFlagName[]), "flag_%d", f)
 

@@ -5,6 +5,45 @@ All notable changes to KTP AMX will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.33] - unreleased
+
+### Added
+
+- **Schema-22 match telemetry** (`stats_logging.sma` 1.17.0 -> 1.18.0).
+  Position sampling now defaults to two seconds after the four-match Denver 4
+  volume audit; connected/alive gating, the five-second flush, 128-entry buffer,
+  and per-type health/drop accounting are unchanged. Factual
+  `KTP_OBJECTIVE_ATTEMPT` start/complete/stop markers poll the existing capture
+  area state with a sequence-scoped attempt id, pre-attempt owner, team counts,
+  and only `capture_stopped`/`context_reset` stop reasons. They do not infer
+  participants, kills, walk-offs, or cap-break causes.
+- **Factual grenade entity lifecycle.** Extension-mode DODX recognizes only
+  `grenade`/`grenade2` at their first TraceLine, keys them by edict index+serial,
+  and emits `dod_grenade_entity_tracked`. The bundled ReHLDS pre-call `ED_Free`
+  hook (including normal `FL_KILLME` cleanup) emits
+  `dod_grenade_entity_removed` exactly once for the same identity. Weapon IDs are
+  restricted to 13/14/36; rockets 29/30/31, `monster_mortar`, and all other
+  entities are excluded. Removal is generic and is never labelled detonation.
+  Map-change bulk invalidation clears the independent 64-entry tracker without
+  manufacturing removal events, and cannot mutate the existing `g_grenades`
+  damage-attribution pool. A bounded per-engine-edict serial tombstone table
+  deduplicates every native saturation loss by index+serial and forwards its
+  exact count into `grenade_entity` producer health without a secondary pool to
+  saturate. Public include docs and direct-dispatch test natives cover all three
+  forwards.
+- New objective/grenade quoted fields use a one-byte protocol sanitizer for
+  quotes, backslashes, parentheses, CR/LF, controls, and DEL. Untrusted player
+  names additionally replace angle brackets before canonical identity assembly,
+  so they cannot spoof userid/auth/team; durable fields remain intact. Round
+  restart/countdown suppression now
+  closes active objective attempts with `context_reset` and admits no lifecycle
+  start/complete until the fresh baseline has been consumed.
+
+### Deferred
+
+- Per-shot telemetry remains backlog-only. No schema field, marker, handler, or
+  runtime collection was added in this cut; see `TELEMETRY_BACKLOG.md`.
+
 ## [2.7.32] - unreleased
 
 **A RE-CUT of 2.7.31, not a rebuild of it.** 2.7.31 and `main` were developed in
