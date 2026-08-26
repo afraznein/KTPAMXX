@@ -576,7 +576,27 @@ def test_physical_boundaries_do_not_use_stats_pause_gate() -> None:
 
 
 def test_plugin_version() -> None:
-    assert re.search(r'#define\s+PLUGIN_VERSION\s+"1\.17\.0"', STATS)
+    assert re.search(r'#define\s+PLUGIN_VERSION\s+"1\.17\.1"', STATS)
+
+
+def test_ksc_buffer_detects_and_counts_line_truncation() -> None:
+    # ksc_buffer's copy() truncates anything past KSC_BUF_LINE_LEN - 1 with no
+    # signal -- a truncated line just stops matching the daemon's regex,
+    # which reads identically to the event never having fired. The length
+    # check must run, and must run BEFORE the truncating copy(), or counting
+    # it is cosmetic.
+    body = function_body(CAPTURE, "stock ksc_buffer(const line[], event_type)")
+    before(body, "strlen(line) >= KSC_BUF_LINE_LEN - 1", "copy(g_kscBuffer")
+    assert "g_kscTruncated++" in body
+
+    # Declared and reset on the same lifecycle as the existing buffer-full
+    # counter (g_kscDropped): a plain global, reported and zeroed every flush.
+    assert re.search(r"new\s+g_kscTruncated\s*=\s*0", CAPTURE)
+
+    flush_body = function_body(CAPTURE, "stock ksc_flush()")
+    before(flush_body, "g_kscTruncated > 0", 'log_amx("[KTP-STATS] truncated')
+    assert "KSC_BUF_LINE_LEN" in flush_body
+    assert "g_kscTruncated = 0" in flush_body
 
 
 def test_capout_requires_a_complete_two_team_partition() -> None:
