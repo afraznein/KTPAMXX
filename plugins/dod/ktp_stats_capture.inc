@@ -150,6 +150,10 @@ new g_kscBufferType[KSC_BUF_MAX_ENTRIES]
 new g_kscBufferSequence[KSC_BUF_MAX_ENTRIES]
 new g_kscBufferCount = 0
 new g_kscDropped = 0
+// Console-only running total, same lifecycle as g_kscDropped (reset every
+// flush) -- not part of the KTP_CAPTURE_HEALTH schema, so adding it needed
+// no KSC_SCHEMA_CONTRACT bump or daemon-side change.
+new g_kscTruncated = 0
 new g_kscLifeBuffer[KSC_LIFE_BUF_MAX_ENTRIES][KSC_LIFE_BUF_LINE_LEN]
 new g_kscLifeBufferType[KSC_LIFE_BUF_MAX_ENTRIES]
 new g_kscLifeBufferSequence[KSC_LIFE_BUF_MAX_ENTRIES]
@@ -316,6 +320,14 @@ stock ksc_buffer(const line[], event_type) {
 		return
 	}
 
+	// copy() below silently drops anything past KSC_BUF_LINE_LEN - 1 -- a
+	// truncated line doesn't fail loudly, it just stops matching the daemon's
+	// regex. Still enqueue it (partial data beats none), but count it so a
+	// truncation shows up the same way a full-buffer drop already does.
+	if (strlen(line) >= KSC_BUF_LINE_LEN - 1) {
+		g_kscTruncated++
+	}
+
 	copy(g_kscBuffer[g_kscBufferCount], KSC_BUF_LINE_LEN - 1, line)
 	g_kscBufferType[g_kscBufferCount] = event_type
 	g_kscBufferSequence[g_kscBufferCount] = g_kscSequence
@@ -470,6 +482,10 @@ stock ksc_flush() {
 	if (g_kscDropped > 0) {
 		log_amx("[KTP-STATS] dropped %d capture line(s) -- buffer full", g_kscDropped)
 		g_kscDropped = 0
+	}
+	if (g_kscTruncated > 0) {
+		log_amx("[KTP-STATS] truncated %d capture line(s) -- exceeded KSC_BUF_LINE_LEN (%d), raise it", g_kscTruncated, KSC_BUF_LINE_LEN)
+		g_kscTruncated = 0
 	}
 	if (g_kscLifeDropped > 0) {
 		log_amx("[KTP-STATS] dropped %d LIFE boundary line(s) -- dedicated buffer full", g_kscLifeDropped)

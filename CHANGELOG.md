@@ -13,6 +13,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.7.32] - unreleased
 
+### Fixed — `ksc_buffer`'s truncating `copy()` had no way to tell you it truncated
+
+- `copy(g_kscBuffer[...], KSC_BUF_LINE_LEN - 1, line)` silently drops anything past
+  `KSC_BUF_LINE_LEN - 1`. A truncated line doesn't fail loudly -- it just stops matching
+  the daemon's regex, which is indistinguishable from the event never having fired. The
+  buffer-full path already had this covered (`g_kscDropped`/`[KTP-STATS] dropped ...
+  buffer full`); the length path did not.
+- `ksc_buffer` now checks `strlen(line) >= KSC_BUF_LINE_LEN - 1` before the `copy()` and
+  counts it in a new `g_kscTruncated`, reported by `ksc_flush` exactly like the existing
+  drop counter (`[KTP-STATS] truncated N capture line(s) -- exceeded KSC_BUF_LINE_LEN
+  (832), raise it`). The line is still enqueued truncated (partial data beats none) --
+  this only makes the loss observable instead of silent.
+  (`ktp_stats_capture.inc`, `stats_logging.sma` 1.17.0 -> 1.17.1)
+- Console-only counter, same lifecycle as `g_kscDropped` -- not part of the
+  `KTP_CAPTURE_HEALTH` per-half schema, so this needed no `KSC_SCHEMA_CONTRACT` bump and
+  no daemon-side change.
+
 ### Fixed — a break candidate could credit a `cap_break` to a reconnecting player
 
 - `g_kscBreakQ` holds raw client indices, and `ksc_clear_player` never swept it, so a
