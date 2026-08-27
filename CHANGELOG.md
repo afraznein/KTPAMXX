@@ -2257,7 +2257,7 @@ All code optimizations from v2.7.8 and v2.7.9 were lost during the AmxxCurl CMak
 
 ---
 
-## [2.7.9] - 2026-04-02
+## [2.7.9] - 2026-04-14
 
 ### Changed
 
@@ -2272,7 +2272,7 @@ All code optimizations from v2.7.8 and v2.7.9 were lost during the AmxxCurl CMak
 
 ---
 
-## [2.7.8] - 2026-04-02
+## [2.7.8] - 2026-04-14
 
 ### Changed
 
@@ -2287,7 +2287,7 @@ Grenade/rocket classname matching in TraceLine hooks now uses pre-cached `ALLOC_
 
 ---
 
-## [2.7.7] - 2026-04-02
+## [2.7.7] - 2026-04-14
 
 ### Changed
 
