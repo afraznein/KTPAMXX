@@ -107,6 +107,9 @@ build_linux.sh
 # Shell hook scripts (*.sh) stay tracked; one-off Python tooling does not.
 scripts/*.py
 !scripts/test_stats_life_boundaries.py
+!scripts/test_reentry_guards.py
+
+!scripts/test_native_param_contracts.py
 
 # Build output directories
 obj-linux/

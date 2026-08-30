@@ -45,8 +45,11 @@
 #include "../common/hookchains.h"
 #include "IMessageManager.h"
 
+// 16 = KTP's bump off upstream 15; was 6 here, which accepted any KTP or upstream
+// engine while this vtable already carried the KTP entries. Deliberately a 67-entry
+// PREFIX of the engine's 69 - safe because nothing here calls the last two slots.
 #define REHLDS_API_VERSION_MAJOR 3
-#define REHLDS_API_VERSION_MINOR 6
+#define REHLDS_API_VERSION_MINOR 16
 
 //Steam_NotifyClientConnect hook
 typedef IHookChain<qboolean, IGameClient*, const void*, unsigned int> IRehldsHook_Steam_NotifyClientConnect;

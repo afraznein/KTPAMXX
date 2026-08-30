@@ -161,6 +161,29 @@ def test_disconnect_precedes_slot_clear_and_pause_gate() -> None:
     before(disconnected, "ksc_on_disconnect(id)", "if ( is_user_bot(id) || !isDSMActive() )")
 
 
+def test_disconnect_purges_break_queue_by_zeroing() -> None:
+    # A queued candidate outlives its killer by up to KSC_BREAK_WINDOW polls,
+    # and slots recycle. The purge must ZERO matching killer/victim entries,
+    # never remove them: the victim's delayed zone decrement still consumes a
+    # queue slot in FIFO order, so removal would shift that drop onto the next
+    # queued candidate. Zeroed entries are inert in both emitters (range guard
+    # in ksc_emit_break; "-" victim in ksc_emit_break_context).
+    purge = function_body(CAPTURE, "stock ksc_break_purge_player")
+    assert "g_kscBreakQ[f][q] = 0" in purge
+    assert "g_kscBreakVictim[f][q] = 0" in purge
+    assert "g_kscBreakCount[f]--" not in purge  # zero, never compact
+    assert "ksc_break_shift" not in purge
+
+    clear = function_body(CAPTURE, "stock ksc_clear_player")
+    assert "ksc_break_purge_player(id)" in clear
+
+    emit = function_body(CAPTURE, "stock ksc_emit_break")
+    before(emit, "if (breaker < 1 || breaker > MAX_PLAYERS)",
+           "ksc_player_str(breaker")
+    context = function_body(CAPTURE, "stock ksc_emit_break_context")
+    assert 'copy(victim_str, charsmax(victim_str), "-")' in context
+
+
 def test_context_baseline_precedes_objective_early_return() -> None:
     poll = function_body(CAPTURE, "public ksc_zone_poll_task")
     before(poll, "ksc_sync_life_context()", "if (!ksc_enabled())")
@@ -356,6 +379,25 @@ def test_authoritative_producer_context_and_clocks() -> None:
             assert field in body, f"{signature} missing producer field {field}"
 
 
+def test_match_start_emits_outgoing_half_health_before_reset() -> None:
+    # ktp_half_end fires only with half=1 and ktp_match_end only at true match
+    # end, so H2->OT and OT->OT boundaries arrive solely as the next
+    # ktp_match_start. The outgoing half's health record must be emitted there
+    # before the later context activation resets its counters.
+    start = function_body(CAPTURE, "stock ksc_on_match_start")
+    assert "ksc_emit_health(g_kscProducerMatchId, g_kscProducerHalf)" in start
+    activate = function_body(CAPTURE, "stock ksc_activate_producer_context")
+    assert "ksc_reset_health()" in activate
+    before(start, "ksc_emit_health(g_kscProducerMatchId, g_kscProducerHalf)",
+           "ksc_close_producer_context()")
+    # The emit must be flushed-behind and guarded on a still-populated context,
+    # and must run before either branch overwrites that context.
+    before(start, "ksc_flush()",
+           "ksc_emit_health(g_kscProducerMatchId, g_kscProducerHalf)")
+    before(start, "ksc_emit_health(g_kscProducerMatchId, g_kscProducerHalf)",
+           "copy(g_kscProducerMatchId, charsmax(g_kscProducerMatchId), matchid)")
+
+
 def test_plugin_end_drains_private_capture() -> None:
     plugin_end = function_body(STATS, "public plugin_end")
     assert "ksc_shutdown()" in plugin_end
@@ -513,6 +555,25 @@ def _effective_teamkill_model(*, tk: bool, killer: int, victim: int,
     return killer_team in (1, 2) and killer_team == victim_team
 
 
+def test_sustained_round_clock_unavailability_is_announced_once() -> None:
+    # mp_timelimit 0 keeps dodx_get_round_time() at -1.0 forever, which keeps
+    # break suppression fail-closed on every poll. That stays deliberate, but
+    # it must announce itself: one log_amx per unavailable episode, re-armed
+    # only by a valid clock reading.
+    assert re.search(
+        r"#define\s+KSC_ROUND_CLOCK_WARN_POLLS\s+\d+", CAPTURE)
+    observe = function_body(CAPTURE, "stock bool:ksc_break_observe_round_clock")
+    unavailable = observe[observe.index("if (current < 0.0)"):
+                          observe.index("new Float:limit")]
+    assert "KSC_ROUND_CLOCK_WARN_POLLS" in unavailable
+    assert "log_amx(" in unavailable
+    # One-shot: the counter parks at -1 after warning...
+    before(unavailable, "log_amx(", "g_kscRoundClockUnavailPolls = -1")
+    # ...and only a valid reading re-arms it, after the unavailable branch.
+    before(observe, "return true", "g_kscRoundClockUnavailPolls = 0")
+    assert "g_kscRoundClockUnavailPolls = 0" in observe
+
+
 def test_effective_teamkill_covers_degraded_deathmsg_path() -> None:
     both = {1, 2}
     # The regression case: DeathMsg reports TK=0, but two live Allies are still
@@ -566,12 +627,12 @@ def test_split_loader_resolver_uses_only_declared_loaded_game_dll() -> None:
         GAMECONFIGS, "static bool ResolveLoadedMetamodGameDll")
     assert "GET_GAME_DIR(gameDir)" in helper
     assert "realpath(candidates[i], nullptr)" in helper
-    assert "dlopen(resolvedPath, RTLD_NOW | RTLD_NOLOAD)" in helper
+    assert "dlopen(resolvedPath, RTLD_LAZY | RTLD_NOLOAD)" in helper
     assert 'dlsym(handle, "GiveFnptrsToDll")' in helper
     assert "GetEntityInit" not in helper
     assert "worldspawn" not in helper
     before(helper, "realpath(candidates[i], nullptr)",
-           "dlopen(resolvedPath, RTLD_NOW | RTLD_NOLOAD)")
+           "dlopen(resolvedPath, RTLD_LAZY | RTLD_NOLOAD)")
     relative = helper[helper.index("GET_GAME_DIR(gameDir)"):]
     before(relative, "candidates[candidateCount++] = modRelative",
            "candidates[candidateCount++] = gameDll")
@@ -591,6 +652,13 @@ def test_split_loader_resolver_verifies_anchor_file_identity() -> None:
     before(helper, "requestedStat.st_ino == resolvedStat.st_ino",
            "*baseAddress = info.dli_fbase")
     before(helper, "dlclose(handle)", "return true")
+    # The mismatch out-param may only be raised for a candidate that was
+    # actually mapped (a NOLOAD handle existed) and then failed the identity
+    # check -- a merely-absent candidate must not read as a mismatch.
+    assert "*identityMismatch = true;" in helper
+    before(helper, "dlopen(resolvedPath, RTLD_LAZY | RTLD_NOLOAD)",
+           "*identityMismatch = true;")
+    before(helper, "if (!valid && identityMismatch)", "if (valid)")
 
 
 def test_split_loader_resolver_preserves_direct_paths() -> None:
@@ -607,6 +675,18 @@ def test_split_loader_resolver_preserves_direct_paths() -> None:
     assert "if (!dladdr(symbol, &info))" in resolver
     before(resolver, 'get_localinfo("mm_gamedll", "")',
            "g_pGameEntityInterface->pfnSpawn")
+    # A declared-but-not-loaded mm_gamedll is a stale localinfo (settable from
+    # any cfg/rcon), not a split-loader topology: it must fall through to the
+    # engine entity interface rather than permanently null-caching "server"
+    # resolution. Only a genuine identity-check mismatch stays failed closed.
+    assert "bool identityMismatch = false;" in resolver
+    assert "if (identityMismatch)" in resolver
+    assert "ignoring stale localinfo" in resolver
+    before(resolver, "if (identityMismatch)", "ignoring stale localinfo")
+    mismatch_start = resolver.index("if (identityMismatch)")
+    mismatch_block = resolver[mismatch_start:resolver.index("ignoring stale localinfo")]
+    assert "Unable to prove declared mm_gamedll" in mismatch_block
+    assert "return false;" in mismatch_block
 
 
 def test_split_loader_resolver_is_linux_and_no_load_only() -> None:
@@ -615,6 +695,9 @@ def test_split_loader_resolver_is_linux_and_no_load_only() -> None:
         "defined PLATFORM_LINUX && defined RTLD_NOLOAD") >= 2
     assert "dlopen(resolvedPath, RTLD_NOW)" not in GAMECONFIGS
     assert "dlopen(resolvedPath, RTLD_LAZY)" not in GAMECONFIGS
+    # RTLD_NOW would promote a lazily bound game DLL to eager relocation and
+    # can hard-fail resolution; the helper only dlsyms one exported symbol.
+    assert "dlopen(resolvedPath, RTLD_NOW | RTLD_NOLOAD)" not in GAMECONFIGS
 
 
 def test_physical_boundaries_do_not_use_stats_pause_gate() -> None:
@@ -958,6 +1041,27 @@ def test_dodx_grenade_entity_forward_and_direct_dispatch_contract() -> None:
     )
     assert "serial <= 0" in drop_dispatch
     assert "wpnid != 13 && wpnid != 14 && wpnid != 36" in drop_dispatch
+    assert re.search(r'#define\s+PLUGIN_VERSION\s+"1\.18\.1"', STATS)
+
+
+def test_ksc_buffer_detects_and_counts_line_truncation() -> None:
+    # ksc_buffer's copy() truncates anything past KSC_BUF_LINE_LEN - 1 with no
+    # signal -- a truncated line just stops matching the daemon's regex,
+    # which reads identically to the event never having fired. The length
+    # check must run, and must run BEFORE the truncating copy(), or counting
+    # it is cosmetic.
+    body = function_body(CAPTURE, "stock bool:ksc_buffer(const line[], event_type)")
+    before(body, "strlen(line) >= KSC_BUF_LINE_LEN - 1", "copy(g_kscBuffer")
+    assert "g_kscTruncated++" in body
+
+    # Declared and reset on the same lifecycle as the existing buffer-full
+    # counter (g_kscDropped): a plain global, reported and zeroed every flush.
+    assert re.search(r"new\s+g_kscTruncated\s*=\s*0", CAPTURE)
+
+    flush_body = function_body(CAPTURE, "stock ksc_flush()")
+    before(flush_body, "g_kscTruncated > 0", 'log_amx("[KTP-STATS] truncated')
+    assert "KSC_BUF_LINE_LEN" in flush_body
+    assert "g_kscTruncated = 0" in flush_body
 
 
 def test_capout_requires_a_complete_two_team_partition() -> None:
