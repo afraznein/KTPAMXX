@@ -78,6 +78,8 @@ The DODX stats module includes extensive KTP-specific natives:
 
 **Grenade Manipulation:** `dodx_set_grenade_ammo`, `dodx_get_grenade_ammo`, `dodx_get_grenade_ammo_index`, `dodx_send_ammox`, `dodx_give_grenade`, `dodx_strip_grenade`
 
+**Grenade Entity Lifecycle:** `dod_grenade_entity_tracked` / `dod_grenade_entity_removed` report factual extension-mode entity observation and generic ReHLDS `ED_Free` removal for grenade IDs 13/14/36. Identity is `(entindex, serial)`; removal does not claim detonation. Rockets and `monster_mortar` are excluded. Native tracker saturation is deduped by a per-engine-edict serial tombstone and exposed exactly through `dod_grenade_entity_tracker_drop` and producer health rather than being silent.
+
 **Player Manipulation:** `dodx_set_user_noclip`, `dodx_set_user_class`, `dodx_set_user_team`, `dodx_get/set_user_origin`, `dodx_get/set_user_angles`
 
 **Pre-Damage Forward:** `dod_damage_pre(attacker, victim, damage, wpnindex, hitplace, TA)` — return modified damage or 0 to block.

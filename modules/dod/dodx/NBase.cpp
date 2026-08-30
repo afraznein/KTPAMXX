@@ -1853,6 +1853,76 @@ static cell AMX_NATIVE_CALL dodx_test_dispatch_grenade_explosion(AMX *amx, cell 
 	return 1;
 }
 
+// dodx_test_dispatch_grenade_entity_{tracked,removed}(
+//     owner, entindex, serial, Float:pos[3], wpnid, Float:gametime)
+// Exact direct drivers for the factual lifecycle forwards. These deliberately
+// reject every non-grenade weapon id, including rockets 29/30/31 and
+// monster_mortar 40, so the integration harness can prove the exclusion gate.
+static cell DODX_TestDispatchGrenadeEntity(AMX *amx, cell *params, int forward)
+{
+	if (forward < 0 || !gpGlobals)
+		return 0;
+
+	const int owner = params[1];
+	const int entindex = params[2];
+	const int serial = params[3];
+	cell *posCells = MF_GetAmxAddr(amx, params[4]);
+	const int wpnid = params[5];
+	const cell gametime = params[6];
+
+	if (owner < 1 || owner > gpGlobals->maxClients)
+		return 0;
+	if (entindex <= gpGlobals->maxClients || entindex >= gpGlobals->maxEntities)
+		return 0;
+	if (serial <= 0 || (wpnid != 13 && wpnid != 14 && wpnid != 36))
+		return 0;
+
+	cell position[3];
+	position[0] = posCells[0];
+	position[1] = posCells[1];
+	position[2] = posCells[2];
+	cell pos = MF_PrepareCellArray(position, 3);
+	MF_ExecuteForward(forward, owner, entindex, serial, pos, wpnid, gametime);
+	return 1;
+}
+
+static cell AMX_NATIVE_CALL dodx_test_dispatch_grenade_entity_tracked(AMX *amx, cell *params)
+{
+	return DODX_TestDispatchGrenadeEntity(amx, params, iFGrenadeEntityTracked);
+}
+
+static cell AMX_NATIVE_CALL dodx_test_dispatch_grenade_entity_removed(AMX *amx, cell *params)
+{
+	return DODX_TestDispatchGrenadeEntity(amx, params, iFGrenadeEntityRemoved);
+}
+
+// dodx_test_dispatch_grenade_entity_tracker_drop(
+//     owner, entindex, serial, wpnid, Float:gametime)
+// Direct driver for receiver/health integration. Production only fires this
+// from bounded tracker exhaustion; the same defensive grenade-only gate keeps
+// rockets and mortar out of tests too.
+static cell AMX_NATIVE_CALL dodx_test_dispatch_grenade_entity_tracker_drop(AMX *amx, cell *params)
+{
+	if (iFGrenadeEntityTrackerDrop < 0 || !gpGlobals)
+		return 0;
+
+	const int owner = params[1];
+	const int entindex = params[2];
+	const int serial = params[3];
+	const int wpnid = params[4];
+	const cell gametime = params[5];
+	if (owner < 1 || owner > gpGlobals->maxClients)
+		return 0;
+	if (entindex <= gpGlobals->maxClients || entindex >= gpGlobals->maxEntities)
+		return 0;
+	if (serial <= 0 || (wpnid != 13 && wpnid != 14 && wpnid != 36))
+		return 0;
+
+	MF_ExecuteForward(iFGrenadeEntityTrackerDrop, owner, entindex, serial,
+		wpnid, gametime);
+	return 1;
+}
+
 // dodx_test_dispatch_score(id, score_delta, total_score, cp_index)
 // Fires BOTH the `client_score` forward (3 args: id, score, total) AND
 // the `dod_score_event` forward (4 args: id, delta, total, cp_index) —
@@ -2460,6 +2530,9 @@ AMX_NATIVE_INFO base_Natives[] =
 	{"dodx_test_dispatch_weapon_fire",       dodx_test_dispatch_weapon_fire},
 	{"dodx_test_dispatch_damage",            dodx_test_dispatch_damage},
 	{"dodx_test_dispatch_grenade_explosion", dodx_test_dispatch_grenade_explosion},
+	{"dodx_test_dispatch_grenade_entity_tracked", dodx_test_dispatch_grenade_entity_tracked},
+	{"dodx_test_dispatch_grenade_entity_removed", dodx_test_dispatch_grenade_entity_removed},
+	{"dodx_test_dispatch_grenade_entity_tracker_drop", dodx_test_dispatch_grenade_entity_tracker_drop},
 	{"dodx_test_dispatch_score",             dodx_test_dispatch_score},
 	{"dodx_test_dispatch_cp_captured",       dodx_test_dispatch_cp_captured},
 	{"dodx_test_dispatch_client_spawn",      dodx_test_dispatch_client_spawn},
