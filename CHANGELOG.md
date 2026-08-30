@@ -1,9 +1,3 @@
-## Reverted
-
-- `8d818deaf` (dodx: split the InitObj reorder latch from the ownership refresh) was
-  reverted. It was reviewed NOT-APPROVED for a fleet cut and reached `main` by being swept
-  into the #41 branch, not by its own PR. See the revert commit for the reasoning.
-
 # Changelog
 
 All notable changes to KTP AMX will be documented in this file.
@@ -11,7 +5,13 @@ All notable changes to KTP AMX will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.7.32] - unreleased
+## Reverted
+
+- `8d818deaf` (dodx: split the InitObj reorder latch from the ownership refresh) was
+  reverted. It was reviewed NOT-APPROVED for a fleet cut and reached `main` by being swept
+  into the #41 branch, not by its own PR. See the revert commit for the reasoning.
+
+## [2.7.33] - unreleased
 
 ### Fixed — `ksc_buffer`'s truncating `copy()` had no way to tell you it truncated
 
@@ -29,6 +29,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Console-only counter, same lifecycle as `g_kscDropped` -- not part of the
   `KTP_CAPTURE_HEALTH` per-half schema, so this needed no `KSC_SCHEMA_CONTRACT` bump and
   no daemon-side change.
+
+### Fixed — `CTaskMngr`'s deferred clear ran on every frame depth, not just the outermost
+
+- `startFrame()` decrements `m_bInStartFrame` and then destroys `m_Tasks` gated only on
+  `m_bDeferredClear`. Since 2.7.25 that field is a depth counter rather than a bool, so a
+  nested `startFrame()` reaches the clear with outer frames still iterating the vector —
+  it frees the `CTask` objects an outer `executeIfRequired()` is standing on. That is the
+  same use-after-free the deferral was built to prevent (gdb-confirmed on a New York 2
+  core, 2.6.13); deferring merely moved *when* it happens.
+- Second-order: the inner frame also consumed `m_bDeferredClear`, so the outer loop's
+  break never fired and it kept indexing a now-empty vector against a `lastSize` cached
+  before the clear.
+- 2.7.25 converted `m_bInStartFrame` from bool to a counter on the stated reasoning that
+  "every existing test is against zero, so the consumers needed no change". That holds for
+  the producer in `clear()`; it does not hold here, because this site never tested the
+  counter at all. The guard is now `m_bInStartFrame == 0 && m_bDeferredClear`, matching
+  `CForward`'s `m_ToDelete && !m_InExec` and the message-hook `m_InExecution.size() == 0`
+  — one rule across all three: the outermost frame owns the terminal transition, which is
+  also how the 2.7.20 active-count double-decrement was resolved.
+- No behaviour change at depth 1, which is every non-nested frame: the decrement reaches 0
+  and the clear runs exactly as before.
+- `scripts/test_reentry_guards.py` locks the shape at all three sites and carries a
+  `--selftest` that reintroduces each historical defect and requires the check to reject
+  it. Run against `main` before this change, it fails on the CTask site.
+
+### Fixed — `dodx_send_ammox` accepted any `ammo_slot`, including the failure sentinel it tells callers to use
+
+- The native clamped `count` and left `ammo_slot` entirely unvalidated, while its own
+  include directs callers to take the slot from `dodx_get_grenade_ammo_index()` — whose
+  documented failure return is `-1`. A caller doing exactly what the docs said could pass
+  `-1` straight through.
+- Nothing downstream catches it. `MSG_WriteByte` casts to `byte` with no range check, so
+  `-1` is transmitted as `255` and an out-of-range slot silently becomes some other slot.
+  Server-side this is truncation rather than memory corruption; the consequences are a
+  client HUD desync on whatever ammo type owns the resulting slot — which does not
+  self-correct until that type genuinely changes — and DODX's own `AmmoX` hook matching
+  the bogus slot against `weaponData[].ammoSlot` and corrupting its tracked ammo.
+- `ammo_slot` is now bounded to `0 .. DODX_MAX_AMMO_SLOTS - 1` and **rejected rather than
+  clamped**, with `MF_LogError(AMX_ERR_NATIVE)`. Clamping was the tempting option and is
+  the wrong one: slot 0 is a real ammo type, so clamping a failed lookup would write real
+  ammo to the wrong slot — a silent, persistent wrong answer instead of a loud refusal.
+  Rejecting also matches the house split (indices abort, values clamp) and this native's
+  own `CHECK_PLAYER`, which already aborts for its other index parameter.
+- Note this is not a regression of the 2.7.21 cleanup that converted this native's
+  AmmoX-not-registered branch from an abort to `MF_Log` + `return 0`. That branch is an
+  environmental failure with a documented `0` return; an out-of-range index is a caller
+  bug, and the same entry kept out-of-range ids as genuine aborts.
+- `dodx.inc` now states the accepted range, tells callers to check for `-1` first, and
+  carries the `@error` line the abort requires — following `dodx_give_grenade`'s
+  precedent. No in-repo plugin calls this native; `KTPGrenadeLoadout` and
+  `KTPPracticeMode` pass in-range literals today, so nothing in the fleet begins aborting.
+- `scripts/test_native_param_contracts.py` asserts the enforced range and the documented
+  range agree, since the defect was the include and the native disagreeing rather than a
+  missing check. Its `--selftest` reintroduces each shape and requires rejection; run
+  against `main` both checks fail.
+
+### Fixed — the `g_pCPMasterEdict` clear had no Metamod counterpart, and the reason it did not matter was recorded wrongly
+
+- `DODX_OnSV_ActivateServer` clears the cached control-point-master edict per map;
+  `ServerDeactivate` never did. Note the polarity is the reverse of this fork's usual
+  trap — here the **Metamod** path is the deficient one — which is why the standing
+  extension-mode parity audit would not have surfaced it.
+- **It is genuinely harmless on this fleet, but not for the recorded reason, and the wrong
+  reason was the dangerous part.** It was recorded as harmless because `DODX_GetCPMaster`
+  self-revalidates. It does re-derive on a failed check — but its *first* action is
+  `g_pCPMasterEdict->free`, a dereference of the very pointer that would be dangling. The
+  revalidation cannot establish the liveness it depends on. Taken at face value, that
+  rationale would justify deleting the extension-path clear as redundant, which would
+  introduce a use-after-free on the only path the fleet actually runs.
+- The real reason is mutual exclusion: `DODX_SetupExtensionHooks` registers the
+  `SV_ActivateServer` hook only under `g_bExtensionMode`, and dodx's `DLL_FUNCTIONS` table
+  is installed only when Metamod calls `GetEntityAPI2`, which nothing does in extension
+  mode. The two teardown paths cannot both be live, and the fleet only ever runs the one
+  that has the clear. `ServerDeactivate` is compiled into the shipped `.so` (`USE_METAMOD`
+  is defined for the vendored headers) — dead code, not absent code.
+- `ServerDeactivate` now clears it too, so the invariant its declaration comment asserts
+  ("cleared on map change so a freed edict from the previous map can never be read") is
+  true on both paths rather than only one. Zero runtime effect on the fleet.
+- `DODX_GetCPMaster` carries the tripwire, in the shape `KTPTriggerGeom.h` already uses
+  for the analogous reset: the clears are load-bearing, the in-function guard does not
+  substitute for them, do not drop either as redundant.
+- Pre-existing at `16464b57` on the tier-2 lineage, byte-identical, so this is not recent
+  drift.
+
+## [2.7.32] - 2026-08-26
 
 ### Fixed — a break candidate could credit a `cap_break` to a reconnecting player
 
@@ -290,89 +375,6 @@ load failure, not a degraded mode.
 
 Merge conflict resolution: one hunk in this file, both sides kept. `dodx.h` and
 `moduleconfig.cpp` merged cleanly.
-
-### Fixed — `CTaskMngr`'s deferred clear ran on every frame depth, not just the outermost
-
-- `startFrame()` decrements `m_bInStartFrame` and then destroys `m_Tasks` gated only on
-  `m_bDeferredClear`. Since 2.7.25 that field is a depth counter rather than a bool, so a
-  nested `startFrame()` reaches the clear with outer frames still iterating the vector —
-  it frees the `CTask` objects an outer `executeIfRequired()` is standing on. That is the
-  same use-after-free the deferral was built to prevent (gdb-confirmed on a New York 2
-  core, 2.6.13); deferring merely moved *when* it happens.
-- Second-order: the inner frame also consumed `m_bDeferredClear`, so the outer loop's
-  break never fired and it kept indexing a now-empty vector against a `lastSize` cached
-  before the clear.
-- 2.7.25 converted `m_bInStartFrame` from bool to a counter on the stated reasoning that
-  "every existing test is against zero, so the consumers needed no change". That holds for
-  the producer in `clear()`; it does not hold here, because this site never tested the
-  counter at all. The guard is now `m_bInStartFrame == 0 && m_bDeferredClear`, matching
-  `CForward`'s `m_ToDelete && !m_InExec` and the message-hook `m_InExecution.size() == 0`
-  — one rule across all three: the outermost frame owns the terminal transition, which is
-  also how the 2.7.20 active-count double-decrement was resolved.
-- No behaviour change at depth 1, which is every non-nested frame: the decrement reaches 0
-  and the clear runs exactly as before.
-- `scripts/test_reentry_guards.py` locks the shape at all three sites and carries a
-  `--selftest` that reintroduces each historical defect and requires the check to reject
-  it. Run against `main` before this change, it fails on the CTask site.
-
-### Fixed — `dodx_send_ammox` accepted any `ammo_slot`, including the failure sentinel it tells callers to use
-
-- The native clamped `count` and left `ammo_slot` entirely unvalidated, while its own
-  include directs callers to take the slot from `dodx_get_grenade_ammo_index()` — whose
-  documented failure return is `-1`. A caller doing exactly what the docs said could pass
-  `-1` straight through.
-- Nothing downstream catches it. `MSG_WriteByte` casts to `byte` with no range check, so
-  `-1` is transmitted as `255` and an out-of-range slot silently becomes some other slot.
-  Server-side this is truncation rather than memory corruption; the consequences are a
-  client HUD desync on whatever ammo type owns the resulting slot — which does not
-  self-correct until that type genuinely changes — and DODX's own `AmmoX` hook matching
-  the bogus slot against `weaponData[].ammoSlot` and corrupting its tracked ammo.
-- `ammo_slot` is now bounded to `0 .. DODX_MAX_AMMO_SLOTS - 1` and **rejected rather than
-  clamped**, with `MF_LogError(AMX_ERR_NATIVE)`. Clamping was the tempting option and is
-  the wrong one: slot 0 is a real ammo type, so clamping a failed lookup would write real
-  ammo to the wrong slot — a silent, persistent wrong answer instead of a loud refusal.
-  Rejecting also matches the house split (indices abort, values clamp) and this native's
-  own `CHECK_PLAYER`, which already aborts for its other index parameter.
-- Note this is not a regression of the 2.7.21 cleanup that converted this native's
-  AmmoX-not-registered branch from an abort to `MF_Log` + `return 0`. That branch is an
-  environmental failure with a documented `0` return; an out-of-range index is a caller
-  bug, and the same entry kept out-of-range ids as genuine aborts.
-- `dodx.inc` now states the accepted range, tells callers to check for `-1` first, and
-  carries the `@error` line the abort requires — following `dodx_give_grenade`'s
-  precedent. No in-repo plugin calls this native; `KTPGrenadeLoadout` and
-  `KTPPracticeMode` pass in-range literals today, so nothing in the fleet begins aborting.
-- `scripts/test_native_param_contracts.py` asserts the enforced range and the documented
-  range agree, since the defect was the include and the native disagreeing rather than a
-  missing check. Its `--selftest` reintroduces each shape and requires rejection; run
-  against `main` both checks fail.
-
-### Fixed — the `g_pCPMasterEdict` clear had no Metamod counterpart, and the reason it did not matter was recorded wrongly
-
-- `DODX_OnSV_ActivateServer` clears the cached control-point-master edict per map;
-  `ServerDeactivate` never did. Note the polarity is the reverse of this fork's usual
-  trap — here the **Metamod** path is the deficient one — which is why the standing
-  extension-mode parity audit would not have surfaced it.
-- **It is genuinely harmless on this fleet, but not for the recorded reason, and the wrong
-  reason was the dangerous part.** It was recorded as harmless because `DODX_GetCPMaster`
-  self-revalidates. It does re-derive on a failed check — but its *first* action is
-  `g_pCPMasterEdict->free`, a dereference of the very pointer that would be dangling. The
-  revalidation cannot establish the liveness it depends on. Taken at face value, that
-  rationale would justify deleting the extension-path clear as redundant, which would
-  introduce a use-after-free on the only path the fleet actually runs.
-- The real reason is mutual exclusion: `DODX_SetupExtensionHooks` registers the
-  `SV_ActivateServer` hook only under `g_bExtensionMode`, and dodx's `DLL_FUNCTIONS` table
-  is installed only when Metamod calls `GetEntityAPI2`, which nothing does in extension
-  mode. The two teardown paths cannot both be live, and the fleet only ever runs the one
-  that has the clear. `ServerDeactivate` is compiled into the shipped `.so` (`USE_METAMOD`
-  is defined for the vendored headers) — dead code, not absent code.
-- `ServerDeactivate` now clears it too, so the invariant its declaration comment asserts
-  ("cleared on map change so a freed edict from the previous map can never be read") is
-  true on both paths rather than only one. Zero runtime effect on the fleet.
-- `DODX_GetCPMaster` carries the tripwire, in the shape `KTPTriggerGeom.h` already uses
-  for the analogous reset: the clears are load-bearing, the in-function guard does not
-  substitute for them, do not drop either as redundant.
-- Pre-existing at `16464b57` on the tier-2 lineage, byte-identical, so this is not recent
-  drift.
 
 ## [Unreleased]
 
