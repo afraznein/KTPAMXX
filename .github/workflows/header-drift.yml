@@ -1,0 +1,119 @@
+# public/resdk/engine/rehlds_api.h is a manual copy of KTP-ReHLDS's
+# rehlds/public/rehlds/rehlds_api.h, compiled into BOTH shipped KTPAMXX
+# artifacts (core and dodx). It is deliberately a PREFIX of the engine's
+# header -- fewer IRehldsHookchains entries, none the engine lacks -- so the
+# byte-diff the KTP-ReHLDS/KTP-ReAPI gates use cannot apply here. What must
+# hold instead, and what this gate enforces:
+#   1. REHLDS_API_VERSION_MAJOR/MINOR equal the engine's. The runtime
+#      handshake is `minor < compiled_minor` and cannot see layout drift, so
+#      the version literals are the only tie between the copies.
+#   2. The IRehldsHookchains entries here are an exact in-order prefix of the
+#      engine's. Consumers call vtable[N] with N baked at compile time; a
+#      mid-list insert or reorder is a silent wrong-virtual-call at runtime,
+#      not a load failure. Hook slots are APPEND-ONLY, at the engine's tail.
+# Both sides are CR-stripped before comparison -- the sibling gates pass on a
+# line-ending coincidence, and this one must not.
+#
+# Trigger is unfiltered on purpose (see version-consistency.yml): a
+# path-filtered required check never reports, and the branch can then never
+# merge.
+
+name: Header Drift
+
+on:
+  workflow_dispatch:
+    inputs:
+      rehlds_ref:
+        description: 'KTP-ReHLDS ref to compare rehlds_api.h against. Blank = the same-named branch if it exists, else its default branch.'
+        required: false
+        type: string
+        default: ''
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  header-drift:
+    name: rehlds_api.h prefix vs KTP-ReHLDS
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout KTPAMXX
+        uses: actions/checkout@v6
+
+      # Checking out the counterpart with no ref reads its DEFAULT branch, so a
+      # coordinated header change on feature branches in both repos would fail
+      # here until one merged. Prefer a same-named branch; else the default.
+      - name: Resolve KTP-ReHLDS ref
+        id: counterpart
+        env:
+          COUNTERPART: https://github.com/afraznein/KTP-ReHLDS.git
+          OVERRIDE: ${{ inputs.rehlds_ref }}
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ -n "$OVERRIDE" ]; then
+            REF="$OVERRIDE"
+            echo "dispatch override: $REF"
+          elif [ -n "$BRANCH" ] && git ls-remote --exit-code --heads "$COUNTERPART" "refs/heads/$BRANCH" >/dev/null 2>&1; then
+            REF="$BRANCH"
+            echo "matched same-named branch on KTP-ReHLDS: $REF"
+          else
+            REF=$(git ls-remote --symref "$COUNTERPART" HEAD | awk '/^ref:/ { sub("refs/heads/", "", $2); print $2; exit }')
+            echo "no matching branch on KTP-ReHLDS; using its default branch: $REF"
+          fi
+          # An empty ref makes checkout take the default branch, so a probe that
+          # died would read as a passing comparison instead of a failure.
+          test -n "$REF" || { echo "::error::could not resolve a KTP-ReHLDS ref to compare against"; exit 1; }
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout KTP-ReHLDS
+        uses: actions/checkout@v6
+        with:
+          repository: afraznein/KTP-ReHLDS
+          ref: ${{ steps.counterpart.outputs.ref }}
+          path: ktprehlds
+
+      - name: Compare version macros and hookchain prefix
+        env:
+          REF: ${{ steps.counterpart.outputs.ref }}
+        run: |
+          set -euo pipefail
+          AMXX=public/resdk/engine/rehlds_api.h
+          ENGINE=ktprehlds/rehlds/public/rehlds/rehlds_api.h
+
+          macro() { tr -d '\r' < "$1" | grep -E "^#define REHLDS_API_VERSION_$2 " | tr -s ' \t' ' '; }
+          for m in MAJOR MINOR; do
+            a="$(macro "$AMXX" "$m")"
+            e="$(macro "$ENGINE" "$m")"
+            # An extraction that matches nothing is a dead probe, not agreement.
+            test -n "$a" || { echo "::error::REHLDS_API_VERSION_$m not found in $AMXX"; exit 1; }
+            test -n "$e" || { echo "::error::REHLDS_API_VERSION_$m not found in $ENGINE"; exit 1; }
+            if [ "$a" != "$e" ]; then
+              echo "::error::REHLDS_API_VERSION_$m differs: KTPAMXX has '$a', engine has '$e'. The runtime guard compares these literals and cannot see layout drift -- bump them together or not at all. Compared against KTP-ReHLDS @ $REF."
+              exit 1
+            fi
+          done
+
+          # Trailing // comments are stripped: the copies legitimately differ in
+          # one ("// KTP" vs "// KTP Modification") and comments are not vtable.
+          entries() { tr -d '\r' < "$1" | awk '/class IRehldsHookchains/,/^};/' | grep 'virtual IRehlds' | sed 's|//.*||' | tr -s ' \t' ' ' | sed 's/^ //; s/ $//'; }
+          entries "$AMXX"   > /tmp/amxx_entries.txt
+          entries "$ENGINE" > /tmp/engine_entries.txt
+          A=$(wc -l < /tmp/amxx_entries.txt)
+          E=$(wc -l < /tmp/engine_entries.txt)
+          test "$A" -gt 0 || { echo "::error::extracted 0 IRehldsHookchains entries from $AMXX -- dead probe"; exit 1; }
+          test "$E" -gt 0 || { echo "::error::extracted 0 IRehldsHookchains entries from $ENGINE -- dead probe"; exit 1; }
+
+          if [ "$A" -gt "$E" ]; then
+            echo "::error::KTPAMXX declares $A IRehldsHookchains entries but the engine has only $E -- KTPAMXX is AHEAD of the engine it compiles against. Compared against KTP-ReHLDS @ $REF."
+            exit 1
+          fi
+          if ! diff -u <(head -n "$A" /tmp/engine_entries.txt) /tmp/amxx_entries.txt; then
+            echo "::error::IRehldsHookchains in $AMXX is NOT an in-order prefix of the engine's. Vtable drift = silent wrong-virtual-calls at runtime, with no diagnostic. Hook slots are APPEND-ONLY at the engine's tail; sync both copies in the same change window. Compared against KTP-ReHLDS @ $REF."
+            exit 1
+          fi
+
+          echo "OK: version macros match and KTPAMXX's $A hookchain entries are an exact prefix of the engine's $E (KTP-ReHLDS @ $REF)"

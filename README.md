@@ -221,10 +221,10 @@ AMXX log lines (`log_amx`, error logs) are written by a dedicated writer thread 
 
 ## Version Information
 
-- **Current Version**: 2.7.33 (2026-08) — DODX grenade-lifecycle + schema-22 stats cut; the fleet core binary remains independently deployed
+- **Current Version**: 2.7.33 (unreleased) — the next cut. **The fleet runs 2.7.32** (dodx `2.7.32.5683`, activated 2026-08-26) and the core binary is still 2.7.27
 - **Based on**: AMX Mod X 1.10.0 (upstream)
 - **Platform**: GCC 7.3+ / Visual Studio 2019+
-- **Compatible with**: KTP-ReHLDS 3.22.0.904+, KTP-ReAPI 5.29.0.362-ktp+. Extension-mode teardown (`KTP_ExtensionShutdown`) needs ReHLDS .928+, and the 2.7.24 `client_infochanged` ordering fix only becomes reachable on .929+ — below those fixes are inert. Grenade removal uses the bundled ReHLDS `ED_Free` hookchain exposed by this compatibility floor.
+- **Compatible with**: KTP-ReHLDS 3.22.0.904+, KTP-ReAPI 5.29.0.362-ktp+. Extension-mode teardown (`KTP_ExtensionShutdown`) needs ReHLDS .928+, and the 2.7.24 `client_infochanged` ordering fix only becomes reachable on .929+ — below those, those fixes are inert. 2.7.25 adds no new engine-version floor, and neither do 2.7.26 through 2.7.31.
 
 **2.7.25 behavior notes for plugin authors** — three extension-mode parity gaps closed, all of which
 change what working code sees:

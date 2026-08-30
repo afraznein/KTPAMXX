@@ -273,6 +273,36 @@ static cell AMX_NATIVE_CALL dodx_get_user_origin(AMX *amx, cell *params)
 	return 1;
 }
 
+// KTP: Get player bounding box (extension mode compatible, no fakemeta needed)
+//
+// The companion to dodx_area_get_bounds. GoldSrc decides trigger membership by
+// BBOX OVERLAP, not by whether the origin is inside the brush, so a caller
+// asking "was this player in that zone?" needs the player's box too -- a point
+// test rejects players the engine itself counts as inside.
+//
+// absmin/absmax are world-space and already account for stance: a prone DoD
+// player has a flatter box than a standing one, which matters precisely at the
+// zone edges where these questions get decided.
+static cell AMX_NATIVE_CALL dodx_get_user_bounds(AMX *amx, cell *params)
+{
+	int index = params[1];
+	CHECK_PLAYER(index);
+
+	CPlayer* pPlayer = GET_PLAYER_POINTER_I(index);
+	if (!pPlayer->ingame || !pPlayer->pEdict || pPlayer->pEdict->free)
+		return 0;
+
+	cell *mins = MF_GetAmxAddr(amx, params[2]);
+	cell *maxs = MF_GetAmxAddr(amx, params[3]);
+	for (int i = 0; i < 3; i++)
+	{
+		mins[i] = amx_ftoc(pPlayer->pEdict->v.absmin[i]);
+		maxs[i] = amx_ftoc(pPlayer->pEdict->v.absmax[i]);
+	}
+
+	return 1;
+}
+
 // KTP: Set player origin (extension mode compatible, no fakemeta needed)
 static cell AMX_NATIVE_CALL dodx_set_user_origin(AMX *amx, cell *params)
 {
@@ -1126,8 +1156,13 @@ static cell AMX_NATIVE_CALL dodx_get_round_time(AMX *amx, cell *params)
 // A map has at most one. FindEntityByClassname wraps pfnFindEntityByString,
 // which is the extension-mode-safe way to walk entities (pfnPEntityOfEntIndex
 // hangs during OnPluginsLoaded there — see DODX_InitCPFromEntities). The cache
-// is cleared per map in DODX_OnSV_ActivateServer, so a freed edict is never
-// read; the revalidation below covers the rest.
+// is cleared per map on both lifecycle paths — DODX_OnSV_ActivateServer and
+// ServerDeactivate — so a freed edict is never read; the revalidation below
+// covers the rest.
+//
+// ⚠️ Those clears are LOAD-BEARING, not belt-and-braces: the revalidation cannot
+// stand in for them, because it dereferences the cached pointer before it has
+// established the pointer is live. Do not drop either one as redundant.
 static edict_t *DODX_GetCPMaster()
 {
 	if (g_pCPMasterEdict)
@@ -1491,8 +1526,9 @@ static cell AMX_NATIVE_CALL dodx_debug_player_state(AMX *amx, cell *params)
 // KTP: Send AmmoX message to update client HUD
 // dodx_send_ammox(id, ammo_slot, count)
 // ammo_slot is a raw ammo-type index and is NOT constant across maps — get the
-// grenade ones from dodx_get_grenade_ammo_index(). Setting ammo through
-// dodx_set_grenade_ammo already makes the DLL emit its own AmmoX.
+// grenade ones from dodx_get_grenade_ammo_index(), and check it for -1 before
+// passing it here. Setting ammo through dodx_set_grenade_ammo already makes the
+// DLL emit its own AmmoX.
 static cell AMX_NATIVE_CALL dodx_send_ammox(AMX *amx, cell *params)
 {
 	int index = params[1];
@@ -1511,6 +1547,17 @@ static cell AMX_NATIVE_CALL dodx_send_ammox(AMX *amx, cell *params)
 	int ammoSlot = params[2];
 	int count = params[3];
 
+	// Rejected, not clamped: -1 is dodx_get_grenade_ammo_index()'s failure return and
+	// this native's own docs send callers there, so clamping would turn a failed lookup
+	// into a real write on slot 0 — a HUD desync that persists until that ammo type
+	// genuinely changes. MSG_WriteByte truncates silently, so nothing downstream catches it.
+	if (ammoSlot < 0 || ammoSlot >= DODX_MAX_AMMO_SLOTS)
+	{
+		MF_LogError(amx, AMX_ERR_NATIVE, "dodx_send_ammox: ammo slot %d out of range (max %d)",
+			ammoSlot, DODX_MAX_AMMO_SLOTS - 1);
+		return 0;
+	}
+
 	// Clamp count to byte range
 	if (count < 0) count = 0;
 	if (count > 254) count = 254;
@@ -1526,6 +1573,8 @@ static cell AMX_NATIVE_CALL dodx_send_ammox(AMX *amx, cell *params)
 // KTP: Give a grenade weapon to a player (for infinite grenades in practice mode)
 // dodx_give_grenade(id, grenade_type)
 // grenade_type: DODW_HANDGRENADE (13), DODW_STICKGRENADE (14), DODW_MILLS_BOMB (36)
+// Returns 1 = picked up, 2 = refused but the player already holds one (benign),
+// -1 = refused with an empty or unreadable slot, 0 = bad args/dead/DLL unavailable.
 static cell AMX_NATIVE_CALL dodx_give_grenade(AMX *amx, cell *params)
 {
 	int index = params[1];
@@ -1561,6 +1610,18 @@ static cell AMX_NATIVE_CALL dodx_give_grenade(AMX *amx, cell *params)
 	DLL_FUNCTIONS* pGameDll = (DLL_FUNCTIONS*)MF_GetGameDllFuncs();
 	if (!pGameDll || !pGameDll->pfnSpawn || !pGameDll->pfnTouch)
 		return 0;
+
+	// Read the grenade slot BEFORE the entity exists. A refused pickup looks
+	// identical from the DLL whether the player is at capacity or something is
+	// genuinely wrong; this pre-spawn read is the only thing that can tell the
+	// two apart, and "already holds one" is benign, not a failure.
+	int heldBefore = -1;
+	if (pPlayer->pEdict->pvPrivateData)
+	{
+		int heldSlot = DODX_GrenadeAmmoIndex(grenadeType);
+		if (heldSlot >= 0)
+			heldBefore = *((int*)pPlayer->pEdict->pvPrivateData + PDOFFSET_AMMO_ARRAY + heldSlot);
+	}
 
 	// Create the weapon entity
 	edict_t* pWeapon = CREATE_NAMED_ENTITY(ALLOC_STRING(weaponClass));
@@ -1616,7 +1677,9 @@ static cell AMX_NATIVE_CALL dodx_give_grenade(AMX *amx, cell *params)
 	if (pWeapon->v.solid == oldSolid && !FNullEnt(pWeapon) && pWeapon->free == 0)
 	{
 		REMOVE_ENTITY(pWeapon);
-		return -1;  // Indicate pickup failed (player may already have max)
+		if (heldBefore > 0)
+			return 2;  // Not an error: the player already holds one
+		return -1;  // Refused with an empty (or unreadable) slot
 	}
 
 	return 1;
@@ -2456,6 +2519,7 @@ AMX_NATIVE_INFO base_Natives[] =
 	{"dodx_set_user_class", dodx_set_user_class},
 	{"dodx_set_user_team", dodx_set_user_team},
 	{"dodx_get_user_origin", dodx_get_user_origin},
+	{"dodx_get_user_bounds", dodx_get_user_bounds},
 	{"dodx_set_user_origin", dodx_set_user_origin},
 	{"dodx_get_user_angles", dodx_get_user_angles},
 	{"dodx_set_user_angles", dodx_set_user_angles},
