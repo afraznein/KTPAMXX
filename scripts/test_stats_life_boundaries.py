@@ -81,6 +81,26 @@ def test_wire_contract() -> None:
     assert "dod_get_user_class(id)" in emit
 
 
+def test_schema22_team_membership_wire_and_health_order() -> None:
+    emit = function_body(CAPTURE, "stock ksc_emit_team_membership")
+    assert r'triggered ^\"team_membership^\"' in emit
+    for field in ("matchid", "half", "team", "old_team", "game_time", "event_epoch", "sequence"):
+        assert f'({field} ^\\"%' in emit, f"team membership wire field missing: {field}"
+    assert "ksc_event_context(matchid" in emit
+    assert "ksc_buffer(line, KSC_EVENT_TEAM_MEMBERSHIP)" in emit
+    assert "g_kscAttempted[KSC_EVENT_TEAM_MEMBERSHIP]++" in emit
+    assert "g_kscDroppedByType[KSC_EVENT_TEAM_MEMBERSHIP]++" in emit
+    forward = function_body(CAPTURE, "public dod_client_changeteam")
+    assert "ksc_emit_team_membership(id, team, oldteam)" in forward
+
+    manifest = re.search(r'#define\s+KSC_CAPABILITIES\s+"([^"]+)"', CAPTURE)
+    assert manifest and "team_membership" in manifest.group(1)
+    enum = function_body(CAPTURE, "enum {")
+    assert enum.index("KSC_EVENT_TEAM_MEMBERSHIP") < enum.index("KSC_EVENT_GRENADE_ENTITY")
+    names = function_body(CAPTURE, "new const g_kscEventNames")
+    assert names.index('"team_membership"') < names.index('"grenade_entity"')
+
+
 def test_wire_line_fits_capture_buffer() -> None:
     # ksc_player_str itself caps at 95 characters and DODX caps match ids at
     # 63. Use maximum-width signed numeric values as well; truncating this line
