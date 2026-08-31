@@ -122,7 +122,7 @@
 // emitted in every per-half manifest so mixed fleet deployments are visible
 // without reverse-engineering them from which rows happened to arrive.
 #define KSC_SCHEMA_CONTRACT 22
-#define KSC_CAPABILITIES "frag_context,damage,position,assist,life,break,flag_state,flag_position,objective_attempt,grenade_entity,sequence,health"
+#define KSC_CAPABILITIES "frag_context,damage,position,assist,life,break,flag_state,flag_position,objective_attempt,team_membership,grenade_entity,sequence,health"
 
 enum {
 	KSC_EVENT_LIFE = 0,
@@ -134,6 +134,9 @@ enum {
 	KSC_EVENT_FLAG_STATE,
 	KSC_EVENT_FLAG_POSITION,
 	KSC_EVENT_OBJECTIVE_ATTEMPT,
+	// Keep membership before grenade_entity: schema-22 health finalizes after
+	// grenade_entity, so every stream is reconciled before state is cleared.
+	KSC_EVENT_TEAM_MEMBERSHIP,
 	KSC_EVENT_GRENADE_ENTITY,
 	KSC_EVENT_COUNT
 }
@@ -169,7 +172,8 @@ new g_kscEmitted[KSC_EVENT_COUNT]
 new g_kscSequence = 0
 new const g_kscEventNames[KSC_EVENT_COUNT][] = {
 	"life", "damage", "position", "frag", "assist", "break",
-	"flag_state", "flag_position", "objective_attempt", "grenade_entity"
+	"flag_state", "flag_position", "objective_attempt", "team_membership",
+	"grenade_entity"
 }
 
 // [victim][attacker] -- enemy damage dealt to victim since their last spawn.
@@ -977,6 +981,50 @@ stock ksc_life_start(id, const reason[]) {
 	else
 		// Retry as a left-censored context baseline on the next zone poll.
 		g_kscLifeBaselinePending = true
+}
+
+// DODX supplies this at the game-DLL's actual team transition. Do not infer a
+// side from a later position sample: death/spectator gaps would otherwise make
+// the derived interval claim a team the player no longer belonged to.
+stock ksc_emit_team_membership(id, team, oldteam) {
+	g_kscAttempted[KSC_EVENT_TEAM_MEMBERSHIP]++
+	if (!ksc_enabled() || id < 1 || id > MAX_PLAYERS) {
+		g_kscDroppedByType[KSC_EVENT_TEAM_MEMBERSHIP]++
+		return
+	}
+	if (team == oldteam) {
+		g_kscDroppedByType[KSC_EVENT_TEAM_MEMBERSHIP]++
+		return
+	}
+	// DODX has a transient spectator value 3; the private protocol uses 0 for
+	// all unassigned/non-playing states and only 1/2 for playing teams.
+	if (team != 1 && team != 2)
+		team = 0
+	if (oldteam != 1 && oldteam != 2)
+		oldteam = 0
+	if (team == oldteam) {
+		g_kscDroppedByType[KSC_EVENT_TEAM_MEMBERSHIP]++
+		return
+	}
+
+	new matchid[64], half
+	if (!ksc_event_context(matchid, charsmax(matchid), half)) {
+		g_kscDroppedByType[KSC_EVENT_TEAM_MEMBERSHIP]++
+		return
+	}
+	new player_str[96]
+	ksc_player_str(id, player_str, charsmax(player_str))
+	new sequence = ksc_next_sequence()
+	new Float:game_time = get_gametime()
+	new line[KSC_BUF_LINE_LEN]
+	formatex(line, charsmax(line),
+		"^\"%s^\" triggered ^\"team_membership^\" (matchid ^\"%s^\") (half ^\"%d^\") (team ^\"%d^\") (old_team ^\"%d^\") (game_time ^\"%.2f^\") (event_epoch ^\"%d^\") (sequence ^\"%d^\")",
+		player_str, matchid, half, team, oldteam, game_time, get_systime(), sequence)
+	ksc_buffer(line, KSC_EVENT_TEAM_MEMBERSHIP)
+}
+
+public dod_client_changeteam(id, team, oldteam) {
+	ksc_emit_team_membership(id, team, oldteam)
 }
 
 stock ksc_life_end(id, const reason[]) {
