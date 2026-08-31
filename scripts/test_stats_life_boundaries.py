@@ -280,7 +280,7 @@ def test_delayed_dodx_context_activates_only_on_exact_confirmation() -> None:
                       "ksc_flag_positions_task()"):
         assert forbidden not in start
 
-    activate = function_body(CAPTURE, "stock ksc_activate_producer_context")
+    activate = function_body(CAPTURE, "stock bool:ksc_activate_producer_context")
     before(activate, "ksc_flush()", "ksc_reset_health()")
     before(activate, "ksc_reset_health()",
            "g_kscProducerContextConfirmed = true")
@@ -406,7 +406,7 @@ def test_match_start_emits_outgoing_half_health_before_reset() -> None:
     # before the later context activation resets its counters.
     start = function_body(CAPTURE, "stock ksc_on_match_start")
     assert "ksc_emit_health(g_kscProducerMatchId, g_kscProducerHalf)" in start
-    activate = function_body(CAPTURE, "stock ksc_activate_producer_context")
+    activate = function_body(CAPTURE, "stock bool:ksc_activate_producer_context")
     assert "ksc_reset_health()" in activate
     before(start, "ksc_emit_health(g_kscProducerMatchId, g_kscProducerHalf)",
            "ksc_close_producer_context()")
@@ -732,20 +732,33 @@ def test_physical_boundaries_do_not_use_stats_pause_gate() -> None:
 
 
 def test_plugin_version() -> None:
-    assert re.search(r'#define\s+PLUGIN_VERSION\s+"1\.18\.1"', STATS)
+    assert re.search(r'#define\s+PLUGIN_VERSION\s+"1\.19\.0"', STATS)
 
 
-def test_schema22_manifest_and_two_second_position_contract() -> None:
-    assert re.search(r"#define\s+KSC_SCHEMA_CONTRACT\s+22(?:\s|$)", CAPTURE)
+def test_schema23_manifest_and_two_second_position_contract() -> None:
+    assert re.search(r"#define\s+KSC_SCHEMA_CONTRACT\s+23(?:\s|$)", CAPTURE)
     assert re.search(r"#define\s+KSC_POSITION_BROADCAST_SECS\s+2\.0(?:\s|$)", CAPTURE)
-    for capability in ("objective_attempt", "grenade_entity"):
+    for capability in ("objective_attempt", "grenade_entity", "position_state", "map_revision"):
         assert capability in re.search(
             r'#define\s+KSC_CAPABILITIES\s+"([^"]+)"', CAPTURE).group(1)
+    for capability in ("objective_attempt", "grenade_entity"):
         assert f'"{capability}"' in CAPTURE
     assert re.search(r"#define\s+KSC_BUF_FLUSH_SECS\s+5\.0", CAPTURE)
     assert re.search(r"#define\s+KSC_BUF_MAX_ENTRIES\s+128", CAPTURE)
     positions = function_body(CAPTURE, "public ksc_position_broadcast_task")
-    before(positions, "if (!is_user_connected(id))", "if (!is_user_alive(id))")
+    before(positions, "if (!is_user_connected(id))", "new alive = is_user_alive(id)")
+    assert 'new spectator = (team == 3) ? 1 : 0' in positions
+    assert "if (!alive || spectator)" in positions
+    for field in ("alive", "spectator", "map_revision"):
+        assert f'({field} ^"%' in positions
+    assert "g_kscMapRevision" in positions
+
+    revision = function_body(CAPTURE, "stock bool:ksc_capture_map_revision")
+    assert 'formatex(map_path, charsmax(map_path), "maps/%s.bsp", mapname)' in revision
+    assert "hash_file(map_path, Hash_Sha256" in revision
+    assert "!= 64" in revision
+    activation = function_body(CAPTURE, "stock bool:ksc_activate_producer_context")
+    before(activation, "if (!g_kscMapRevisionReady)", "g_kscProducerContextConfirmed = true")
 
 
 def _objective_model(active, owner: int, is_capping: bool, team: int,
@@ -1061,7 +1074,7 @@ def test_dodx_grenade_entity_forward_and_direct_dispatch_contract() -> None:
     )
     assert "serial <= 0" in drop_dispatch
     assert "wpnid != 13 && wpnid != 14 && wpnid != 36" in drop_dispatch
-    assert re.search(r'#define\s+PLUGIN_VERSION\s+"1\.18\.1"', STATS)
+    assert re.search(r'#define\s+PLUGIN_VERSION\s+"1\.19\.0"', STATS)
 
 
 def test_ksc_buffer_detects_and_counts_line_truncation() -> None:
