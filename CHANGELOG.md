@@ -5,434 +5,6 @@ All notable changes to KTP AMX will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.7.33] - unreleased
-
-### Fixed
-
-- **Delayed DODX context confirmation no longer contaminates schema-22 health**
-  (`stats_logging.sma` 1.18.0 -> 1.18.1). MatchHandler's start forward can
-  precede DODX publishing the same match id by several live bot frags. The
-  forward now opens only a candidate: it emits no manifest, health, or per-half
-  flag metadata until `dodx_get_match_id` confirms exact equality. First
-  confirmation drains pending diagnostics, resets the new stream, emits its
-  manifest as sequence 1, and admits the triggering fact as sequence 2; the
-  existing zone poll then emits the armed life/ownership/flag baselines.
-  Optional damage, frag, assist, and break diagnostics retain their explicit
-  `matchid="-"`, `half=0`, `sequence=0` form while pending, but use an untracked
-  async-buffer path and cannot authorize a never-confirmed candidate. Buffer
-  ordering is independent of producer sequence, and direct flag positions fail
-  closed while a candidate is pending. End-of-half health is emitted only for a
-  confirmed stream; production authorization and strict health remain unchanged.
-
-### Added
-
-- **Schema-22 match telemetry** (`stats_logging.sma` 1.17.0 -> 1.18.0).
-  Position sampling now defaults to two seconds after the four-match Denver 4
-  volume audit; connected/alive gating, the five-second flush, 128-entry buffer,
-  and per-type health/drop accounting are unchanged. Factual
-  `KTP_OBJECTIVE_ATTEMPT` start/complete/stop markers poll the existing capture
-  area state with a sequence-scoped attempt id, pre-attempt owner, team counts,
-  and only `capture_stopped`/`context_reset` stop reasons. They do not infer
-  participants, kills, walk-offs, or cap-break causes.
-- **Factual grenade entity lifecycle.** Extension-mode DODX recognizes only
-  `grenade`/`grenade2` at their first TraceLine, keys them by edict index+serial,
-  and emits `dod_grenade_entity_tracked`. The bundled ReHLDS pre-call `ED_Free`
-  hook (including normal `FL_KILLME` cleanup) emits
-  `dod_grenade_entity_removed` exactly once for the same identity. Weapon IDs are
-  restricted to 13/14/36; rockets 29/30/31, `monster_mortar`, and all other
-  entities are excluded. Removal is generic and is never labelled detonation.
-  Map-change bulk invalidation clears the independent 64-entry tracker without
-  manufacturing removal events, and cannot mutate the existing `g_grenades`
-  damage-attribution pool. A bounded per-engine-edict serial tombstone table
-  deduplicates every native saturation loss by index+serial and forwards its
-  exact count into `grenade_entity` producer health without a secondary pool to
-  saturate. Public include docs and direct-dispatch test natives cover all three
-  forwards.
-- New objective/grenade quoted fields use a one-byte protocol sanitizer for
-  quotes, backslashes, parentheses, CR/LF, controls, and DEL. Untrusted player
-  names additionally replace angle brackets before canonical identity assembly,
-  so they cannot spoof userid/auth/team; durable fields remain intact. Round
-  restart/countdown suppression now
-  closes active objective attempts with `context_reset` and admits no lifecycle
-  start/complete until the fresh baseline has been consumed.
-
-### Deferred
-
-- Per-shot telemetry remains backlog-only. No schema field, marker, handler, or
-  runtime collection was added in this cut; see `TELEMETRY_BACKLOG.md`.
-
-## [2.7.32] - unreleased
-## Reverted
-
-- `8d818deaf` (dodx: split the InitObj reorder latch from the ownership refresh) was
-  reverted. It was reviewed NOT-APPROVED for a fleet cut and reached `main` by being swept
-  into the #41 branch, not by its own PR. See the revert commit for the reasoning.
-
-## [2.7.33] - unreleased
-
-### Fixed — `ksc_buffer`'s truncating `copy()` had no way to tell you it truncated
-
-- `copy(g_kscBuffer[...], KSC_BUF_LINE_LEN - 1, line)` silently drops anything past
-  `KSC_BUF_LINE_LEN - 1`. A truncated line doesn't fail loudly -- it just stops matching
-  the daemon's regex, which is indistinguishable from the event never having fired. The
-  buffer-full path already had this covered (`g_kscDropped`/`[KTP-STATS] dropped ...
-  buffer full`); the length path did not.
-- `ksc_buffer` now checks `strlen(line) >= KSC_BUF_LINE_LEN - 1` before the `copy()` and
-  counts it in a new `g_kscTruncated`, reported by `ksc_flush` exactly like the existing
-  drop counter (`[KTP-STATS] truncated N capture line(s) -- exceeded KSC_BUF_LINE_LEN
-  (832), raise it`). The line is still enqueued truncated (partial data beats none) --
-  this only makes the loss observable instead of silent.
-  (`ktp_stats_capture.inc`, `stats_logging.sma` 1.17.0 -> 1.17.1)
-- Console-only counter, same lifecycle as `g_kscDropped` -- not part of the
-  `KTP_CAPTURE_HEALTH` per-half schema, so this needed no `KSC_SCHEMA_CONTRACT` bump and
-  no daemon-side change.
-
-### Fixed — `CTaskMngr`'s deferred clear ran on every frame depth, not just the outermost
-
-- `startFrame()` decrements `m_bInStartFrame` and then destroys `m_Tasks` gated only on
-  `m_bDeferredClear`. Since 2.7.25 that field is a depth counter rather than a bool, so a
-  nested `startFrame()` reaches the clear with outer frames still iterating the vector —
-  it frees the `CTask` objects an outer `executeIfRequired()` is standing on. That is the
-  same use-after-free the deferral was built to prevent (gdb-confirmed on a New York 2
-  core, 2.6.13); deferring merely moved *when* it happens.
-- Second-order: the inner frame also consumed `m_bDeferredClear`, so the outer loop's
-  break never fired and it kept indexing a now-empty vector against a `lastSize` cached
-  before the clear.
-- 2.7.25 converted `m_bInStartFrame` from bool to a counter on the stated reasoning that
-  "every existing test is against zero, so the consumers needed no change". That holds for
-  the producer in `clear()`; it does not hold here, because this site never tested the
-  counter at all. The guard is now `m_bInStartFrame == 0 && m_bDeferredClear`, matching
-  `CForward`'s `m_ToDelete && !m_InExec` and the message-hook `m_InExecution.size() == 0`
-  — one rule across all three: the outermost frame owns the terminal transition, which is
-  also how the 2.7.20 active-count double-decrement was resolved.
-- No behaviour change at depth 1, which is every non-nested frame: the decrement reaches 0
-  and the clear runs exactly as before.
-- `scripts/test_reentry_guards.py` locks the shape at all three sites and carries a
-  `--selftest` that reintroduces each historical defect and requires the check to reject
-  it. Run against `main` before this change, it fails on the CTask site.
-
-### Fixed — `dodx_send_ammox` accepted any `ammo_slot`, including the failure sentinel it tells callers to use
-
-- The native clamped `count` and left `ammo_slot` entirely unvalidated, while its own
-  include directs callers to take the slot from `dodx_get_grenade_ammo_index()` — whose
-  documented failure return is `-1`. A caller doing exactly what the docs said could pass
-  `-1` straight through.
-- Nothing downstream catches it. `MSG_WriteByte` casts to `byte` with no range check, so
-  `-1` is transmitted as `255` and an out-of-range slot silently becomes some other slot.
-  Server-side this is truncation rather than memory corruption; the consequences are a
-  client HUD desync on whatever ammo type owns the resulting slot — which does not
-  self-correct until that type genuinely changes — and DODX's own `AmmoX` hook matching
-  the bogus slot against `weaponData[].ammoSlot` and corrupting its tracked ammo.
-- `ammo_slot` is now bounded to `0 .. DODX_MAX_AMMO_SLOTS - 1` and **rejected rather than
-  clamped**, with `MF_LogError(AMX_ERR_NATIVE)`. Clamping was the tempting option and is
-  the wrong one: slot 0 is a real ammo type, so clamping a failed lookup would write real
-  ammo to the wrong slot — a silent, persistent wrong answer instead of a loud refusal.
-  Rejecting also matches the house split (indices abort, values clamp) and this native's
-  own `CHECK_PLAYER`, which already aborts for its other index parameter.
-- Note this is not a regression of the 2.7.21 cleanup that converted this native's
-  AmmoX-not-registered branch from an abort to `MF_Log` + `return 0`. That branch is an
-  environmental failure with a documented `0` return; an out-of-range index is a caller
-  bug, and the same entry kept out-of-range ids as genuine aborts.
-- `dodx.inc` now states the accepted range, tells callers to check for `-1` first, and
-  carries the `@error` line the abort requires — following `dodx_give_grenade`'s
-  precedent. No in-repo plugin calls this native; `KTPGrenadeLoadout` and
-  `KTPPracticeMode` pass in-range literals today, so nothing in the fleet begins aborting.
-- `scripts/test_native_param_contracts.py` asserts the enforced range and the documented
-  range agree, since the defect was the include and the native disagreeing rather than a
-  missing check. Its `--selftest` reintroduces each shape and requires rejection; run
-  against `main` both checks fail.
-
-### Fixed — the `g_pCPMasterEdict` clear had no Metamod counterpart, and the reason it did not matter was recorded wrongly
-
-- `DODX_OnSV_ActivateServer` clears the cached control-point-master edict per map;
-  `ServerDeactivate` never did. Note the polarity is the reverse of this fork's usual
-  trap — here the **Metamod** path is the deficient one — which is why the standing
-  extension-mode parity audit would not have surfaced it.
-- **It is genuinely harmless on this fleet, but not for the recorded reason, and the wrong
-  reason was the dangerous part.** It was recorded as harmless because `DODX_GetCPMaster`
-  self-revalidates. It does re-derive on a failed check — but its *first* action is
-  `g_pCPMasterEdict->free`, a dereference of the very pointer that would be dangling. The
-  revalidation cannot establish the liveness it depends on. Taken at face value, that
-  rationale would justify deleting the extension-path clear as redundant, which would
-  introduce a use-after-free on the only path the fleet actually runs.
-- The real reason is mutual exclusion: `DODX_SetupExtensionHooks` registers the
-  `SV_ActivateServer` hook only under `g_bExtensionMode`, and dodx's `DLL_FUNCTIONS` table
-  is installed only when Metamod calls `GetEntityAPI2`, which nothing does in extension
-  mode. The two teardown paths cannot both be live, and the fleet only ever runs the one
-  that has the clear. `ServerDeactivate` is compiled into the shipped `.so` (`USE_METAMOD`
-  is defined for the vendored headers) — dead code, not absent code.
-- `ServerDeactivate` now clears it too, so the invariant its declaration comment asserts
-  ("cleared on map change so a freed edict from the previous map can never be read") is
-  true on both paths rather than only one. Zero runtime effect on the fleet.
-- `DODX_GetCPMaster` carries the tripwire, in the shape `KTPTriggerGeom.h` already uses
-  for the analogous reset: the clears are load-bearing, the in-function guard does not
-  substitute for them, do not drop either as redundant.
-- Pre-existing at `16464b57` on the tier-2 lineage, byte-identical, so this is not recent
-  drift.
-
-## [2.7.32] - 2026-08-26
-
-### Fixed — a break candidate could credit a `cap_break` to a reconnecting player
-
-- `g_kscBreakQ` holds raw client indices, and `ksc_clear_player` never swept it, so a
-  killer disconnecting inside the ~2.5s break window (`KSC_BREAK_WINDOW` polls) left a
-  live candidate pointing at a slot the engine can hand to the next player to connect.
-  `ksc_emit_break`'s `is_user_connected` check passes for the new occupant, so the break
-  was credited to a player who never made it.
-- Disconnect now zeroes the slot's queued killer **and victim** entries
-  (`ksc_break_purge_player`, called from `ksc_clear_player`; `g_kscBreakVictim` feeds
-  `break_context`'s victim identity, which would otherwise name a recycled slot's new
-  occupant). The entries are zeroed rather than removed: the dead victim's delayed zone
-  decrement still consumes a queue slot in FIFO order, so removing the entry would shift
-  that drop onto the next queued candidate — a different misattribution. A zeroed
-  breaker fails `ksc_emit_break`'s existing range guard and the break goes uncredited,
-  which is the honest outcome; a zeroed victim renders as `"-"` in `break_context`,
-  which that emitter already defines for an unavailable victim.
-
-### Changed — `dodx_give_grenade` distinguishes "already holds one" from a real refusal
-
-- The DLL's refusal signature is identical whether the player is at capacity or something
-  is genuinely wrong, so every refused pickup returned `-1` and plugins logged it as a
-  failure — ~75k fleet-wide "failures", most of them benign. The native now reads the
-  grenade's ammo slot **before** spawning the entity: a refusal with the slot already
-  holding one returns **`2`** (benign); `-1` now means refused with an empty or unreadable
-  slot — the case actually worth logging.
-- Success (`1`) and error (`0`) paths are unchanged, and every non-`1` still means
-  "entity not granted", so existing callers (`KTPGrenadeLoadout` `:307`,
-  `KTPPracticeMode` `.grenade`) keep working — they just keep mislabelling `2` as failed
-  until their own follow-up change consumes the new code.
-- ⛔ **Not part of the pinned 2.7.32 ABI-wave artifacts.** Those are hash-pinned to their
-  review; this rides the next dodx cut.
-
-### Fixed — per-half `KTP_CAPTURE_HEALTH` was silently lost on H2→OT and OT→OT
-
-- KTPMatchHandler's `ktp_half_end` fires exactly once, hardcoded `half=1`, and
-  `ktp_match_end` fires only at true match end — so the only signal an H2→OT or OT→OT
-  boundary sends the producer is the next `ktp_match_start`. `ksc_on_match_start` reset
-  the health counters there without emitting them, so the outgoing half's health record
-  (the reconciliation row for every event type) never reached the log. Observability
-  loss only: the data lines themselves were flushed before the reset.
-- `ksc_on_match_start` now flushes and emits the outgoing half's health record first,
-  guarded on a still-populated producer context. The normal H1 end is unaffected —
-  `ktp_half_end` already emits and clears the context, so the guard is false there. A
-  half aborted and restarted under the same id now produces a health record set for
-  each segment; the daemon already keys health on (matchid, half, sequence) and the
-  later set's `sequence_last` supersedes.
-
-### Fixed — dodx: CP ownership was never re-seeded after a round restart (#10)
-
-- **From round 2 onward, `CP_owner` reported the pre-restart ownership on every
-  default-owned map** (`dod_donner`, `dod_kalt`, `dod_flash`, `dod_saints2_*`). The DLL
-  resets each CP's `m_iTeam` to its default on `sv_restartround` but broadcasts nothing
-  extension mode intercepts: the only InitObj that arrives carries `newCount=0` (38,903
-  such messages over 9 days on Denver 27015, zero usable ones), and no SetObj is sent.
-  Both halves of the message path are therefore unreachable, which is why the reviewed
-  latch-split candidate (`8d818deaf`, reverted) could not fix it either.
-- dodx now polls each CP's own pdata `m_iTeam` (~2/s, via the module frame callback) in an
-  **arm-then-level** scheme: a CP arms on proof the DLL has stamped it (a nonzero read, or
-  any change from the scan-time read), and from then on any divergence between `m_iTeam`
-  and `owner` — a change no SetObj delivered, i.e. the restart reset — is corrected and
-  `controlpoints_init` re-fires so consumers re-read the full snapshot. Arming exists
-  because `m_iTeam` reads 0 until the DLL stamps CP state ~2s into the map, and a level
-  copy in that window would wipe the BSP-seeded defaults (#9); level-comparing after the
-  arm is what catches a capture-then-reset that lands inside a single sampling window.
-- The sync writes `owner` only — never `default_owner` (the BSP seed) and never the
-  `dod_control_point_captured` forward, which would invent captures in stats. Reads
-  outside 0..2 are discarded and cannot arm, so a wrong per-platform layout degrades to
-  today's behaviour instead of corrupting `owner`.
-- **Extension mode only.** Under Metamod the registration sites never run, so behaviour
-  there is unchanged (and undiagnosed — no warning fires).
-
-### Fixed — `KTP_FLAG_POSITION` only ever emitted for the map the server booted into
-
-- **The one-shot task that emits flag positions was armed from `controlpoints_init`, and in
-  extension mode that forward runs *before* the map-change path that wipes the task list.**
-  dodx fires `controlpoints_init` from its control-point entity scan during `ServerActivate`;
-  `KTPAMX_ReloadPlugins()` runs later in the same activation and calls `g_tasksMngr.clear()`.
-  On a cold boot that path is never taken (`KTPAMX_InitAsRehldsExtension()` returns early), so
-  the task survived and the marker appeared — which is why the loss looked map-specific rather
-  than changelevel-specific. This is a divergence from Metamod mode, where the equivalent clear
-  happens in `C_ServerDeactivate_Post`, at the end of the *previous* map.
-- The deferral itself is unchanged and still deliberate: `log_message()` does not reach the game
-  log from inside `controlpoints_init`, while `log_amx()` at the same instant does. The task is
-  now *also* armed from `plugin_cfg`, which `KTPAMX_ReloadPlugins()` executes after the clear, and
-  a pending latch keeps it to one emit per cache refresh no matter which arm survives.
-- Measured on Denver 27018, 08/21 03:01 through 08/24 12:25: **245 `controlpoints_init` fires,
-  245 map loads, 5 emissions — one per server start, all `dod_anzio`.** Control: `KTP_FLAG_STATE`
-  and `position_sample` both appear in the game log on non-boot maps (3,144 and 13 lines in a
-  single mid-day map load), and both come from tasks registered in `plugin_cfg` — so
-  `log_message()`, the game log and `plugin_cfg`-armed tasks all work after a changelevel.
-- `ksc_flag_positions_task` now logs once when it emits. The forward's own diagnostic proved it
-  fired and nothing proved the emit happened, so the two halves lived in different log files and
-  could not be compared.
-
-### Fixed — `mp_timelimit 0` disabled cap-break attribution with no diagnostic
-
-- `dodx_get_round_time()` documents `-1.0` for "no time limit", so `mp_timelimit 0` — a
-  legitimate server setting — keeps `ksc_break_observe_round_clock()`'s unavailable
-  branch taken on every poll. That branch is deliberately fail-closed (an occupancy drop
-  cannot be told apart from a round-reset collapse without the clock) and stays so; the
-  defect was that nothing anywhere said the feature was off.
-- The producer now announces a **sustained** unavailability once per episode
-  (`KSC_ROUND_CLOCK_WARN_POLLS` consecutive polls, ~10s — short bursts around gamerules
-  setup stay quiet), and a valid reading re-arms the diagnostic. Behavior of the
-  suppression itself is unchanged.
-
-### Fixed — the cap-break containment test could not load on this fleet
-
-- **`stats_logging.amxx` was built with `#include <fakemeta>` and would have failed to load on all
-  24 instances.** `fakemeta.inc` carries `#pragma reqlib fakemeta`; the fleet's `modules.ini` lists
-  only `amxxcurl`, `reapi` and `dodx`, and no fakemeta module ships with the stack. The compile
-  succeeded because `amxxpc` only needs the include — the module table is resolved at LOAD time.
-- Repointed at `dodx_get_user_bounds` and `dodx_area_get_bounds`. Behaviour is unchanged: still
-  box-vs-box containment, still nearest-zone-centre as a tie-break, still no tunable radius.
-- The per-flag entity cache and its resolver are gone — `dodx_area_get_bounds` takes the CP index,
-  validates it, checks the edict and rejects a zero-volume box itself. The map-start
-  “zones usable on N of M flags” line is kept, now driven by the native.
-- Verified by inflating the built artifact and reading its library table: the old build declares
-  `fakemeta`, this one declares only `dodx`. **A clean compile does not prove a plugin will load.**
-
-### Added — capture-zone and player bounding boxes (dodx)
-
-- **`dodx_area_get_bounds(index, Float:mins[3], Float:maxs[3])`** and
-  **`dodx_get_user_bounds(id, Float:mins[3], Float:maxs[3])`** expose the
-  world-space `absmin`/`absmax` of a capture zone and of a player. Both read
-  `pEdict->v.*` straight from the HL SDK, so they work in **extension mode** —
-  which is the point: the only existing way to ask these questions from Pawn is
-  fakemeta's `pev(ent, pev_absmin)`, and `fakemeta.inc` carries
-  `#pragma reqlib fakemeta`. A plugin that includes it will not LOAD on the KTP
-  fleet, whose `modules.ini` lists only `reapi`, `dodx` and `amxxcurl` and whose
-  artifacts ship no fakemeta module at all.
-
-- **Motivation: cap-break attribution cannot use a radius around the control
-  point.** The flag prop and its `dod_capture_area` trigger are separate
-  entities and are not co-located — across the map pool some control points sit
-  entirely outside their own zone, and on `dod_jagd` the separation runs to
-  thousands of units. A prop-anchored radius is therefore simultaneously too
-  small on one map and far too large on another, whatever value it is given, so
-  the test has to be containment rather than distance.
-
-- **Player bounds, not just the origin, because GoldSrc decides trigger
-  membership by BBOX OVERLAP.** A point-in-box test on the origin rejects
-  players the engine itself counts as inside — under-counting in a new way while
-  looking stricter and more correct. The box also reflects stance, so a prone
-  player is measured as the flatter volume the engine actually uses.
-
-- **A zero-volume zone returns 0 rather than reporting an empty box.** Such a
-  box matches nothing, which reads downstream as "this flag never sees a
-  capture" — indistinguishable from a flag nobody contested, and exactly how
-  this class of bug survives a season unnoticed.
-
-### Fixed — cap-break attribution now tests the capture zone, not a radius
-
-- **`ktp_stats_capture.inc` picked the flag for a cap break by 2D distance from the
-  flag PROP, accepting anything within a fixed radius.** The prop is not the zone: on
-  `dod_jagd` the trigger is among the smallest in the map set yet sits ~5,555 units from
-  its own flag entity, and on 8 flags across the pool the control point is not inside the
-  zone footprint at all. So the radius was simultaneously too small on some maps and far
-  too large on others, and no single value fixes both.
-- **It now asks whether the victim was inside the capture zone**, reading the zone's
-  bounding box off its entity (`CA_edict`) at runtime. Measured on the S10 pool, 5 of 11
-  maps under-counted cap breaks under the old test, and only 40% of control points could
-  ever report one.
-- **Box-vs-box, not point-in-box.** GoldSrc decides zone membership by bbox overlap, so a
-  point test would have rejected players the engine itself counts as in-zone.
-- **The tunable constant is gone rather than retuned.** Nothing here needs a per-map value,
-  so the map pool can change without silently invalidating the test — which matters with
-  the pool being cut and swapped shortly before a season opens.
-- **A flag with no usable zone is now loud at map start** rather than discovered later as
-  missing rows: `controlpoints_init` reports how many flags resolved a usable zone, and a
-  zero-volume box is rejected instead of silently matching nothing.
-- Requires `fakemeta` in `stats_logging.sma` for `pev()`. Plugin only — no module or
-  engine change. `stats_logging` 1.15.6 → 1.15.7.
-
-### Fixed — a stale `mm_gamedll` localinfo hard-failed "server" gameconfig resolution (core)
-
-- On a non-Metamod host, any non-empty `mm_gamedll` localinfo whose declared DLL could
-  not be proven loaded made `ResolveLibraryInfo("server")` return false with no fallback,
-  permanently null-caching "server" resolution for the process. `localinfo` is settable
-  from any cfg or rcon and survives map changes, so a stale value silently disabled the
-  feature. The two failure shapes are now told apart: a declared object that **is**
-  mapped but fails the anchor identity check still fails closed (trusting it risks
-  CRC'ing the wrong binary); one that is **not mapped at all** is a stale localinfo — it
-  logs and falls through to the engine entity interface the non-declared path already
-  trusts. (Fleet swept 2026-08-25: no live instance carries `mm_gamedll` on its command
-  line or in any cfg, so the failure was latent here, not live.)
-- Same block: the split-loader resolver's `dlopen` probe now uses `RTLD_LAZY |
-  RTLD_NOLOAD`. `RTLD_NOW` promoted an already-mapped, lazily bound game DLL to eager
-  relocation and could hard-fail resolution on an unrelated unresolved symbol; the
-  helper only dlsyms one exported symbol, so lazy binding is sufficient.
-- **Ships as core** (`ktpamx_i386.so`), not a plugin — this is `amxmodx/CGameConfigs.cpp`.
-
-### Changed — ReHLDS API version gate
-
-- **`REHLDS_API_VERSION_MINOR` 6 → 16 in `public/resdk/engine/rehlds_api.h`,
-  matching KTP-ReHLDS.** This copy declared **6** while its vtable already carried
-  the KTP entries, so the guard in `mod_rehlds_api.cpp:38`
-  (`majorVersion != 3 || minorVersion < 6`) accepted *any* engine from ReHLDS 3.6
-  onward — including a stock upstream engine whose `IRehldsHookchains` has 56 slots
-  against this header's 67, and whose slot 42 is `SV_ShouldSendConsistencyList`
-  rather than KTP's inserted `SV_UpdatePausedHUD`.
-
-  This is not symbol resolution. The class is pure-virtual and every call is
-  `vtable[N]` with `N` fixed at compile time; the only dynamic lookup
-  (`VREHLDS_HLDS_API_VERSION001`) succeeds regardless. A mismatch is therefore a
-  **silent wrong-virtual-call** on every slot past 41, not a load failure.
-
-  This header stays a deliberate **67-entry prefix** of the engine's 69 — safe,
-  because nothing in the core or DODX calls the last two slots (`SV_Rcon`,
-  `Host_Changelevel_f`). Only the version number moved; no virtual was added,
-  removed or reordered, so the layout is unchanged.
-
-- **A rejected API no longer fails silently in extension mode.**
-  `GiveFnptrsToDll`'s `if (RehldsApi_Init())` had **no else branch** — a failed gate
-  skipped every extension hook registration (`SV_ActivateServer`, `PF_RegUserMsg_I`,
-  `SV_ClientCommand`, `SV_InactivateClients`, `AlertMessage`, …) and the server ran
-  on with no forwards and no match handling, printing nothing. It now prints a FATAL
-  line naming the required version.
-
-- **DODX now asserts the version itself.** `moduleconfig.cpp` dereferences hookchain
-  slots up to 67 but had no gate of its own — it relied entirely on the core leaving
-  `RehldsHookchains` null, which is transitive protection, not a check. It now reads
-  the version through `MF_GetRehldsApi` and refuses to register hooks on a mismatch.
-  `GetMajorVersion`/`GetMinorVersion` are the first two slots of `IRehldsApi` and have
-  never moved, so they are safe to call on precisely the engine this guards against.
-
-⚠️ **This makes the next activation a coordinated, all-four-in-one-swap wave.**
-Engine + core + reapi + DODX must stage together and swap at the same nightly
-restart. The guard is one-directional — it fires only when the *engine* is behind —
-so **modules-first is the sanctioned order**: a module ahead of the engine now
-refuses loudly, while an engine ahead of the modules still loads silently and
-corrupts. Do not stage the engine alone.
-
-**A RE-CUT of 2.7.31, not a rebuild of it.** 2.7.31 and `main` were developed in
-parallel and neither contained the other:
-
-- 2.7.31 carries the tier-2 sensors (`dodx_get_shot_geom` and friends) and the
-  per-map ammo registry. `main` has none of it -- `main`'s `product.version` was
-  still **2.7.27**, a full release behind the fleet's live 2.7.28.
-- `main` carries the `pd_dcp` fix: the Linux/Apple `CControlPoint` layout is one
-  `int` short, so every control-point pdata read returned its neighbour. 2.7.31
-  does not have it.
-
-Merging them touches `dodx.h` and `moduleconfig.cpp`, so the compiled module
-changes and **2.7.31's pinned `ac8d4e393e5fcca3679a6d63fa28bdaa` no longer
-describes this tree.** A pin that survives a base change is a pin that lies, so
-the version moves rather than the md5 being silently reused.
-
-⚠️ **No md5 is pinned here yet.** The shipping artifact is whichever build is
-actually reviewed and staged; pinning one from a verification build would create
-a second binary wearing the same version number, which is the trap 2.7.29 and
-2.7.30 already fell into.
-
-⚠️ **Activation order still applies:** the module must activate no later than any
-plugin rebuilt against it. `KTPMatchHandler` 0.10.166 calls `dodx_get_shot_geom`
-unconditionally and natives resolve at load, so a plugin ahead of the module is a
-load failure, not a degraded mode.
-
-Merge conflict resolution: one hunk in this file, both sides kept. `dodx.h` and
-`moduleconfig.cpp` merged cleanly.
-
 ## [Unreleased]
 
 **These entries are now part of the 2.7.32 re-cut below-the-line, not of 2.7.31.**
@@ -737,6 +309,431 @@ no longer describes this tree. See the 2.7.32 note.
   `DODX_InitCPFromEntities` returns at its own `g_bExtensionMode` gate), so neither runs there.
 - The same block said of an unresolvable map that *"there is no way to ask for it from a plugin"*.
   It now points at `dodx_cp_identity_resolved()`.
+
+## [2.7.33] - unreleased
+
+### Fixed
+
+- **Delayed DODX context confirmation no longer contaminates schema-22 health**
+  (`stats_logging.sma` 1.18.0 -> 1.18.1). MatchHandler's start forward can
+  precede DODX publishing the same match id by several live bot frags. The
+  forward now opens only a candidate: it emits no manifest, health, or per-half
+  flag metadata until `dodx_get_match_id` confirms exact equality. First
+  confirmation drains pending diagnostics, resets the new stream, emits its
+  manifest as sequence 1, and admits the triggering fact as sequence 2; the
+  existing zone poll then emits the armed life/ownership/flag baselines.
+  Optional damage, frag, assist, and break diagnostics retain their explicit
+  `matchid="-"`, `half=0`, `sequence=0` form while pending, but use an untracked
+  async-buffer path and cannot authorize a never-confirmed candidate. Buffer
+  ordering is independent of producer sequence, and direct flag positions fail
+  closed while a candidate is pending. End-of-half health is emitted only for a
+  confirmed stream; production authorization and strict health remain unchanged.
+
+### Added
+
+- **Schema-22 match telemetry** (`stats_logging.sma` 1.17.0 -> 1.18.0).
+  Position sampling now defaults to two seconds after the four-match Denver 4
+  volume audit; connected/alive gating, the five-second flush, 128-entry buffer,
+  and per-type health/drop accounting are unchanged. Factual
+  `KTP_OBJECTIVE_ATTEMPT` start/complete/stop markers poll the existing capture
+  area state with a sequence-scoped attempt id, pre-attempt owner, team counts,
+  and only `capture_stopped`/`context_reset` stop reasons. They do not infer
+  participants, kills, walk-offs, or cap-break causes.
+- **Factual grenade entity lifecycle.** Extension-mode DODX recognizes only
+  `grenade`/`grenade2` at their first TraceLine, keys them by edict index+serial,
+  and emits `dod_grenade_entity_tracked`. The bundled ReHLDS pre-call `ED_Free`
+  hook (including normal `FL_KILLME` cleanup) emits
+  `dod_grenade_entity_removed` exactly once for the same identity. Weapon IDs are
+  restricted to 13/14/36; rockets 29/30/31, `monster_mortar`, and all other
+  entities are excluded. Removal is generic and is never labelled detonation.
+  Map-change bulk invalidation clears the independent 64-entry tracker without
+  manufacturing removal events, and cannot mutate the existing `g_grenades`
+  damage-attribution pool. A bounded per-engine-edict serial tombstone table
+  deduplicates every native saturation loss by index+serial and forwards its
+  exact count into `grenade_entity` producer health without a secondary pool to
+  saturate. Public include docs and direct-dispatch test natives cover all three
+  forwards.
+- New objective/grenade quoted fields use a one-byte protocol sanitizer for
+  quotes, backslashes, parentheses, CR/LF, controls, and DEL. Untrusted player
+  names additionally replace angle brackets before canonical identity assembly,
+  so they cannot spoof userid/auth/team; durable fields remain intact. Round
+  restart/countdown suppression now
+  closes active objective attempts with `context_reset` and admits no lifecycle
+  start/complete until the fresh baseline has been consumed.
+
+### Deferred
+
+- Per-shot telemetry remains backlog-only. No schema field, marker, handler, or
+  runtime collection was added in this cut; see `TELEMETRY_BACKLOG.md`.
+
+### Fixed — `ksc_buffer`'s truncating `copy()` had no way to tell you it truncated
+
+- `copy(g_kscBuffer[...], KSC_BUF_LINE_LEN - 1, line)` silently drops anything past
+  `KSC_BUF_LINE_LEN - 1`. A truncated line doesn't fail loudly -- it just stops matching
+  the daemon's regex, which is indistinguishable from the event never having fired. The
+  buffer-full path already had this covered (`g_kscDropped`/`[KTP-STATS] dropped ...
+  buffer full`); the length path did not.
+- `ksc_buffer` now checks `strlen(line) >= KSC_BUF_LINE_LEN - 1` before the `copy()` and
+  counts it in a new `g_kscTruncated`, reported by `ksc_flush` exactly like the existing
+  drop counter (`[KTP-STATS] truncated N capture line(s) -- exceeded KSC_BUF_LINE_LEN
+  (832), raise it`). The line is still enqueued truncated (partial data beats none) --
+  this only makes the loss observable instead of silent.
+  (`ktp_stats_capture.inc`, `stats_logging.sma` 1.17.0 -> 1.17.1)
+- Console-only counter, same lifecycle as `g_kscDropped` -- not part of the
+  `KTP_CAPTURE_HEALTH` per-half schema, so this needed no `KSC_SCHEMA_CONTRACT` bump and
+  no daemon-side change.
+
+### Fixed — `CTaskMngr`'s deferred clear ran on every frame depth, not just the outermost
+
+- `startFrame()` decrements `m_bInStartFrame` and then destroys `m_Tasks` gated only on
+  `m_bDeferredClear`. Since 2.7.25 that field is a depth counter rather than a bool, so a
+  nested `startFrame()` reaches the clear with outer frames still iterating the vector —
+  it frees the `CTask` objects an outer `executeIfRequired()` is standing on. That is the
+  same use-after-free the deferral was built to prevent (gdb-confirmed on a New York 2
+  core, 2.6.13); deferring merely moved *when* it happens.
+- Second-order: the inner frame also consumed `m_bDeferredClear`, so the outer loop's
+  break never fired and it kept indexing a now-empty vector against a `lastSize` cached
+  before the clear.
+- 2.7.25 converted `m_bInStartFrame` from bool to a counter on the stated reasoning that
+  "every existing test is against zero, so the consumers needed no change". That holds for
+  the producer in `clear()`; it does not hold here, because this site never tested the
+  counter at all. The guard is now `m_bInStartFrame == 0 && m_bDeferredClear`, matching
+  `CForward`'s `m_ToDelete && !m_InExec` and the message-hook `m_InExecution.size() == 0`
+  — one rule across all three: the outermost frame owns the terminal transition, which is
+  also how the 2.7.20 active-count double-decrement was resolved.
+- No behaviour change at depth 1, which is every non-nested frame: the decrement reaches 0
+  and the clear runs exactly as before.
+- `scripts/test_reentry_guards.py` locks the shape at all three sites and carries a
+  `--selftest` that reintroduces each historical defect and requires the check to reject
+  it. Run against `main` before this change, it fails on the CTask site.
+
+### Fixed — `dodx_send_ammox` accepted any `ammo_slot`, including the failure sentinel it tells callers to use
+
+- The native clamped `count` and left `ammo_slot` entirely unvalidated, while its own
+  include directs callers to take the slot from `dodx_get_grenade_ammo_index()` — whose
+  documented failure return is `-1`. A caller doing exactly what the docs said could pass
+  `-1` straight through.
+- Nothing downstream catches it. `MSG_WriteByte` casts to `byte` with no range check, so
+  `-1` is transmitted as `255` and an out-of-range slot silently becomes some other slot.
+  Server-side this is truncation rather than memory corruption; the consequences are a
+  client HUD desync on whatever ammo type owns the resulting slot — which does not
+  self-correct until that type genuinely changes — and DODX's own `AmmoX` hook matching
+  the bogus slot against `weaponData[].ammoSlot` and corrupting its tracked ammo.
+- `ammo_slot` is now bounded to `0 .. DODX_MAX_AMMO_SLOTS - 1` and **rejected rather than
+  clamped**, with `MF_LogError(AMX_ERR_NATIVE)`. Clamping was the tempting option and is
+  the wrong one: slot 0 is a real ammo type, so clamping a failed lookup would write real
+  ammo to the wrong slot — a silent, persistent wrong answer instead of a loud refusal.
+  Rejecting also matches the house split (indices abort, values clamp) and this native's
+  own `CHECK_PLAYER`, which already aborts for its other index parameter.
+- Note this is not a regression of the 2.7.21 cleanup that converted this native's
+  AmmoX-not-registered branch from an abort to `MF_Log` + `return 0`. That branch is an
+  environmental failure with a documented `0` return; an out-of-range index is a caller
+  bug, and the same entry kept out-of-range ids as genuine aborts.
+- `dodx.inc` now states the accepted range, tells callers to check for `-1` first, and
+  carries the `@error` line the abort requires — following `dodx_give_grenade`'s
+  precedent. No in-repo plugin calls this native; `KTPGrenadeLoadout` and
+  `KTPPracticeMode` pass in-range literals today, so nothing in the fleet begins aborting.
+- `scripts/test_native_param_contracts.py` asserts the enforced range and the documented
+  range agree, since the defect was the include and the native disagreeing rather than a
+  missing check. Its `--selftest` reintroduces each shape and requires rejection; run
+  against `main` both checks fail.
+
+### Fixed — the `g_pCPMasterEdict` clear had no Metamod counterpart, and the reason it did not matter was recorded wrongly
+
+- `DODX_OnSV_ActivateServer` clears the cached control-point-master edict per map;
+  `ServerDeactivate` never did. Note the polarity is the reverse of this fork's usual
+  trap — here the **Metamod** path is the deficient one — which is why the standing
+  extension-mode parity audit would not have surfaced it.
+- **It is genuinely harmless on this fleet, but not for the recorded reason, and the wrong
+  reason was the dangerous part.** It was recorded as harmless because `DODX_GetCPMaster`
+  self-revalidates. It does re-derive on a failed check — but its *first* action is
+  `g_pCPMasterEdict->free`, a dereference of the very pointer that would be dangling. The
+  revalidation cannot establish the liveness it depends on. Taken at face value, that
+  rationale would justify deleting the extension-path clear as redundant, which would
+  introduce a use-after-free on the only path the fleet actually runs.
+- The real reason is mutual exclusion: `DODX_SetupExtensionHooks` registers the
+  `SV_ActivateServer` hook only under `g_bExtensionMode`, and dodx's `DLL_FUNCTIONS` table
+  is installed only when Metamod calls `GetEntityAPI2`, which nothing does in extension
+  mode. The two teardown paths cannot both be live, and the fleet only ever runs the one
+  that has the clear. `ServerDeactivate` is compiled into the shipped `.so` (`USE_METAMOD`
+  is defined for the vendored headers) — dead code, not absent code.
+- `ServerDeactivate` now clears it too, so the invariant its declaration comment asserts
+  ("cleared on map change so a freed edict from the previous map can never be read") is
+  true on both paths rather than only one. Zero runtime effect on the fleet.
+- `DODX_GetCPMaster` carries the tripwire, in the shape `KTPTriggerGeom.h` already uses
+  for the analogous reset: the clears are load-bearing, the in-function guard does not
+  substitute for them, do not drop either as redundant.
+- Pre-existing at `16464b57` on the tier-2 lineage, byte-identical, so this is not recent
+  drift.
+
+## [2.7.32] - 2026-08-26
+
+### Reverted
+
+- `8d818deaf` (dodx: split the InitObj reorder latch from the ownership refresh) was
+  reverted. It was reviewed NOT-APPROVED for a fleet cut and reached `main` by being swept
+  into the #41 branch, not by its own PR. See the revert commit for the reasoning.
+
+### Fixed — a break candidate could credit a `cap_break` to a reconnecting player
+
+- `g_kscBreakQ` holds raw client indices, and `ksc_clear_player` never swept it, so a
+  killer disconnecting inside the ~2.5s break window (`KSC_BREAK_WINDOW` polls) left a
+  live candidate pointing at a slot the engine can hand to the next player to connect.
+  `ksc_emit_break`'s `is_user_connected` check passes for the new occupant, so the break
+  was credited to a player who never made it.
+- Disconnect now zeroes the slot's queued killer **and victim** entries
+  (`ksc_break_purge_player`, called from `ksc_clear_player`; `g_kscBreakVictim` feeds
+  `break_context`'s victim identity, which would otherwise name a recycled slot's new
+  occupant). The entries are zeroed rather than removed: the dead victim's delayed zone
+  decrement still consumes a queue slot in FIFO order, so removing the entry would shift
+  that drop onto the next queued candidate — a different misattribution. A zeroed
+  breaker fails `ksc_emit_break`'s existing range guard and the break goes uncredited,
+  which is the honest outcome; a zeroed victim renders as `"-"` in `break_context`,
+  which that emitter already defines for an unavailable victim.
+
+### Changed — `dodx_give_grenade` distinguishes "already holds one" from a real refusal
+
+- The DLL's refusal signature is identical whether the player is at capacity or something
+  is genuinely wrong, so every refused pickup returned `-1` and plugins logged it as a
+  failure — ~75k fleet-wide "failures", most of them benign. The native now reads the
+  grenade's ammo slot **before** spawning the entity: a refusal with the slot already
+  holding one returns **`2`** (benign); `-1` now means refused with an empty or unreadable
+  slot — the case actually worth logging.
+- Success (`1`) and error (`0`) paths are unchanged, and every non-`1` still means
+  "entity not granted", so existing callers (`KTPGrenadeLoadout` `:307`,
+  `KTPPracticeMode` `.grenade`) keep working — they just keep mislabelling `2` as failed
+  until their own follow-up change consumes the new code.
+- ⛔ **Not part of the pinned 2.7.32 ABI-wave artifacts.** Those are hash-pinned to their
+  review; this rides the next dodx cut.
+
+### Fixed — per-half `KTP_CAPTURE_HEALTH` was silently lost on H2→OT and OT→OT
+
+- KTPMatchHandler's `ktp_half_end` fires exactly once, hardcoded `half=1`, and
+  `ktp_match_end` fires only at true match end — so the only signal an H2→OT or OT→OT
+  boundary sends the producer is the next `ktp_match_start`. `ksc_on_match_start` reset
+  the health counters there without emitting them, so the outgoing half's health record
+  (the reconciliation row for every event type) never reached the log. Observability
+  loss only: the data lines themselves were flushed before the reset.
+- `ksc_on_match_start` now flushes and emits the outgoing half's health record first,
+  guarded on a still-populated producer context. The normal H1 end is unaffected —
+  `ktp_half_end` already emits and clears the context, so the guard is false there. A
+  half aborted and restarted under the same id now produces a health record set for
+  each segment; the daemon already keys health on (matchid, half, sequence) and the
+  later set's `sequence_last` supersedes.
+
+### Fixed — dodx: CP ownership was never re-seeded after a round restart (#10)
+
+- **From round 2 onward, `CP_owner` reported the pre-restart ownership on every
+  default-owned map** (`dod_donner`, `dod_kalt`, `dod_flash`, `dod_saints2_*`). The DLL
+  resets each CP's `m_iTeam` to its default on `sv_restartround` but broadcasts nothing
+  extension mode intercepts: the only InitObj that arrives carries `newCount=0` (38,903
+  such messages over 9 days on Denver 27015, zero usable ones), and no SetObj is sent.
+  Both halves of the message path are therefore unreachable, which is why the reviewed
+  latch-split candidate (`8d818deaf`, reverted) could not fix it either.
+- dodx now polls each CP's own pdata `m_iTeam` (~2/s, via the module frame callback) in an
+  **arm-then-level** scheme: a CP arms on proof the DLL has stamped it (a nonzero read, or
+  any change from the scan-time read), and from then on any divergence between `m_iTeam`
+  and `owner` — a change no SetObj delivered, i.e. the restart reset — is corrected and
+  `controlpoints_init` re-fires so consumers re-read the full snapshot. Arming exists
+  because `m_iTeam` reads 0 until the DLL stamps CP state ~2s into the map, and a level
+  copy in that window would wipe the BSP-seeded defaults (#9); level-comparing after the
+  arm is what catches a capture-then-reset that lands inside a single sampling window.
+- The sync writes `owner` only — never `default_owner` (the BSP seed) and never the
+  `dod_control_point_captured` forward, which would invent captures in stats. Reads
+  outside 0..2 are discarded and cannot arm, so a wrong per-platform layout degrades to
+  today's behaviour instead of corrupting `owner`.
+- **Extension mode only.** Under Metamod the registration sites never run, so behaviour
+  there is unchanged (and undiagnosed — no warning fires).
+
+### Fixed — `KTP_FLAG_POSITION` only ever emitted for the map the server booted into
+
+- **The one-shot task that emits flag positions was armed from `controlpoints_init`, and in
+  extension mode that forward runs *before* the map-change path that wipes the task list.**
+  dodx fires `controlpoints_init` from its control-point entity scan during `ServerActivate`;
+  `KTPAMX_ReloadPlugins()` runs later in the same activation and calls `g_tasksMngr.clear()`.
+  On a cold boot that path is never taken (`KTPAMX_InitAsRehldsExtension()` returns early), so
+  the task survived and the marker appeared — which is why the loss looked map-specific rather
+  than changelevel-specific. This is a divergence from Metamod mode, where the equivalent clear
+  happens in `C_ServerDeactivate_Post`, at the end of the *previous* map.
+- The deferral itself is unchanged and still deliberate: `log_message()` does not reach the game
+  log from inside `controlpoints_init`, while `log_amx()` at the same instant does. The task is
+  now *also* armed from `plugin_cfg`, which `KTPAMX_ReloadPlugins()` executes after the clear, and
+  a pending latch keeps it to one emit per cache refresh no matter which arm survives.
+- Measured on Denver 27018, 08/21 03:01 through 08/24 12:25: **245 `controlpoints_init` fires,
+  245 map loads, 5 emissions — one per server start, all `dod_anzio`.** Control: `KTP_FLAG_STATE`
+  and `position_sample` both appear in the game log on non-boot maps (3,144 and 13 lines in a
+  single mid-day map load), and both come from tasks registered in `plugin_cfg` — so
+  `log_message()`, the game log and `plugin_cfg`-armed tasks all work after a changelevel.
+- `ksc_flag_positions_task` now logs once when it emits. The forward's own diagnostic proved it
+  fired and nothing proved the emit happened, so the two halves lived in different log files and
+  could not be compared.
+
+### Fixed — `mp_timelimit 0` disabled cap-break attribution with no diagnostic
+
+- `dodx_get_round_time()` documents `-1.0` for "no time limit", so `mp_timelimit 0` — a
+  legitimate server setting — keeps `ksc_break_observe_round_clock()`'s unavailable
+  branch taken on every poll. That branch is deliberately fail-closed (an occupancy drop
+  cannot be told apart from a round-reset collapse without the clock) and stays so; the
+  defect was that nothing anywhere said the feature was off.
+- The producer now announces a **sustained** unavailability once per episode
+  (`KSC_ROUND_CLOCK_WARN_POLLS` consecutive polls, ~10s — short bursts around gamerules
+  setup stay quiet), and a valid reading re-arms the diagnostic. Behavior of the
+  suppression itself is unchanged.
+
+### Fixed — the cap-break containment test could not load on this fleet
+
+- **`stats_logging.amxx` was built with `#include <fakemeta>` and would have failed to load on all
+  24 instances.** `fakemeta.inc` carries `#pragma reqlib fakemeta`; the fleet's `modules.ini` lists
+  only `amxxcurl`, `reapi` and `dodx`, and no fakemeta module ships with the stack. The compile
+  succeeded because `amxxpc` only needs the include — the module table is resolved at LOAD time.
+- Repointed at `dodx_get_user_bounds` and `dodx_area_get_bounds`. Behaviour is unchanged: still
+  box-vs-box containment, still nearest-zone-centre as a tie-break, still no tunable radius.
+- The per-flag entity cache and its resolver are gone — `dodx_area_get_bounds` takes the CP index,
+  validates it, checks the edict and rejects a zero-volume box itself. The map-start
+  “zones usable on N of M flags” line is kept, now driven by the native.
+- Verified by inflating the built artifact and reading its library table: the old build declares
+  `fakemeta`, this one declares only `dodx`. **A clean compile does not prove a plugin will load.**
+
+### Added — capture-zone and player bounding boxes (dodx)
+
+- **`dodx_area_get_bounds(index, Float:mins[3], Float:maxs[3])`** and
+  **`dodx_get_user_bounds(id, Float:mins[3], Float:maxs[3])`** expose the
+  world-space `absmin`/`absmax` of a capture zone and of a player. Both read
+  `pEdict->v.*` straight from the HL SDK, so they work in **extension mode** —
+  which is the point: the only existing way to ask these questions from Pawn is
+  fakemeta's `pev(ent, pev_absmin)`, and `fakemeta.inc` carries
+  `#pragma reqlib fakemeta`. A plugin that includes it will not LOAD on the KTP
+  fleet, whose `modules.ini` lists only `reapi`, `dodx` and `amxxcurl` and whose
+  artifacts ship no fakemeta module at all.
+
+- **Motivation: cap-break attribution cannot use a radius around the control
+  point.** The flag prop and its `dod_capture_area` trigger are separate
+  entities and are not co-located — across the map pool some control points sit
+  entirely outside their own zone, and on `dod_jagd` the separation runs to
+  thousands of units. A prop-anchored radius is therefore simultaneously too
+  small on one map and far too large on another, whatever value it is given, so
+  the test has to be containment rather than distance.
+
+- **Player bounds, not just the origin, because GoldSrc decides trigger
+  membership by BBOX OVERLAP.** A point-in-box test on the origin rejects
+  players the engine itself counts as inside — under-counting in a new way while
+  looking stricter and more correct. The box also reflects stance, so a prone
+  player is measured as the flatter volume the engine actually uses.
+
+- **A zero-volume zone returns 0 rather than reporting an empty box.** Such a
+  box matches nothing, which reads downstream as "this flag never sees a
+  capture" — indistinguishable from a flag nobody contested, and exactly how
+  this class of bug survives a season unnoticed.
+
+### Fixed — cap-break attribution now tests the capture zone, not a radius
+
+- **`ktp_stats_capture.inc` picked the flag for a cap break by 2D distance from the
+  flag PROP, accepting anything within a fixed radius.** The prop is not the zone: on
+  `dod_jagd` the trigger is among the smallest in the map set yet sits ~5,555 units from
+  its own flag entity, and on 8 flags across the pool the control point is not inside the
+  zone footprint at all. So the radius was simultaneously too small on some maps and far
+  too large on others, and no single value fixes both.
+- **It now asks whether the victim was inside the capture zone**, reading the zone's
+  bounding box off its entity (`CA_edict`) at runtime. Measured on the S10 pool, 5 of 11
+  maps under-counted cap breaks under the old test, and only 40% of control points could
+  ever report one.
+- **Box-vs-box, not point-in-box.** GoldSrc decides zone membership by bbox overlap, so a
+  point test would have rejected players the engine itself counts as in-zone.
+- **The tunable constant is gone rather than retuned.** Nothing here needs a per-map value,
+  so the map pool can change without silently invalidating the test — which matters with
+  the pool being cut and swapped shortly before a season opens.
+- **A flag with no usable zone is now loud at map start** rather than discovered later as
+  missing rows: `controlpoints_init` reports how many flags resolved a usable zone, and a
+  zero-volume box is rejected instead of silently matching nothing.
+- Requires `fakemeta` in `stats_logging.sma` for `pev()`. Plugin only — no module or
+  engine change. `stats_logging` 1.15.6 → 1.15.7.
+
+### Fixed — a stale `mm_gamedll` localinfo hard-failed "server" gameconfig resolution (core)
+
+- On a non-Metamod host, any non-empty `mm_gamedll` localinfo whose declared DLL could
+  not be proven loaded made `ResolveLibraryInfo("server")` return false with no fallback,
+  permanently null-caching "server" resolution for the process. `localinfo` is settable
+  from any cfg or rcon and survives map changes, so a stale value silently disabled the
+  feature. The two failure shapes are now told apart: a declared object that **is**
+  mapped but fails the anchor identity check still fails closed (trusting it risks
+  CRC'ing the wrong binary); one that is **not mapped at all** is a stale localinfo — it
+  logs and falls through to the engine entity interface the non-declared path already
+  trusts. (Fleet swept 2026-08-25: no live instance carries `mm_gamedll` on its command
+  line or in any cfg, so the failure was latent here, not live.)
+- Same block: the split-loader resolver's `dlopen` probe now uses `RTLD_LAZY |
+  RTLD_NOLOAD`. `RTLD_NOW` promoted an already-mapped, lazily bound game DLL to eager
+  relocation and could hard-fail resolution on an unrelated unresolved symbol; the
+  helper only dlsyms one exported symbol, so lazy binding is sufficient.
+- **Ships as core** (`ktpamx_i386.so`), not a plugin — this is `amxmodx/CGameConfigs.cpp`.
+
+### Changed — ReHLDS API version gate
+
+- **`REHLDS_API_VERSION_MINOR` 6 → 16 in `public/resdk/engine/rehlds_api.h`,
+  matching KTP-ReHLDS.** This copy declared **6** while its vtable already carried
+  the KTP entries, so the guard in `mod_rehlds_api.cpp:38`
+  (`majorVersion != 3 || minorVersion < 6`) accepted *any* engine from ReHLDS 3.6
+  onward — including a stock upstream engine whose `IRehldsHookchains` has 56 slots
+  against this header's 67, and whose slot 42 is `SV_ShouldSendConsistencyList`
+  rather than KTP's inserted `SV_UpdatePausedHUD`.
+
+  This is not symbol resolution. The class is pure-virtual and every call is
+  `vtable[N]` with `N` fixed at compile time; the only dynamic lookup
+  (`VREHLDS_HLDS_API_VERSION001`) succeeds regardless. A mismatch is therefore a
+  **silent wrong-virtual-call** on every slot past 41, not a load failure.
+
+  This header stays a deliberate **67-entry prefix** of the engine's 69 — safe,
+  because nothing in the core or DODX calls the last two slots (`SV_Rcon`,
+  `Host_Changelevel_f`). Only the version number moved; no virtual was added,
+  removed or reordered, so the layout is unchanged.
+
+- **A rejected API no longer fails silently in extension mode.**
+  `GiveFnptrsToDll`'s `if (RehldsApi_Init())` had **no else branch** — a failed gate
+  skipped every extension hook registration (`SV_ActivateServer`, `PF_RegUserMsg_I`,
+  `SV_ClientCommand`, `SV_InactivateClients`, `AlertMessage`, …) and the server ran
+  on with no forwards and no match handling, printing nothing. It now prints a FATAL
+  line naming the required version.
+
+- **DODX now asserts the version itself.** `moduleconfig.cpp` dereferences hookchain
+  slots up to 67 but had no gate of its own — it relied entirely on the core leaving
+  `RehldsHookchains` null, which is transitive protection, not a check. It now reads
+  the version through `MF_GetRehldsApi` and refuses to register hooks on a mismatch.
+  `GetMajorVersion`/`GetMinorVersion` are the first two slots of `IRehldsApi` and have
+  never moved, so they are safe to call on precisely the engine this guards against.
+
+⚠️ **This makes the next activation a coordinated, all-four-in-one-swap wave.**
+Engine + core + reapi + DODX must stage together and swap at the same nightly
+restart. The guard is one-directional — it fires only when the *engine* is behind —
+so **modules-first is the sanctioned order**: a module ahead of the engine now
+refuses loudly, while an engine ahead of the modules still loads silently and
+corrupts. Do not stage the engine alone.
+
+**A RE-CUT of 2.7.31, not a rebuild of it.** 2.7.31 and `main` were developed in
+parallel and neither contained the other:
+
+- 2.7.31 carries the tier-2 sensors (`dodx_get_shot_geom` and friends) and the
+  per-map ammo registry. `main` has none of it -- `main`'s `product.version` was
+  still **2.7.27**, a full release behind the fleet's live 2.7.28.
+- `main` carries the `pd_dcp` fix: the Linux/Apple `CControlPoint` layout is one
+  `int` short, so every control-point pdata read returned its neighbour. 2.7.31
+  does not have it.
+
+Merging them touches `dodx.h` and `moduleconfig.cpp`, so the compiled module
+changes and **2.7.31's pinned `ac8d4e393e5fcca3679a6d63fa28bdaa` no longer
+describes this tree.** A pin that survives a base change is a pin that lies, so
+the version moves rather than the md5 being silently reused.
+
+⚠️ **No md5 is pinned here yet.** The shipping artifact is whichever build is
+actually reviewed and staged; pinning one from a verification build would create
+a second binary wearing the same version number, which is the trap 2.7.29 and
+2.7.30 already fell into.
+
+⚠️ **Activation order still applies:** the module must activate no later than any
+plugin rebuilt against it. `KTPMatchHandler` 0.10.166 calls `dodx_get_shot_geom`
+unconditionally and natives resolve at load, so a plugin ahead of the module is a
+load failure, not a degraded mode.
+
+Merge conflict resolution: one hunk in this file, both sides kept. `dodx.h` and
+`moduleconfig.cpp` merged cleanly.
 
 ## [2.7.31] - 2026-08-16
 
@@ -1606,7 +1603,6 @@ slightly wider condition, and it runs at map load rather than in the frame loop.
 > a second time (the deferred delete frees directly instead of re-entering the release path), and
 > `amxxlog.cpp` (stack-local format buffers, writer-loop simplification, `queued` out-param).
 > Everything else is KTP-owned.
-
 
 ### Fixed
 
