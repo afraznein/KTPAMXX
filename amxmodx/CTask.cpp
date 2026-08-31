@@ -325,7 +325,10 @@ void CTaskMngr::startFrame()
 	}
 	--m_bInStartFrame;
 
-	if (m_bDeferredClear)
+	// Only the outermost frame may destroy the vector — an inner one still has outer
+	// frames iterating it. Same shape as CForward's m_ToDelete and the message-hook
+	// m_InExecution guards; the flag survives to the outer frame, which breaks above.
+	if (m_bInStartFrame == 0 && m_bDeferredClear)
 	{
 		m_bDeferredClear = false;
 		m_Tasks.clear();

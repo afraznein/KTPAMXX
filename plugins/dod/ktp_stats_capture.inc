@@ -9,6 +9,10 @@
 // last-flag-defense (kill-position-based, not break-queue-based), and a
 // periodic roster-position broadcast for positional/"holding" stats.
 //
+// Cap-break attribution reads bounding boxes through dodx natives, NOT fakemeta:
+// `fakemeta.inc` carries `#pragma reqlib fakemeta`, and this fleet's modules.ini
+// lists only amxxcurl/reapi/dodx -- a plugin including it does not LOAD.
+//
 // SELF-CONTAINED BY DESIGN. Everything below declares its own state and reads
 // nothing from stats_logging.sma's globals -- deliberately unlike
 // ktp_matchhandler_discord.inc, whose header notes it depends on its parent's.
@@ -65,8 +69,14 @@
 #define KSC_ZONE_POLL_SECS  0.5
 #define KSC_BREAK_QUEUE_MAX 6   // concurrent pending killers per flag
 #define KSC_BREAK_WINDOW    5   // polls a candidate stays live (~2.5s)
-#define KSC_BREAK_RADIUS    512.0
 #define KSC_ROUND_REBASE_EPSILON 0.01
+
+// Consecutive polls (KSC_ZONE_POLL_SECS apart) the round clock may read
+// unavailable before the fail-closed suppression is worth announcing. The
+// clock is legitimately unavailable in short bursts around gamerules setup;
+// ten seconds of it means a standing condition (mp_timelimit 0 being the
+// reachable one -- dodx_get_round_time() documents "no time limit" as -1.0).
+#define KSC_ROUND_CLOCK_WARN_POLLS 20
 
 // Roster-position broadcast for positional/"holding" stats (map presence
 // beyond a discrete capture event) and, later, ninja-cap detection -- both
@@ -145,6 +155,10 @@ new g_kscBufferType[KSC_BUF_MAX_ENTRIES]
 new g_kscBufferOrder[KSC_BUF_MAX_ENTRIES]
 new g_kscBufferCount = 0
 new g_kscDropped = 0
+// Console-only running total, same lifecycle as g_kscDropped (reset every
+// flush) -- not part of the KTP_CAPTURE_HEALTH schema, so adding it needed
+// no KSC_SCHEMA_CONTRACT bump or daemon-side change.
+new g_kscTruncated = 0
 new g_kscLifeBuffer[KSC_LIFE_BUF_MAX_ENTRIES][KSC_LIFE_BUF_LINE_LEN]
 new g_kscLifeBufferType[KSC_LIFE_BUF_MAX_ENTRIES]
 new g_kscLifeBufferOrder[KSC_LIFE_BUF_MAX_ENTRIES]
@@ -201,6 +215,11 @@ new g_kscCvarEnabled
 new g_kscFlagCount = 0
 new g_kscFlagName[KSC_MAX_FLAGS][32]
 
+// Latched by controlpoints_init, cleared once the positions actually reach the
+// log. Two independent callers arm the emit task and either may be the one that
+// survives, so the flag is what keeps it to one emit per cache refresh.
+new bool:g_kscFlagPosPending = false
+
 new g_kscCapTeam[KSC_MAX_FLAGS]     // team currently capturing this point, 0 = none
 new g_kscOwner[KSC_MAX_FLAGS]       // last seen CA_owning_team, to spot a completed cap
 new bool:g_kscOwnershipBaselinePending = true
@@ -237,6 +256,14 @@ new g_kscBreakBase[KSC_MAX_FLAGS]   // rolling in-zone baseline to measure drops
 new Float:g_kscLastRoundTime = -1.0
 new bool:g_kscBreakBaselineSuppressed = true
 new g_kscCvarTimelimit
+new g_kscRoundClockUnavailPolls = 0  // consecutive unavailable polls; -1 once warned
+
+// Defined up here only because Pawn resolves stocks in declaration order and
+// ksc_cfg() below needs it.
+stock ksc_arm_flag_positions() {
+	remove_task(KSC_TASK_FLAG_POSITIONS)
+	set_task(1.0, "ksc_flag_positions_task", KSC_TASK_FLAG_POSITIONS)
+}
 
 stock ksc_init() {
 	// Runtime kill switch, so new capture can be shut off on a live server
@@ -253,6 +280,11 @@ stock ksc_cfg() {
 	set_task(KSC_BUF_FLUSH_SECS, "ksc_flush_task", KSC_TASK_FLUSH, .flags="b")
 	set_task(KSC_ZONE_POLL_SECS, "ksc_zone_poll_task", KSC_TASK_ZONES, .flags="b")
 	set_task(KSC_POSITION_BROADCAST_SECS, "ksc_position_broadcast_task", KSC_TASK_POSITIONS, .flags="b")
+
+	// The arm that actually survives a changelevel. controlpoints_init runs
+	// before the extension-mode map-change path wipes the task list, so its own
+	// arm only reaches the log on a cold boot; plugin_cfg runs after the wipe.
+	ksc_arm_flag_positions()
 }
 
 stock bool:ksc_enabled() {
@@ -322,6 +354,14 @@ stock bool:ksc_buffer(const line[], event_type) {
 		return false
 	}
 
+	// copy() below silently drops anything past KSC_BUF_LINE_LEN - 1 -- a
+	// truncated line doesn't fail loudly, it just stops matching the daemon's
+	// regex. Still enqueue it (partial data beats none), but count it so a
+	// truncation shows up the same way a full-buffer drop already does.
+	if (strlen(line) >= KSC_BUF_LINE_LEN - 1) {
+		g_kscTruncated++
+	}
+
 	copy(g_kscBuffer[g_kscBufferCount], KSC_BUF_LINE_LEN - 1, line)
 	g_kscBufferType[g_kscBufferCount] = event_type
 	g_kscBufferOrder[g_kscBufferCount] = ksc_next_buffer_order()
@@ -387,6 +427,17 @@ stock ksc_close_producer_context() {
 }
 
 stock ksc_on_match_start(const matchid[], half) {
+	// KTPMatchHandler fires ktp_half_end only with half=1 and ktp_match_end
+	// only at true match end, so an H2->OT or OT->OT boundary arrives ONLY as
+	// this next start. Emit the outgoing half's health record before its
+	// counters are reset below, or that half's record is silently lost.
+	// The normal H1 end is unaffected: ktp_half_end already emitted and
+	// cleared this context, so the guard is false there.
+	if (g_kscProducerMatchId[0] && g_kscProducerHalf != 0) {
+		ksc_flush()
+		ksc_emit_health(g_kscProducerMatchId, g_kscProducerHalf)
+	}
+
 	// A match/half boundary invalidates every observation made against the
 	// previous round. Suppress one fresh zone baseline even when the clock is
 	// unavailable, so a warmup candidate cannot drain into go-live counts.
@@ -440,6 +491,9 @@ stock ksc_activate_producer_context() {
 	ksc_emit_manifest(g_kscProducerMatchId, g_kscProducerHalf)
 }
 
+// hlstats.pl joins frag_context and damage on an EXACT second via this
+// context; without it the daemon falls back to a 10s receipt window and
+// misses -- the KTP_NO_ROW_MATCHED flood, despite its message blaming UDP.
 stock bool:ksc_event_context(matchid[], len, &half) {
 	// `-` is an explicit non-context sentinel for the optional damage/frag/
 	// assist/break fields. Never emit an empty quoted property: older parsers
@@ -531,6 +585,10 @@ stock ksc_flush() {
 	if (g_kscDropped > 0) {
 		log_amx("[KTP-STATS] dropped %d capture event(s) -- buffer/tracker capacity full", g_kscDropped)
 		g_kscDropped = 0
+	}
+	if (g_kscTruncated > 0) {
+		log_amx("[KTP-STATS] truncated %d capture line(s) -- exceeded KSC_BUF_LINE_LEN (%d), raise it", g_kscTruncated, KSC_BUF_LINE_LEN)
+		g_kscTruncated = 0
 	}
 	if (g_kscLifeDropped > 0) {
 		log_amx("[KTP-STATS] dropped %d LIFE boundary line(s) -- dedicated buffer full", g_kscLifeDropped)
@@ -790,6 +848,25 @@ stock ksc_clear_damage_row(victim) {
 	g_kscLastEnemyAttacker[victim] = 0
 }
 
+// Break-queue slots hold raw client indices, and a candidate outlives its
+// killer by up to KSC_BREAK_WINDOW polls (~2.5s) -- long enough for a
+// reconnect to land in the freed slot and be credited someone else's break.
+// Zero the reference rather than removing the entry: the victim's delayed
+// zone decrement still consumes a queue slot, so dropping the entry would
+// shift that drop onto the NEXT queued candidate instead. ksc_emit_break
+// already treats an out-of-range breaker as uncreditable and skips the emit,
+// and ksc_emit_break_context prints "-" for an unavailable victim.
+stock ksc_break_purge_player(id) {
+	for (new f = 0; f < g_kscFlagCount; f++) {
+		for (new q = 0; q < g_kscBreakCount[f]; q++) {
+			if (g_kscBreakQ[f][q] == id)
+				g_kscBreakQ[f][q] = 0
+			if (g_kscBreakVictim[f][q] == id)
+				g_kscBreakVictim[f][q] = 0
+		}
+	}
+}
+
 // Slots get recycled. A player inheriting a disconnected one's index must not
 // inherit their pending assist credit either, so clear both directions.
 stock ksc_clear_player(id) {
@@ -808,6 +885,7 @@ stock ksc_clear_player(id) {
 	g_kscScoped[id] = 0
 	g_kscLifePhysicalAlive[id] = false
 	g_kscLifeOpen[id] = false
+	ksc_break_purge_player(id)
 }
 
 // ---------------------------------------------------------------------------
@@ -1121,8 +1199,22 @@ stock bool:ksc_break_observe_round_clock() {
 		// one fresh baseline before break evaluation resumes.
 		g_kscLastRoundTime = -1.0
 		g_kscBreakBaselineSuppressed = true
+
+		// Fail-closed is deliberate, but silent-forever is not: mp_timelimit 0
+		// is a legitimate server setting that keeps this branch taken on every
+		// poll, permanently disabling cap-break attribution with nothing in any
+		// log. Announce a SUSTAINED unavailability once per episode; a valid
+		// reading re-arms the diagnostic.
+		if (g_kscRoundClockUnavailPolls >= 0
+			&& ++g_kscRoundClockUnavailPolls >= KSC_ROUND_CLOCK_WARN_POLLS) {
+			log_amx("[KTP-STATS] round clock unavailable for %d polls -- cap-break attribution is fail-closed until it returns (mp_timelimit 0 disables the half clock; see dodx_get_round_time)",
+				KSC_ROUND_CLOCK_WARN_POLLS)
+			g_kscRoundClockUnavailPolls = -1
+		}
 		return true
 	}
+
+	g_kscRoundClockUnavailPolls = 0
 
 	new Float:limit = -1.0
 	if (g_kscCvarTimelimit)
@@ -1500,16 +1592,21 @@ stock ksc_emit_break_context(breaker, victim, flag_index, contester_count, Float
 	ksc_buffer_event(line, KSC_EVENT_BREAK, tracked)
 }
 
-// The area API exposes aggregate team counts, not per-player membership.
-// Select the closest active point and reject distant deaths so an unrelated
-// off-point kill cannot consume a later in-zone count drop.
+// The area API exposes aggregate team counts, not per-player membership, so
+// the flag a death belongs to has to be inferred. Ask whether the victim was
+// INSIDE the zone rather than how near the flag prop they were: a prop can sit
+// thousands of units from its own zone, so any prop-anchored radius is wrong on
+// some map however it is tuned.
+//
+// Box-vs-box, not point-in-box -- GoldSrc decides zone membership by bbox
+// overlap, so a point test would reject players the engine counts as in-zone.
 stock ksc_break_flag_for_victim(victim, victim_team) {
-	new Float:origin[3]
-	if (!dodx_get_user_origin(victim, origin))
+	new Float:vmin[3], Float:vmax[3]
+	if (!dodx_get_user_bounds(victim, vmin, vmax))
 		return -1
 
 	new best_flag = -1
-	new Float:best_dist2 = KSC_BREAK_RADIUS * KSC_BREAK_RADIUS
+	new Float:best_d2 = 0.0
 
 	for (new f = 0; f < g_kscFlagCount; f++) {
 		// A capture can begin between the 0.2-second zone poll and this death.
@@ -1519,12 +1616,24 @@ stock ksc_break_flag_for_victim(victim, victim_team) {
 			dodx_area_get_data(f, CA_capturing_team) != victim_team)
 			continue
 
-		new Float:dx = origin[0] - float(dodx_objective_get_data(f, CP_origin_x))
-		new Float:dy = origin[1] - float(dodx_objective_get_data(f, CP_origin_y))
-		new Float:dist2 = (dx * dx) + (dy * dy)
+		// Returns 0 on a missing, freed or zero-volume area -- a flag that cannot
+		// answer is skipped, never silently matched.
+		new Float:zmin[3], Float:zmax[3]
+		if (!dodx_area_get_bounds(f, zmin, zmax))
+			continue
 
-		if (dist2 <= best_dist2) {
-			best_dist2 = dist2
+		if (vmax[0] < zmin[0] || vmin[0] > zmax[0]) continue
+		if (vmax[1] < zmin[1] || vmin[1] > zmax[1]) continue
+		if (vmax[2] < zmin[2] || vmin[2] > zmax[2]) continue
+
+		// Zones can overlap. Nearest zone centre orders the survivors; it never
+		// admits or rejects one, so it is a tie-break and not a threshold.
+		new Float:dx = ((vmin[0] + vmax[0]) - (zmin[0] + zmax[0])) * 0.5
+		new Float:dy = ((vmin[1] + vmax[1]) - (zmin[1] + zmax[1])) * 0.5
+		new Float:d2 = (dx * dx) + (dy * dy)
+
+		if (best_flag < 0 || d2 < best_d2) {
+			best_d2 = d2
 			best_flag = f
 		}
 	}
@@ -1739,6 +1848,15 @@ public controlpoints_init() {
 		ksc_break_clear(f)
 	}
 
+	new zones_ok = 0
+	new Float:zmn[3], Float:zmx[3]
+	for (new f = 0; f < g_kscFlagCount; f++)
+		if (dodx_area_get_bounds(f, zmn, zmx))
+			zones_ok++
+	// Loud at map start beats finding it as missing rows a season later: a flag
+	// with no usable zone can never report a cap break.
+	log_amx("[KTP-STATS] cap-break zones usable on %d of %d flag(s)", zones_ok, g_kscFlagCount)
+
 	// Deferred, not emitted here -- found live, with a diagnostic build, not
 	// guessed: controlpoints_init fires with correct data (right flag count,
 	// right names, right owners, right x/y -- all confirmed by instrumenting
@@ -1755,12 +1873,26 @@ public controlpoints_init() {
 	// every other early-init marker in this codebase is already reliable.
 	// The data being emitted (g_kscFlagName/g_kscFlagCount) is cached above
 	// already, so the delayed task has nothing left to look up.
-	set_task(1.0, "ksc_flag_positions_task", KSC_TASK_FLAG_POSITIONS)
+	//
+	// This arm alone only ever fires on the boot map: KTPAMX_ReloadPlugins()
+	// wipes the task list after dodx fires this forward, so ksc_cfg()'s arm is
+	// the surviving one. Keep this one for dodx's post-plugin_cfg InitObj re-fire.
+	g_kscFlagPosPending = true
+	ksc_arm_flag_positions()
 }
 
 public ksc_flag_positions_task() {
+	if (!g_kscFlagPosPending || g_kscFlagCount <= 0)
+		return
+
+	g_kscFlagPosPending = false
+
 	for (new f = 0; f < g_kscFlagCount; f++)
 		ksc_emit_flag_position(f)
+
+	// controlpoints_init's diagnostic proved the forward fired and nothing proved
+	// the emit did, so the halves sat in two log files and went uncompared.
+	log_amx("[KTP-STATS] flag positions emitted for %d flag(s)", g_kscFlagCount)
 }
 
 // Static per-map fact, fired once per map load (this fires on every map

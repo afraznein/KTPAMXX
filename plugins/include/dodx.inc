@@ -589,11 +589,17 @@ native dodx_debug_player_state(id);
  * Use this after modifying grenade ammo to sync the client HUD.
  *
  * @param id         Player index
- * @param ammo_slot  Raw ammo-type index — take the grenade ones from
- *                   dodx_get_grenade_ammo_index() rather than repeating a literal
- * @param count      Ammo count to display (0-254)
+ * @param ammo_slot  Raw ammo-type index (0-31) — take the grenade ones from
+ *                   dodx_get_grenade_ammo_index() rather than repeating a literal.
+ *                   Check that native for -1 first; forwarding its failure return
+ *                   here is an error, not a no-op.
+ * @param count      Ammo count to display (0-254), clamped to that range
  * @return           1 on success, 0 on failure (AmmoX not registered logs
  *                   and returns 0, no abort)
+ * @error            ammo_slot outside 0-31 raises a native error that aborts the
+ *                   calling public — the 0 return is not observable for that case.
+ *                   It is not clamped: slot 0 is a real ammo type, so clamping a
+ *                   bad lookup would desync that type's HUD until it next changes.
  */
 native dodx_send_ammox(id, ammo_slot, count);
 
@@ -604,11 +610,14 @@ native dodx_send_ammox(id, ammo_slot, count);
  *
  * @param id            Player index
  * @param grenade_type  Grenade weapon ID: DODW_HANDGRENADE (13), DODW_STICKGRENADE (14), DODW_MILLS_BOMB (36)
- * @return              1 on success, 0 on failure, -1 if the created weapon
- *                      entity was removed on pickup (typically the player
- *                      already has that grenade weapon). Callers set ammo
- *                      separately, so treat -1 as "entity not granted",
- *                      not success.
+ * @return              1 on success. 2 if the pickup was refused but the
+ *                      player's slot already held that grenade before the
+ *                      give — benign, not a failure. -1 if the pickup was
+ *                      refused with an empty (or unreadable) slot — a real
+ *                      refusal worth logging. 0 on failure (bad args, dead
+ *                      player, DLL unavailable). Callers set ammo
+ *                      separately, so treat every non-1 as "entity not
+ *                      granted".
  * @error               Invalid grenade_type raises a native error that
  *                      aborts the calling public — the 0 return is not
  *                      observable for that case.
@@ -675,6 +684,22 @@ native dodx_set_user_team(id, teamId, refresh = 1);
 native dodx_get_user_origin(id, Float:origin[3]);
 
 /**
+ * Get a player's world-space bounding box.
+ * Extension mode compatible alternative to pev(id, pev_absmin/pev_absmax).
+ *
+ * Needed for zone containment: GoldSrc decides trigger membership by BBOX
+ * OVERLAP, so a point-in-box test on the origin rejects players the engine
+ * itself counts as inside. The box also reflects stance -- a prone player is
+ * flatter -- which matters exactly at the zone edges.
+ *
+ * @param id        Player index
+ * @param mins      Float array[3] to store the box minimum (absmin)
+ * @param maxs      Float array[3] to store the box maximum (absmax)
+ * @return          1 on success, 0 on failure
+ */
+native dodx_get_user_bounds(id, Float:mins[3], Float:maxs[3]);
+
+/**
  * Set player origin (position/teleport).
  * Extension mode compatible alternative to set_pev/entity_set_origin.
  *
@@ -708,6 +733,22 @@ native dodx_set_user_angles(id, Float:angles[3]);
 
 /**
  * Control point data keys for dodx_objective_get_data/dodx_objective_set_data.
+ *
+ * In extension mode the control point index passed to these natives is the game
+ * DLL's own cp index — the same one SetObj carries — and CP_index reads back that
+ * index + 1, i.e. the 1-based control point number. Under Metamod neither the entity
+ * scan nor the resolver runs, and index is taken straight off the InitObj message,
+ * so it is whatever the DLL wrote there and the +1 relation does not hold.
+ *
+ * Ordering is provisional until the DLL claims its control points, 2s of game time
+ * after the map loads. controlpoints_init fires again if the order changes, so read
+ * it there rather than caching from the first fire.
+ *
+ * On a map the module cannot resolve — no control point master, or more than one, so
+ * no single index space exists — ordering stays at the BSP/entity-scan result and may
+ * not match the DLL. The module logs "CP indices may not match the DLL on this map"
+ * when that happens, and dodx_cp_identity_resolved() answers the same question from
+ * a plugin.
  */
 enum CP_VALUE {
 	CP_edict = 1,
@@ -803,6 +844,22 @@ forward dod_score_event(id, score_delta, total_score, cp_index);
 native dodx_objectives_get_num();
 
 /**
+ * Whether control point ordering is in the game DLL's own index space.
+ *
+ * 0 means it is not, and a consumer holding its own per-map CP remap should apply
+ * it. That covers three cases with one answer: the resolve has not landed yet
+ * (2s of game time after the map loads), it gave up on this map, or the module is
+ * running under Metamod, where nothing resolves identity at all.
+ *
+ * Read it at the point of use, not once from controlpoints_init: the forward
+ * re-fires only when the resolve *changes* the order, so on a map whose scan
+ * order was already right this flips to 1 with no second fire.
+ *
+ * @return          1 if control point ordering matches the DLL, 0 otherwise
+ */
+native dodx_cp_identity_resolved();
+
+/**
  * Get control point data.
  *
  * @param index     CP array index (0 to dodx_objectives_get_num()-1)
@@ -853,6 +910,28 @@ native dodx_area_get_data(index, CA_VALUE:key, szvalue[] = "", len = 0);
  * @return          1 on success, 0 if no area
  */
 native dodx_area_set_data(index, CA_VALUE:key, ivalue = 0, const szvalue[] = "");
+
+/**
+ * Get a capture zone's world-space bounding box.
+ * Extension mode compatible -- reads the brush entity directly, no fakemeta.
+ *
+ * Use this, NOT a radius around the control point. The flag prop and its
+ * capture trigger are separate entities and are not co-located: across the DoD
+ * pool some control points sit entirely OUTSIDE their own zone, and on
+ * dod_jagd the gap runs to thousands of units. A prop-anchored radius is
+ * therefore simultaneously too small on one map and far too large on another,
+ * whatever value it is given.
+ *
+ * Returns 0 for a zero-volume box rather than reporting one. Such a box would
+ * match nothing, which reads downstream as "this flag never sees a capture" --
+ * indistinguishable from a flag nobody contested.
+ *
+ * @param index     CP array index (0 to dodx_objectives_get_num()-1)
+ * @param mins      Float array[3] to store the box minimum (absmin)
+ * @param maxs      Float array[3] to store the box maximum (absmax)
+ * @return          1 on success, 0 if no area or the box is degenerate
+ */
+native dodx_area_get_bounds(index, Float:mins[3], Float:maxs[3]);
 
 // ==================================================================
 // TEST-ONLY forward dispatch primitives — Tier 2 integration tests

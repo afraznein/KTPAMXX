@@ -2919,6 +2919,13 @@ C_DLLEXPORT void WINAPI GiveFnptrsToDll(enginefuncs_t* pengfuncsFromEngine, glob
 
 			print_srvconsole("[KTP AMX] ReHLDS extension mode detected, will initialize on server activate.\n");
 		}
+		else
+		{
+			// Without this the version gate fails silently and the server runs on with
+			// zero extension hooks registered - no forwards, no match handling.
+			print_srvconsole("[KTP AMX] FATAL: ReHLDS API rejected (need >= %d.%d). Engine is older than this build; stage engine+core+reapi+dodx together.\n",
+				REHLDS_API_VERSION_MAJOR, REHLDS_API_VERSION_MINOR);
+		}
 	}
 }
 
