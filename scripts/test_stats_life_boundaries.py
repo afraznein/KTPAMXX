@@ -83,9 +83,9 @@ def test_wire_contract() -> None:
 
 def test_schema22_team_membership_wire_and_health_order() -> None:
     emit = function_body(CAPTURE, "stock ksc_emit_team_membership")
-    assert r'triggered ^\"team_membership^\"' in emit
+    assert 'triggered ^"team_membership^"' in emit
     for field in ("matchid", "half", "team", "old_team", "game_time", "event_epoch", "sequence"):
-        assert f'({field} ^\\"%' in emit, f"team membership wire field missing: {field}"
+        assert f'({field} ^"%' in emit, f"team membership wire field missing: {field}"
     assert "ksc_event_context(matchid" in emit
     assert "ksc_buffer(line, KSC_EVENT_TEAM_MEMBERSHIP)" in emit
     assert "g_kscAttempted[KSC_EVENT_TEAM_MEMBERSHIP]++" in emit
