@@ -121,8 +121,8 @@
 // Increment when the producer/daemon storage contract changes. This is
 // emitted in every per-half manifest so mixed fleet deployments are visible
 // without reverse-engineering them from which rows happened to arrive.
-#define KSC_SCHEMA_CONTRACT 22
-#define KSC_CAPABILITIES "frag_context,damage,position,assist,life,break,flag_state,flag_position,objective_attempt,grenade_entity,sequence,health"
+#define KSC_SCHEMA_CONTRACT 23
+#define KSC_CAPABILITIES "frag_context,damage,position,assist,life,break,flag_state,flag_position,objective_attempt,team_membership,grenade_entity,position_state,map_revision,sequence,health"
 
 enum {
 	KSC_EVENT_LIFE = 0,
@@ -134,6 +134,9 @@ enum {
 	KSC_EVENT_FLAG_STATE,
 	KSC_EVENT_FLAG_POSITION,
 	KSC_EVENT_OBJECTIVE_ATTEMPT,
+	// Keep membership before grenade_entity: schema-22/23 health finalizes after
+	// grenade_entity, so every stream is reconciled before state is cleared.
+	KSC_EVENT_TEAM_MEMBERSHIP,
 	KSC_EVENT_GRENADE_ENTITY,
 	KSC_EVENT_COUNT
 }
@@ -169,7 +172,8 @@ new g_kscEmitted[KSC_EVENT_COUNT]
 new g_kscSequence = 0
 new const g_kscEventNames[KSC_EVENT_COUNT][] = {
 	"life", "damage", "position", "frag", "assist", "break",
-	"flag_state", "flag_position", "objective_attempt", "grenade_entity"
+	"flag_state", "flag_position", "objective_attempt", "team_membership",
+	"grenade_entity"
 }
 
 // [victim][attacker] -- enemy damage dealt to victim since their last spawn.
@@ -204,6 +208,8 @@ new g_kscProducerMatchId[64]
 new g_kscProducerHalf = 0
 new bool:g_kscProducerContextConfirmed = false
 new bool:g_kscAllowUntrackedEvents = true
+new g_kscMapRevision[65]
+new bool:g_kscMapRevisionReady = false
 
 new g_kscCvarEnabled
 
@@ -276,11 +282,36 @@ stock ksc_cfg() {
 	set_task(KSC_BUF_FLUSH_SECS, "ksc_flush_task", KSC_TASK_FLUSH, .flags="b")
 	set_task(KSC_ZONE_POLL_SECS, "ksc_zone_poll_task", KSC_TASK_ZONES, .flags="b")
 	set_task(KSC_POSITION_BROADCAST_SECS, "ksc_position_broadcast_task", KSC_TASK_POSITIONS, .flags="b")
+	ksc_capture_map_revision()
 
 	// The arm that actually survives a changelevel. controlpoints_init runs
 	// before the extension-mode map-change path wipes the task list, so its own
 	// arm only reaches the log on a cold boot; plugin_cfg runs after the wipe.
 	ksc_arm_flag_positions()
+}
+
+// Capture the exact BSP bytes used by this server, once per map. A schema-23
+// stream is never authorized without this value: map name alone cannot prove
+// that the reviewed spatial definition matches the running map revision.
+stock bool:ksc_capture_map_revision() {
+	new mapname[32], map_path[64]
+	get_mapname(mapname, charsmax(mapname))
+	formatex(map_path, charsmax(map_path), "maps/%s.bsp", mapname)
+	g_kscMapRevision[0] = 0
+	g_kscMapRevisionReady = false
+
+	if (!file_exists(map_path)) {
+		log_amx("[KTP-STATS] schema-23 disabled: map BSP unavailable for revision capture: %s", map_path)
+		return false
+	}
+	if (hash_file(map_path, Hash_Sha256, g_kscMapRevision, charsmax(g_kscMapRevision)) != 64) {
+		g_kscMapRevision[0] = 0
+		log_amx("[KTP-STATS] schema-23 disabled: SHA-256 capture failed for %s", map_path)
+		return false
+	}
+
+	g_kscMapRevisionReady = true
+	return true
 }
 
 stock bool:ksc_enabled() {
@@ -319,10 +350,11 @@ stock ksc_emit_manifest(const matchid[], half) {
 	new mapname[32]
 	get_mapname(mapname, charsmax(mapname))
 	new sequence = ksc_next_sequence()
-	log_message("KTP_CAPTURE_MANIFEST (matchid ^"%s^") (half ^"%d^") (map ^"%s^") (producer ^"stats_logging^") (producer_version ^"%s^") (schema ^"%d^") (capabilities ^"%s^") (position_interval ^"%.1f^") (buffer_entries ^"%d^") (life_buffer_entries ^"%d^") (sequence ^"%d^") (event_epoch ^"%d^")",
+	log_message("KTP_CAPTURE_MANIFEST (matchid ^"%s^") (half ^"%d^") (map ^"%s^") (producer ^"stats_logging^") (producer_version ^"%s^") (schema ^"%d^") (capabilities ^"%s^") (position_interval ^"%.1f^") (buffer_entries ^"%d^") (life_buffer_entries ^"%d^") (map_revision_algorithm ^"sha256^") (map_revision ^"%s^") (sequence ^"%d^") (event_epoch ^"%d^")",
 		matchid, half, mapname, PLUGIN_VERSION, KSC_SCHEMA_CONTRACT,
 		KSC_CAPABILITIES, KSC_POSITION_BROADCAST_SECS,
-		KSC_BUF_MAX_ENTRIES, KSC_LIFE_BUF_MAX_ENTRIES, sequence, get_systime())
+		KSC_BUF_MAX_ENTRIES, KSC_LIFE_BUF_MAX_ENTRIES, g_kscMapRevision,
+		sequence, get_systime())
 }
 
 stock ksc_emit_health(const matchid[], half) {
@@ -473,18 +505,21 @@ stock ksc_shutdown() {
 	ksc_flush()
 }
 
-stock ksc_activate_producer_context() {
+stock bool:ksc_activate_producer_context() {
 	// Pending matchid="-" facts are transport diagnostics, not members of the
 	// candidate stream. Drain them before sequence 1 so no buffered sentinel can
 	// appear after the authorization manifest on the wire.
 	ksc_flush()
 	ksc_reset_health()
+	if (!g_kscMapRevisionReady)
+		return false
 	g_kscProducerContextConfirmed = true
 	g_kscAllowUntrackedEvents = false
 	g_kscLifeBaselinePending = true
 	g_kscOwnershipMatchId[0] = 0
 	g_kscOwnershipBaselinePending = true
 	ksc_emit_manifest(g_kscProducerMatchId, g_kscProducerHalf)
+	return true
 }
 
 // hlstats.pl joins frag_context and damage on an EXACT second via this
@@ -515,8 +550,8 @@ stock bool:ksc_event_context(matchid[], len, &half) {
 		return false
 	}
 
-	if (!g_kscProducerContextConfirmed)
-		ksc_activate_producer_context()
+	if (!g_kscProducerContextConfirmed && !ksc_activate_producer_context())
+		return false
 	copy(matchid, len, g_kscProducerMatchId)
 	half = g_kscProducerHalf
 	return true
@@ -977,6 +1012,50 @@ stock ksc_life_start(id, const reason[]) {
 	else
 		// Retry as a left-censored context baseline on the next zone poll.
 		g_kscLifeBaselinePending = true
+}
+
+// DODX supplies this at the game-DLL's actual team transition. Do not infer a
+// side from a later position sample: death/spectator gaps would otherwise make
+// the derived interval claim a team the player no longer belonged to.
+stock ksc_emit_team_membership(id, team, oldteam) {
+	g_kscAttempted[KSC_EVENT_TEAM_MEMBERSHIP]++
+	if (!ksc_enabled() || id < 1 || id > MAX_PLAYERS) {
+		g_kscDroppedByType[KSC_EVENT_TEAM_MEMBERSHIP]++
+		return
+	}
+	if (team == oldteam) {
+		g_kscDroppedByType[KSC_EVENT_TEAM_MEMBERSHIP]++
+		return
+	}
+	// DODX has a transient spectator value 3; the private protocol uses 0 for
+	// all unassigned/non-playing states and only 1/2 for playing teams.
+	if (team != 1 && team != 2)
+		team = 0
+	if (oldteam != 1 && oldteam != 2)
+		oldteam = 0
+	if (team == oldteam) {
+		g_kscDroppedByType[KSC_EVENT_TEAM_MEMBERSHIP]++
+		return
+	}
+
+	new matchid[64], half
+	if (!ksc_event_context(matchid, charsmax(matchid), half)) {
+		g_kscDroppedByType[KSC_EVENT_TEAM_MEMBERSHIP]++
+		return
+	}
+	new player_str[96]
+	ksc_player_str(id, player_str, charsmax(player_str))
+	new sequence = ksc_next_sequence()
+	new Float:game_time = get_gametime()
+	new line[KSC_BUF_LINE_LEN]
+	formatex(line, charsmax(line),
+		"^\"%s^\" triggered ^\"team_membership^\" (matchid ^\"%s^\") (half ^\"%d^\") (team ^\"%d^\") (old_team ^\"%d^\") (game_time ^\"%.2f^\") (event_epoch ^\"%d^\") (sequence ^\"%d^\")",
+		player_str, matchid, half, team, oldteam, game_time, get_systime(), sequence)
+	ksc_buffer(line, KSC_EVENT_TEAM_MEMBERSHIP)
+}
+
+public dod_client_changeteam(id, team, oldteam) {
+	ksc_emit_team_membership(id, team, oldteam)
 }
 
 stock ksc_life_end(id, const reason[]) {
@@ -1910,7 +1989,10 @@ public ksc_position_broadcast_task() {
 	for (new id = 1; id <= MAX_PLAYERS; id++) {
 		if (!is_user_connected(id))
 			continue
-		if (!is_user_alive(id))
+		new alive = is_user_alive(id) ? 1 : 0
+		new team = get_user_team(id)
+		new spectator = (team == 3) ? 1 : 0
+		if (!alive || spectator)
 			continue
 
 		new pos[64]
@@ -1920,15 +2002,15 @@ public ksc_position_broadcast_task() {
 		new pstr[96]
 		ksc_player_str(id, pstr, charsmax(pstr))
 
-		new team = get_user_team(id)
 		new Float:gt = get_gametime()
 		new event_epoch = get_systime()
 		new sequence = ksc_next_sequence()
 
 		new line[KSC_BUF_LINE_LEN]
 		formatex(line, charsmax(line),
-			"^"%s^" triggered ^"position_sample^" (team ^"%d^") (position ^"%s^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^")",
-			pstr, team, pos, producer_matchid, producer_half, gt, event_epoch, sequence)
+			"^"%s^" triggered ^"position_sample^" (team ^"%d^") (position ^"%s^") (alive ^"%d^") (spectator ^"%d^") (map_revision ^"%s^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^")",
+			pstr, team, pos, alive, spectator, g_kscMapRevision,
+			producer_matchid, producer_half, gt, event_epoch, sequence)
 		ksc_buffer(line, KSC_EVENT_POSITION)
 	}
 }
