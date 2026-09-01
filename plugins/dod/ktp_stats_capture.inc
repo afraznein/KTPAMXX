@@ -1049,7 +1049,7 @@ stock ksc_emit_team_membership(id, team, oldteam) {
 	new Float:game_time = get_gametime()
 	new line[KSC_BUF_LINE_LEN]
 	formatex(line, charsmax(line),
-		"^\"%s^\" triggered ^\"team_membership^\" (matchid ^\"%s^\") (half ^\"%d^\") (team ^\"%d^\") (old_team ^\"%d^\") (game_time ^\"%.2f^\") (event_epoch ^\"%d^\") (sequence ^\"%d^\")",
+		"^"%s^" triggered ^"team_membership^" (matchid ^"%s^") (half ^"%d^") (team ^"%d^") (old_team ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^")",
 		player_str, matchid, half, team, oldteam, game_time, get_systime(), sequence)
 	ksc_buffer(line, KSC_EVENT_TEAM_MEMBERSHIP)
 }
