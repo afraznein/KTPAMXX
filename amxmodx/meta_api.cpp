@@ -1905,11 +1905,17 @@ void SV_ClientUserInfoChanged_RH(IRehldsHook_SV_ClientUserInfoChanged *chain, IG
 	if (!name || !*name)
 		return;
 
+	// INFOKEY_VALUE returns a pointer into the engine's 4-slot rotating static
+	// buffer, and every get_user_info() a client_infochanged handler makes rotates
+	// it — held across the forwards, `name` reads back some OTHER userinfo key's
+	// value and that becomes the cached player name. Copy before the forwards run.
+	ke::AString safeName(name);
+
 	// Fire BEFORE refreshing the cache, matching C_ClientUserInfoChanged_Post. Plugins
 	// detect a rename by comparing cached get_user_name() against get_user_info("name");
 	// updating pPlayer->name first makes those equal and the rename undetectable.
 	executeForwards(FF_ClientInfoChanged, static_cast<cell>(index));
-	pPlayer->name = name;
+	pPlayer->name = ke::Move(safeName);
 }
 
 void C_ClientPutInServer_Post(edict_t *pEntity)
