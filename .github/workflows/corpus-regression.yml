@@ -2,11 +2,10 @@
 # corpus against this PR's KTPAMXX.
 #
 # Every ref below except `amxx_ref` is pinned to the harness lineage, and that is
-# load-bearing rather than tidiness. GitHub requires the `uses:` ref to be a
-# literal — it cannot be an expression — so the harness is always preprod's. The
-# reusable workflow defaults each unsupplied `*_ref` to that same lineage, which
-# means any ref this file supplies from a GitHub context is a chance to assemble
-# one lineage's harness against another's repositories.
+# load-bearing rather than tidiness. The reusable workflow defaults each unsupplied
+# `*_ref` to that same lineage, which means any ref this file supplies from a
+# GitHub context is a chance to assemble one lineage's harness against another's
+# repositories.
 #
 # `daemon_ref` used to be `github.event.pull_request.base.ref`. For a PR into
 # preprod that is the harness lineage and everything agreed; for a PR into main it
@@ -19,6 +18,37 @@
 # `amxx_ref` is the one ref that must NOT be pinned: it is the artifact under
 # test, and pinning it would leave the lane reporting on code the PR never
 # touched. support/check_lane_refs.py enforces both halves of that rule.
+#
+# The `uses:` line below is pinned to a commit SHA, not `@preprod`. GitHub already
+# requires that ref to be a literal — it cannot be an expression — but a literal
+# branch name still moves every time someone pushes to preprod. The reusable
+# workflow's inner job is named `Lane B (${{ inputs.lane }}, ${{ matrix.target_ref
+# }}, run ${{ matrix.run_index }})`, which composes the required status check
+# `corpus-regression / Lane B (corpus, preprod, run 1)` on this repo's `main` and
+# `preprod`. A rename of that job on preprod — even one unrelated to us — would
+# mean the required context can never report again, with no failing check to point
+# at: every PR would block forever. Pinning the SHA freezes which version of the
+# reusable workflow's *code* runs, so a later rename on preprod cannot reach us
+# until we deliberately move the pin.
+#
+# `infrastructure_ref`/`daemon_ref` below stay the literal `preprod` — that is not
+# a leftover. They select which commit of KTPInfrastructure/KTPHLStatsX gets
+# CHECKED OUT once the pinned workflow code is running, which is deliberately left
+# live so the harness content (fixtures, schema, bot driver) keeps tracking
+# preprod. Only the orchestration YAML itself is frozen. support/check_lane_refs.py
+# no longer compares these against the `uses:` pin (which can now be a SHA that no
+# branch name equals) — it compares them against the fixed lineage name "preprod"
+# instead, which is what actually has to agree for the harness and the checked-out
+# repositories to be one release train.
+#
+# Freezing the orchestration code trades a silent-forever failure for a silent
+# staleness: nothing forces this pin forward as preprod's harness evolves. Re-pin
+# deliberately when the harness needs something newer. support/check_lane_refs.py
+# also asserts, on every run, that the `lane: corpus` literal below still composes
+# the exact required context string above — that catches an in-repo edit
+# accidentally renaming the context (e.g. changing `lane`), though it cannot see a
+# rename made upstream in KTPInfrastructure, which is exactly what the SHA pin is
+# for.
 
 name: Corpus Regression
 
@@ -52,7 +82,9 @@ jobs:
         run: python3 support/check_lane_refs.py
 
   corpus-regression:
-    uses: afraznein/KTPInfrastructure/.github/workflows/lane-b-stats-e2e.yml@preprod
+    # Pinned to preprod's tip as of 2026-08-30 (KTPInfrastructure#201). Re-pin
+    # deliberately when the harness needs to move; see the file header comment.
+    uses: afraznein/KTPInfrastructure/.github/workflows/lane-b-stats-e2e.yml@3b6ac496c86d59ef81dd23a9c76193be312449d8
     with:
       lane: corpus
       infrastructure_ref: preprod
