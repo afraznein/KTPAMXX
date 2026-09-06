@@ -18,10 +18,26 @@ ahead of main is the normal direction of travel.
 
 The rule this enforces:
 
-  - every `*_ref` input except `amxx_ref` is a literal equal to the `uses:` pin,
-    so the harness and everything it assembles come from one lineage
+  - every `*_ref` input except `amxx_ref` is a literal equal to the fixed
+    lineage name below, so the harness and everything it assembles come from
+    one release train
   - `amxx_ref` is an expression, because it is the artifact under test and
     pinning it would leave the lane measuring something other than the PR
+  - the `uses:` pin itself is NOT `preprod` (or any other moving branch name)
+    -- it is a sha or tag, so a rename of the reusable workflow's job upstream
+    cannot silently stop the required status check
+    `corpus-regression / Lane B (corpus, preprod, run 1)` from ever reporting
+    again
+  - the `lane:` input still composes that exact required context string, so an
+    in-repo edit to this file cannot silently rename the context either (it
+    cannot see a rename made upstream in KTPInfrastructure -- that half is what
+    the `uses:` pin is for)
+
+The lineage check used to compare every `*_ref` against whatever the `uses:`
+pin said, because that pin was always the literal branch name `preprod`. Once
+`uses:` is a sha, that comparison is meaningless -- no branch name equals a
+sha -- so the lineage is now a fixed constant instead of being re-derived from
+the pin.
 
 No toolchain, no build, stdlib only:
 
@@ -42,6 +58,22 @@ LANE_B = "KTPInfrastructure/.github/workflows/lane-b-stats-e2e.yml"
 
 # The one ref that must track the pull request rather than the harness.
 UNDER_TEST = "amxx_ref"
+
+# The release train every non-UNDER_TEST ref must name. Independent of the `uses:`
+# pin on purpose -- see the module docstring.
+LINEAGE = "preprod"
+
+# Branch names the `uses:` pin must never be. A literal branch keeps moving after
+# it is written, which is the exact defect this file exists to catch.
+MOVING_REFS = {"preprod", "main"}
+
+# The local job id this call lives under, and the reusable workflow's own job name
+# template with this call's `lane` substituted in. Both are read off `main`/
+# `preprod` branch protection as one required status check; composing it here and
+# comparing is the only part of that check this file can still perform once the
+# `uses:` pin freezes which copy of the upstream template applies.
+JOB_ID = "corpus-regression"
+REQUIRED_CONTEXT = "{} / Lane B ({}, {}, run 1)".format(JOB_ID, "corpus", LINEAGE)
 
 EXPRESSION = re.compile(r"\$\{\{")
 
@@ -110,6 +142,13 @@ def check_text(text):
     if errors:
         return errors
 
+    if uses_ref in MOVING_REFS:
+        errors.append(
+            "the Lane B `uses:` is pinned to {!r}, a branch that keeps moving. "
+            "A rename of the reusable workflow's job on that branch would mean "
+            "the required status check {!r} can never report again. Pin to a "
+            "sha or tag instead.".format(uses_ref, REQUIRED_CONTEXT))
+
     refs = sorted(k for k in inputs if k.endswith("_ref"))
     if not refs:
         # No `*_ref` inputs at all means the extraction died rather than that the
@@ -133,14 +172,29 @@ def check_text(text):
         if EXPRESSION.search(value):
             errors.append(
                 "{} is a GitHub expression ({}). Every ref but {} must be a "
-                "literal equal to the `uses:` pin {!r}, or the harness and the "
-                "repositories it assembles can come from different lineages.".format(
-                    name, value, UNDER_TEST, uses_ref))
-        elif value != uses_ref:
+                "literal equal to {!r}, or the harness and the repositories it "
+                "assembles can come from different lineages.".format(
+                    name, value, UNDER_TEST, LINEAGE))
+        elif value != LINEAGE:
             errors.append(
-                "{} is {!r} but the harness is pinned at {!r}. Straddling two "
+                "{} is {!r} but the harness lineage is {!r}. Straddling two "
                 "lineages fails during artifact assembly for reasons unrelated "
-                "to the pull request.".format(name, value, uses_ref))
+                "to the pull request.".format(name, value, LINEAGE))
+
+    # The required status check's name is composed from this call's `lane` input
+    # plus the fixed lineage name -- neither the reusable workflow's template nor
+    # this call's job id is visible from here, so this cannot catch a rename made
+    # upstream (the `uses:` sha pin is what protects against that). What it does
+    # catch is an edit to THIS file quietly renaming the context, e.g. changing
+    # `lane` away from `corpus`.
+    lane_value = inputs.get("lane", "").strip()
+    composed = "{} / Lane B ({}, {}, run 1)".format(JOB_ID, lane_value or "full", LINEAGE)
+    if composed != REQUIRED_CONTEXT:
+        errors.append(
+            "this call composes the status check {!r}, not the required {!r}. "
+            "Branch protection is waiting for the required context -- fix `lane` "
+            "(or update REQUIRED_CONTEXT if the required check itself was "
+            "deliberately changed).".format(composed, REQUIRED_CONTEXT))
 
     return errors
 
@@ -155,8 +209,11 @@ def check(root):
     return check_text(text)
 
 
-def _fixture(uses_ref="preprod", amxx="${{ github.event.pull_request.head.sha }}",
-             daemon="preprod", infra="preprod", extra=""):
+SHA_FIXTURE = "3b6ac496c86d59ef81dd23a9c76193be312449d8"
+
+
+def _fixture(uses_ref=SHA_FIXTURE, amxx="${{ github.event.pull_request.head.sha }}",
+             daemon="preprod", infra="preprod", lane="corpus", extra=""):
     return (
         "name: Corpus Regression\n"
         "on:\n"
@@ -166,7 +223,7 @@ def _fixture(uses_ref="preprod", amxx="${{ github.event.pull_request.head.sha }}
         "  corpus-regression:\n"
         "    uses: afraznein/" + LANE_B + "@" + uses_ref + "\n"
         "    with:\n"
-        "      lane: corpus\n"
+        "      lane: " + lane + "\n"
         "      infrastructure_ref: " + infra + "\n"
         "      amxx_ref: " + amxx + "\n"
         "      daemon_ref: " + daemon + "\n"
@@ -211,10 +268,20 @@ def selftest():
         _fixture(extra="      matchhandler_ref: ${{ github.ref_name }}\n"))
     expect_fail(
         "no @ref on the uses: line",
-        _fixture().replace("@preprod\n", "\n", 1))
+        _fixture().replace("@" + SHA_FIXTURE + "\n", "\n", 1))
     expect_fail(
         "the Lane B call is absent",
         "name: Corpus Regression\njobs:\n  other:\n    runs-on: ubuntu-latest\n")
+    expect_fail(
+        "uses: pin regresses to the moving preprod branch (the exact defect "
+        "this file exists to catch)",
+        _fixture(uses_ref="preprod"))
+    expect_fail(
+        "uses: pin regresses to main",
+        _fixture(uses_ref="main"))
+    expect_fail(
+        "lane changed away from corpus silently renames the required context",
+        _fixture(lane="full"))
 
     if failures:
         for line in failures:
