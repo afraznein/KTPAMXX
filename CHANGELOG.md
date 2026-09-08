@@ -66,6 +66,23 @@ no longer describes this tree. See the 2.7.32 note.
   `stats_logging.amxx` correctly leaves producer context fail-closed.
 
 ### Fixed
+- **`team_membership` health telemetry no longer double-counts `attempted`**
+  (`ktp_stats_capture.inc`, `stats_logging.sma` 1.19.0 -> 1.19.1).
+  `ksc_emit_team_membership` pre-incremented `g_kscAttempted` unconditionally
+  at entry, then unconditionally called `ksc_buffer()` on its happy path --
+  which itself increments `g_kscAttempted` again, the same shared counting
+  every other buffered event type relies on. The result: every successfully
+  buffered team-membership transition reported `attempted = 2x enqueued`
+  with `dropped = 0`, since no drop path was actually taken. Confirmed
+  corpus-wide (2026-09-07 regression audit): the ratio was exactly 2:1
+  whenever nonzero, across every match checked, and alone was enough to
+  fail `capture_authorization`'s per-half reconciliation on 93/93 real
+  matches even where the underlying objective/capture data was fine. Fix
+  moves the pre-increment onto each of the four early-return branches only
+  (mirroring `ksc_grenade_record_drop`'s pattern), so `attempted` increments
+  exactly once per call: on a drop branch, or once inside `ksc_buffer` on
+  the happy path. No wire format change; only in-memory health counters.
+
 - **Capout and last-flag-defense telemetry now requires the attacker to own
   every other flag** (`ktp_stats_capture.inc`, `stats_logging.sma` 1.16.1 ->
   1.16.2). The previous test only required the defender to own one flag. On a

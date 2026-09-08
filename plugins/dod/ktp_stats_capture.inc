@@ -1018,12 +1018,16 @@ stock ksc_life_start(id, const reason[]) {
 // side from a later position sample: death/spectator gaps would otherwise make
 // the derived interval claim a team the player no longer belonged to.
 stock ksc_emit_team_membership(id, team, oldteam) {
-	g_kscAttempted[KSC_EVENT_TEAM_MEMBERSHIP]++
+	// ksc_buffer() already counts attempted on the path that reaches it, so only
+	// the early returns count their own: pre-incrementing here as well made
+	// attempted 2x enqueued and failed capture_authorization on every match.
 	if (!ksc_enabled() || id < 1 || id > MAX_PLAYERS) {
+		g_kscAttempted[KSC_EVENT_TEAM_MEMBERSHIP]++
 		g_kscDroppedByType[KSC_EVENT_TEAM_MEMBERSHIP]++
 		return
 	}
 	if (team == oldteam) {
+		g_kscAttempted[KSC_EVENT_TEAM_MEMBERSHIP]++
 		g_kscDroppedByType[KSC_EVENT_TEAM_MEMBERSHIP]++
 		return
 	}
@@ -1034,12 +1038,14 @@ stock ksc_emit_team_membership(id, team, oldteam) {
 	if (oldteam != 1 && oldteam != 2)
 		oldteam = 0
 	if (team == oldteam) {
+		g_kscAttempted[KSC_EVENT_TEAM_MEMBERSHIP]++
 		g_kscDroppedByType[KSC_EVENT_TEAM_MEMBERSHIP]++
 		return
 	}
 
 	new matchid[64], half
 	if (!ksc_event_context(matchid, charsmax(matchid), half)) {
+		g_kscAttempted[KSC_EVENT_TEAM_MEMBERSHIP]++
 		g_kscDroppedByType[KSC_EVENT_TEAM_MEMBERSHIP]++
 		return
 	}
