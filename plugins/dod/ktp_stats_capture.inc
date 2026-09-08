@@ -225,6 +225,10 @@ new bool:g_kscFlagPosPending = false
 new g_kscCapTeam[KSC_MAX_FLAGS]     // team currently capturing this point, 0 = none
 new g_kscOwner[KSC_MAX_FLAGS]       // last seen CP_owner, to spot a completed cap
 new bool:g_kscOwnershipBaselinePending = true
+// Armed while a restart/countdown is in progress, consumed on the first poll
+// after it ends. Authored ownership is not readable until the restart cascade
+// restores defaults, so the pre-restart baseline is necessarily neutral.
+new bool:g_kscOwnershipRebaselineArmed = false
 new g_kscOwnershipMatchId[64]
 new g_kscPrevAllies[KSC_MAX_FLAGS]  // in-zone counts as of the previous poll
 new g_kscPrevAxis[KSC_MAX_FLAGS]
@@ -1789,6 +1793,19 @@ public ksc_zone_poll_task() {
 	// loop still refreshes owner/capping/count caches, but pending killers are
 	// empty and break evaluation is explicitly suppressed for this baseline.
 	new bool:suppress_breaks = ksc_break_observe_round_clock()
+	// The engine only restores authored flag ownership on the round-restart
+	// cascade ("the gap is map load -> first restart", moduleconfig.cpp), so a
+	// baseline taken before that reads neutral for every point no matter which
+	// property it reads. Re-take it once, on the first poll after the restart
+	// ends, so the is_initial row states real ownership instead of asserting
+	// neutral -- and so the correction lands as a baseline rather than as a
+	// burst of ownership "changes" that carry no capture behind them.
+	if (suppress_breaks) {
+		g_kscOwnershipRebaselineArmed = true
+	} else if (g_kscOwnershipRebaselineArmed) {
+		g_kscOwnershipRebaselineArmed = false
+		g_kscOwnershipBaselinePending = true
+	}
 	if (suppress_breaks) {
 		ksc_break_clear_all()
 		// A restart/countdown invalidates the old capture-area state just as
