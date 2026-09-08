@@ -1018,15 +1018,9 @@ stock ksc_life_start(id, const reason[]) {
 // side from a later position sample: death/spectator gaps would otherwise make
 // the derived interval claim a team the player no longer belonged to.
 stock ksc_emit_team_membership(id, team, oldteam) {
-	// KTP-XXXX: ksc_buffer() below already counts g_kscAttempted on the path
-	// that reaches it, same as every other event type routed through it
-	// (grenade_entity, damage, frag_context, ...). This function used to
-	// ALSO pre-increment attempted unconditionally at entry, double-counting
-	// every successfully buffered event (attempted = 2x enqueued, dropped
-	// always 0) and failing capture_authorization's per-half reconciliation
-	// on every match. Each early-return path below now increments attempted
-	// itself, matching ksc_grenade_record_drop's pattern: count an attempt
-	// exactly once, on whichever branch actually consumes it.
+	// ksc_buffer() already counts attempted on the path that reaches it, so only
+	// the early returns count their own: pre-incrementing here as well made
+	// attempted 2x enqueued and failed capture_authorization on every match.
 	if (!ksc_enabled() || id < 1 || id > MAX_PLAYERS) {
 		g_kscAttempted[KSC_EVENT_TEAM_MEMBERSHIP]++
 		g_kscDroppedByType[KSC_EVENT_TEAM_MEMBERSHIP]++
