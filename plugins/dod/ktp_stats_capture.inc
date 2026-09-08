@@ -223,7 +223,7 @@ new g_kscFlagName[KSC_MAX_FLAGS][32]
 new bool:g_kscFlagPosPending = false
 
 new g_kscCapTeam[KSC_MAX_FLAGS]     // team currently capturing this point, 0 = none
-new g_kscOwner[KSC_MAX_FLAGS]       // last seen CA_owning_team, to spot a completed cap
+new g_kscOwner[KSC_MAX_FLAGS]       // last seen CP_owner, to spot a completed cap
 new bool:g_kscOwnershipBaselinePending = true
 new g_kscOwnershipMatchId[64]
 new g_kscPrevAllies[KSC_MAX_FLAGS]  // in-zone counts as of the previous poll
@@ -1330,6 +1330,24 @@ stock ksc_normalize_owner(owner) {
 	return 0
 }
 
+stock ksc_read_owner(f) {
+	// Ownership comes from the CONTROL POINT (CP_owner), not from the capture
+	// area (CA_owning_team). The area is the trigger volume; its m_nOwningTeam
+	// does not carry the map's authored ownership, so a flag a team holds at
+	// spawn and is never forced off reads as neutral for the whole match --
+	// 1,705 of 1,722 initial rows in production, and 400 of 400 on
+	// dod_lennon5_b1, where the HUD reports two flags owned at spawn. That
+	// understates every swing off a home flag (neutral->axis instead of
+	// allies->axis), upstream of flag_swing, map_control, objective_pressure
+	// and recap_speed.
+	//
+	// CP_owner is the field the HUD observer reads (objective_get_data(i,
+	// CP_owner)) and it reports spawn ownership correctly there. The baseline
+	// and the poll must read the SAME field: mixing them would make the first
+	// poll after the baseline emit a false ownership flip.
+	return ksc_normalize_owner(dodx_objective_get_data(f, CP_owner))
+}
+
 // ---------------------------------------------------------------------------
 // Factual objective-attempt lifecycle
 //
@@ -1534,8 +1552,7 @@ stock ksc_ensure_ownership_baseline() {
 		// Refresh immediately before the baseline. If a round reset happened
 		// between polls, emitting the cached pre-reset owner followed by a
 		// same-tick correction would create a false zero-length interval.
-		g_kscOwner[f] = ksc_normalize_owner(
-			dodx_area_get_data(f, CA_owning_team))
+		g_kscOwner[f] = ksc_read_owner(f)
 		ksc_emit_flag_state(f, g_kscOwner[f], 1)
 	}
 
@@ -1793,8 +1810,7 @@ public ksc_zone_poll_task() {
 		// succeeded, so the cappers leaving afterwards must not be credited to
 		// whoever last got a kill there. Also covers the round-restart cascade,
 		// which flips every point back to its default owner.
-		new owner = ksc_normalize_owner(
-			dodx_area_get_data(f, CA_owning_team))
+		new owner = ksc_read_owner(f)
 		if (owner != g_kscOwner[f]) {
 			g_kscOwner[f] = owner
 			ksc_break_clear(f)
@@ -1877,8 +1893,7 @@ public controlpoints_init() {
 		if (!g_kscFlagName[f][0])
 			formatex(g_kscFlagName[f], charsmax(g_kscFlagName[]), "flag_%d", f)
 
-		g_kscOwner[f]      = ksc_normalize_owner(
-			dodx_area_get_data(f, CA_owning_team))
+		g_kscOwner[f]      = ksc_read_owner(f)
 		g_kscCapTeam[f]    = 0
 		g_kscPrevAllies[f] = 0
 		g_kscPrevAxis[f]   = 0
