@@ -732,11 +732,11 @@ def test_physical_boundaries_do_not_use_stats_pause_gate() -> None:
 
 
 def test_plugin_version() -> None:
-    assert re.search(r'#define\s+PLUGIN_VERSION\s+"1\.20\.2"', STATS)
+    assert re.search(r'#define\s+PLUGIN_VERSION\s+"1\.19\.3"', STATS)
 
 
 def test_schema23_manifest_and_two_second_position_contract() -> None:
-    assert re.search(r"#define\s+KSC_SCHEMA_CONTRACT\s+24(?:\s|$)", CAPTURE)
+    assert re.search(r"#define\s+KSC_SCHEMA_CONTRACT\s+23(?:\s|$)", CAPTURE)
     assert re.search(r"#define\s+KSC_POSITION_BROADCAST_SECS\s+2\.0(?:\s|$)", CAPTURE)
     for capability in ("objective_attempt", "grenade_entity", "position_state", "map_revision"):
         assert capability in re.search(
@@ -1074,7 +1074,7 @@ def test_dodx_grenade_entity_forward_and_direct_dispatch_contract() -> None:
     )
     assert "serial <= 0" in drop_dispatch
     assert "wpnid != 13 && wpnid != 14 && wpnid != 36" in drop_dispatch
-    assert re.search(r'#define\s+PLUGIN_VERSION\s+"1\.20\.2"', STATS)
+    assert re.search(r'#define\s+PLUGIN_VERSION\s+"1\.19\.3"', STATS)
 
 
 def test_ksc_buffer_detects_and_counts_line_truncation() -> None:
@@ -1147,52 +1147,6 @@ def test_flag_owner_resolves_against_the_authored_default() -> None:
 
     baseline = function_body(CAPTURE, "stock ksc_ensure_ownership_baseline()")
     before(baseline, "ksc_refresh_flag_defaults()", "g_kscOwner[f] = ksc_read_owner(f)")
-
-
-def test_shot_context_stream() -> None:
-    # ENGINE_STATS_EXPANSION_PLAN_20260909.md wave 0 (§3.6b): own buffer, own
-    # cvar, own flush task -- must never share capacity with the damage/break
-    # buffer a burst of shots would evict.
-    manifest = re.search(r'#define\s+KSC_CAPABILITIES\s+"([^"]+)"', CAPTURE)
-    assert manifest and "shot" in manifest.group(1).split(",")
-
-    enum = function_body(CAPTURE, "enum {")
-    assert "KSC_EVENT_SHOT" in enum
-    assert enum.index("KSC_EVENT_GRENADE_ENTITY") < enum.index("KSC_EVENT_SHOT")
-    names = function_body(CAPTURE, "new const g_kscEventNames")
-    assert '"shot"' in names
-
-    assert re.search(r"#define\s+KSC_SHOT_BUF_MAX_ENTRIES\s+512", CAPTURE)
-    assert re.search(r"new\s+g_kscShotBuffer\[KSC_SHOT_BUF_MAX_ENTRIES\]\[KSC_SHOT_BUF_LINE_LEN\]", CAPTURE)
-
-    enqueue = function_body(CAPTURE, "stock bool:ksc_shot_buffer(const line[])")
-    assert "g_kscShotBufferCount >= KSC_SHOT_BUF_MAX_ENTRIES" in enqueue
-    assert "g_kscShotDropped++" in enqueue
-    assert "g_kscDroppedByType[KSC_EVENT_SHOT]++" in enqueue
-    before(enqueue, "strlen(line) >= KSC_SHOT_BUF_LINE_LEN - 1", "copy(g_kscShotBuffer")
-
-    flush = function_body(CAPTURE, "public ksc_shot_flush_task()")
-    assert 'log_message("%s", g_kscShotBuffer[i])' in flush
-    assert "g_kscShotBufferCount = 0" in flush
-    assert "g_kscShotDropped = 0" in flush
-
-    forward = function_body(CAPTURE, "public dod_client_weapon_fire(id, weapon, Float:gametime)")
-    assert "ksc_shots_enabled()" in forward
-    assert "is_user_alive(id)" in forward
-    assert "get_user_team(id) == 0" in forward
-    assert "ksc_event_context(" in forward  # no match context -> no shot rows
-    assert '"^"%s^" triggered ^"shot^"' in forward
-    assert "ksc_shot_buffer(line)" in forward
-
-    # One handler owns shot detection (CMisc.cpp:470-472 forbids a second);
-    # this forward must read state, never invent a button/sound-based check.
-    assert "GetButton" not in forward and "StartSound" not in forward
-
-    cvar = function_body(CAPTURE, "stock ksc_init()")
-    assert 'register_cvar("ktp_stats_shots", "1")' in cvar
-
-    cfg = function_body(CAPTURE, "stock ksc_cfg()")
-    assert 'set_task(KSC_SHOT_FLUSH_SECS, "ksc_shot_flush_task", KSC_TASK_SHOT_FLUSH' in cfg
 
 
 def main() -> None:
