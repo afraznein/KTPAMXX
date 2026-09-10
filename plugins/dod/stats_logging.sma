@@ -15,7 +15,7 @@
 #include <amxmodx>
 #include <dodx>
 
-#define PLUGIN_VERSION "1.19.3"
+#define PLUGIN_VERSION "1.20.3"
 
 // KTP: extra per-match stat capture for HLStatsX (assists, cap breaks,
 // positions and frag context today; the per-hit damage ledger in a later
