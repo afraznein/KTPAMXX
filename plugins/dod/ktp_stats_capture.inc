@@ -258,6 +258,17 @@ new bool:g_kscFlagPosPending = false
 
 new g_kscCapTeam[KSC_MAX_FLAGS]     // team currently capturing this point, 0 = none
 new g_kscOwner[KSC_MAX_FLAGS]       // last seen CP_owner, to spot a completed cap
+// The map's AUTHORED owner per flag, read once from CP_default_owner. dodx
+// seeds this from the BSP's point_default_owner key at map load; it is 0 on
+// every flag of a genuinely neutral map, and 0 everywhere on a module older
+// than the BSP default-owner seed (KTPAMXX #9) -- in which case every use of
+// it below degrades to exactly the pre-fix behaviour.
+new g_kscFlagDefaultOwner[KSC_MAX_FLAGS]
+// Has CP_owner ever read a real team for this flag since the current baseline
+// was armed? Gates the default-owner fallback in ksc_read_owner: once the
+// engine has reported an actual holder, its reading is authoritative from then
+// on, including a later drop back to neutral.
+new bool:g_kscFlagOwnerSeen[KSC_MAX_FLAGS]
 new bool:g_kscOwnershipBaselinePending = true
 // Armed while a restart/countdown is in progress, consumed on the first poll
 // after it ends. Authored ownership is not readable until the restart cascade
@@ -1385,11 +1396,72 @@ stock ksc_read_owner(f) {
 	// allies->axis), upstream of flag_swing, map_control, objective_pressure
 	// and recap_speed.
 	//
-	// CP_owner is the field the HUD observer reads (objective_get_data(i,
-	// CP_owner)) and it reports spawn ownership correctly there. The baseline
-	// and the poll must read the SAME field: mixing them would make the first
-	// poll after the baseline emit a false ownership flip.
-	return ksc_normalize_owner(dodx_objective_get_data(f, CP_owner))
+	// CP_owner alone is NOT enough, which is the 2026-09-10 correction to the
+	// paragraph above. Measured on the first home-flag map played after the
+	// #97/#99 rollout -- dod_armory_b6, match 1.3-6770-NY1 on NY SCRIM 1, a
+	// server carrying both the current plugin and a 2.7.32+ module:
+	//
+	//   baseline half 1 @ gt=261.01   Allied First=0  Axis First=0
+	//   baseline half 2 @ gt=77.00    Allied First=0  Axis First=0
+	//   ... and neither flag appears in ANY transition row for the whole match
+	//
+	// while the map's own BSP authors point_default_owner=1 on Allied First
+	// and =2 on Axis First (verified by dumping the shipped .bsp), and dodx's
+	// cp_index order matches ours exactly (so this is not an index-space
+	// mismatch). The two flags were never captured, and CP_owner read neutral
+	// for both, start to finish.
+	//
+	// The engine's m_iTeam -- which CP_owner reads -- carries the CURRENT
+	// holder, and is 0 for a control point that no team has taken since the
+	// last reset. The map's authored owner lives in m_iDefaultOwner, which
+	// dodx exposes separately as CP_default_owner. A flag that opens owned and
+	// is never contested therefore reads 0 forever on CP_owner while the game
+	// itself renders it owned. The same blind spot is visible in the HUD
+	// observer, which reads CP_owner the same way and also reports neutral at
+	// spawn on these maps.
+	//
+	// So: resolve the two. CP_owner wins whenever it names a real team, and
+	// keeps winning once it ever has (g_kscFlagOwnerSeen) -- including a later
+	// legitimate drop back to neutral, which is a real state a contested flag
+	// reaches (dod_armory_b6's Warehouse does exactly that at gt=1139.56).
+	// Only a flag the engine has never reported a holder for falls back to the
+	// authored default, which is precisely the case CP_owner cannot express.
+	new raw = ksc_normalize_owner(dodx_objective_get_data(f, CP_owner))
+	if (raw != 0) {
+		if (f >= 0 && f < KSC_MAX_FLAGS)
+			g_kscFlagOwnerSeen[f] = true
+		return raw
+	}
+
+	if (f >= 0 && f < KSC_MAX_FLAGS
+		&& !g_kscFlagOwnerSeen[f]
+		&& g_kscFlagDefaultOwner[f] != 0)
+		return g_kscFlagDefaultOwner[f]
+
+	return 0
+}
+
+// CP_default_owner for one flag, normalized to the KTP team convention. Read
+// through the same guard as every other dodx objective read; a module without
+// the BSP default-owner seed returns 0 here for every flag, which turns the
+// fallback in ksc_read_owner into a no-op rather than a wrong answer.
+stock ksc_read_default_owner(f) {
+	return ksc_normalize_owner(dodx_objective_get_data(f, CP_default_owner))
+}
+
+// Re-read the authored defaults and drop the "engine has named a holder"
+// latch. Called wherever an ownership baseline is (re-)armed: at
+// controlpoints_init for a new map, and at each baseline emission, which is
+// what a half boundary and a post-restart re-baseline both come through. The
+// latch MUST clear there -- a flag captured in half 1 is returned to its
+// authored owner by the round-restart cascade, and CP_owner goes back to
+// reading 0 for it, so a latch left set from the previous half would report
+// that restored flag as neutral for the whole of the next one.
+stock ksc_refresh_flag_defaults() {
+	for (new f = 0; f < g_kscFlagCount && f < KSC_MAX_FLAGS; f++) {
+		g_kscFlagDefaultOwner[f] = ksc_read_default_owner(f)
+		g_kscFlagOwnerSeen[f] = false
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1592,6 +1664,11 @@ stock ksc_ensure_ownership_baseline() {
 	// eager attempt is useful but not sufficient for a sequenced health record.
 	for (new f = 0; f < g_kscFlagCount; f++)
 		ksc_emit_flag_position(f)
+	// Same reason as controlpoints_init: re-read the authored defaults and drop
+	// the seen-a-holder latch before the baseline reads, so a flag the restart
+	// cascade just handed back to its owner is reported as owned rather than
+	// carrying the previous half's latch.
+	ksc_refresh_flag_defaults()
 	for (new f = 0; f < g_kscFlagCount; f++) {
 		// Refresh immediately before the baseline. If a round reset happened
 		// between polls, emitting the cached pre-reset owner followed by a
@@ -1942,6 +2019,11 @@ public controlpoints_init() {
 		g_kscFlagCount = KSC_MAX_FLAGS
 	if (g_kscFlagCount < 0)
 		g_kscFlagCount = 0
+
+	// Authored defaults first: ksc_read_owner below falls back to them, so a
+	// stale table here would make the map's very first ownership reading wrong
+	// in exactly the case the fallback exists to fix.
+	ksc_refresh_flag_defaults()
 
 	for (new f = 0; f < g_kscFlagCount; f++) {
 		new raw_flag_name[32]
