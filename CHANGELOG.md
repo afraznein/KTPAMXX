@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - the shipped stats plugin did not compile
+
+`ktp_stats_capture.inc` called `dod_is_deployed(id)` on the shot row.
+That is a **dodfun** native; this plugin includes `<amxmodx>` and `<dodx>`
+and does not depend on dodfun, so merged `main` failed to build:
+
+```
+ktp_stats_capture.inc(2254) : error 017: undefined symbol "dod_is_deployed"
+```
+
+Nothing caught it. KTPAMXX CI skips plugin compilation by design, and
+KTPInfrastructure's plugin build swallowed the compiler's exit status, so a
+failed compile produced a SUCCESSFUL image that simply lacked
+`stats_logging.amxx` -- and a server with no stats_logging collects nothing at
+all, silently. Found by running the real `amxxpc` against merged main.
+
+The field is removed rather than repaired. Both repairs were worse: adding
+`#include <dodfun>` makes stats collection fail to load anywhere that module
+isn't present, and deriving it from `dod_get_pronestate() == 2` catches only
+PRONE deploys and silently misses standing or crouched ones -- a mislabelled
+field rather than an absent one. `prone` already carries 0/1/2 from dodx's own
+native, whose contract defines 2 as prone with the weapon deployed, so the
+prone-deploy case is still on the row. Full deploy state wants a dodx
+accessor; see ENGINE_STATS_EXPANSION_PLAN §3.7.
+
+PLUGIN_VERSION 1.20.1 -> 1.20.2. Verified with amxxpc 2.7.33.5799: exit 0,
+artifact produced.
+
+
 **These entries are now part of the 2.7.32 re-cut below-the-line, not of 2.7.31.**
 The `main` fixes and the 2.7.31 cut were developed in parallel and neither shipped
 with the other; merging them changes the compiled module, so 2.7.31's pinned md5
