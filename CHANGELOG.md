@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - stats_logging 1.19.3, schema 23 pin for the fleet release line
+
+`ktp_stats_capture.inc`, `stats_logging.sma` 1.20.x -> 1.19.3. Ships #104's
+flag-ownership fix (already on `main`) against schema 23, which is what the
+deployed daemon actually authorizes. `main` carries schema 24 for forward
+work (the `shot` capability); this line stays at 23 until the deployed
+daemon is upgraded to accept it. `KSC_CAPABILITIES` drops `"shot"` to match.
+
 ### Fixed - the shipped stats plugin did not compile
 
 `ktp_stats_capture.inc` called `dod_is_deployed(id)` on the shot row.
