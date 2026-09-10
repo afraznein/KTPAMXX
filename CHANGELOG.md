@@ -101,6 +101,31 @@ no longer describes this tree. See the 2.7.32 note.
   `stats_logging.amxx` correctly leaves producer context fail-closed.
 
 ### Fixed
+- **Released as `stats_logging.amxx` 1.19.2 and deployed to the fleet 2026-09-10**
+  — a release cut, not a change to this tree. Built from `2f585d28` (#99's merge
+  commit, carrying #97 + #99) plus a version bump; md5
+  `99b36650dd197c2071e6519c2609943e`, 29,596 B, compiled with amxxpc 2.7.33.5812.
+
+  🔑 **Why it was cut from an older base rather than from `main`.** `main` carries
+  `KSC_SCHEMA_CONTRACT` **24** (the `shot` capability, #102). The daemon deployed
+  at the time authorised **23 only** — `ktpCaptureManifestAuthorizes` returns 1 for
+  `== 23`, excludes `position` at 22, allows `team_membership` alone at 21, and 24
+  falls through every branch to **0**. A 24-contract producer would have had four
+  event families — `objective_attempt`, `grenade_entity`, `team_membership`,
+  `position` — refused fleet-wide, **silently**. So the release was cut at 23.
+
+  ⚠️ **The version bump is the point of the release, not incidental.** 1.19.1 had
+  been shipped from two different trees, so the running build and its replacement
+  carried the same label and only their md5s distinguished them. Verified on the
+  compiled artifacts by inflating and cell-decoding — a raw `strings`/byte search
+  is a false zero, because the payload is compressed *and* AMX stores one
+  character per 32-bit cell: `1.19.2` 2 vs 0, `1.19.1` 0 vs 2, `1.20.0` 0 vs 0,
+  against controls identical on both sides and a nonsense token at 0.
+
+  📌 **`main` is deliberately ahead of what is deployed**, and this entry does not
+  move it back. Once `migrate_027` is applied and the tip daemon (which gates on
+  `>= 23`, a superset) is live, a build from tip becomes safe.
+
 - **`team_membership` health telemetry no longer double-counts `attempted`**
   (`ktp_stats_capture.inc`, `stats_logging.sma` 1.19.0 -> 1.19.1).
   `ksc_emit_team_membership` pre-incremented `g_kscAttempted` unconditionally
