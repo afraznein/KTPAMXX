@@ -66,6 +66,36 @@ no longer describes this tree. See the 2.7.32 note.
   `stats_logging.amxx` correctly leaves producer context fail-closed.
 
 ### Fixed
+- **Flag ownership is read from the control point, not the capture area, and is
+  re-baselined after a round restart** (`ktp_stats_capture.inc`,
+  `stats_logging.sma` 1.19.1 -> 1.19.2). Ships #97 and #99 together.
+  `ksc_read_owner()` now reads `CP_owner` at all three sites that previously
+  went through `CA_owning_team` -- the initial baseline, the zone poll, and
+  `controlpoints_init` -- and a re-baseline is armed when a round restarts, so
+  ownership is re-established rather than carried across the boundary.
+
+  Symptom this fixes: a match records five flags seen but only zero to two of
+  them with any transition, because the capture area reports a stale or default
+  owner while the control point holds the real one. Verify after deployment by
+  `COUNT(DISTINCT CASE WHEN is_initial = 0 THEN flag_index END)` per match --
+  NOT by "rows exist", which is true either way, and NOT by the
+  `team_membership` freshness query, which already passes on the old build and
+  therefore cannot discriminate this change.
+
+  **`KSC_SCHEMA_CONTRACT` stays 23, deliberately.** The contract moves to 24 on
+  `main` with the `shot` capability; the deployed daemon authorises 23 only
+  (`ktpCaptureManifestAuthorizes`: `== 23` returns 1, `== 22` excludes
+  `position`, `== 21` allows `team_membership` alone -- 24 falls through every
+  branch and returns 0). A 24-contract producer would have four event families
+  -- `objective_attempt`, `grenade_entity`, `team_membership`, `position` --
+  refused fleet-wide, silently. Building this cut from tip is unsafe until
+  `migrate_027` is applied and the tip daemon deployed.
+
+  **The version bump exists to make the artifact identifiable.** 1.19.1 was
+  shipped twice from different trees, so the running build and its replacement
+  carried the same label and only their md5s differed -- see the pinned hash in
+  the project `CLAUDE.md`.
+
 - **`team_membership` health telemetry no longer double-counts `attempted`**
   (`ktp_stats_capture.inc`, `stats_logging.sma` 1.19.0 -> 1.19.1).
   `ksc_emit_team_membership` pre-incremented `g_kscAttempted` unconditionally
