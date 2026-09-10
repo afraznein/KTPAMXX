@@ -12,6 +12,58 @@ The `main` fixes and the 2.7.31 cut were developed in parallel and neither shipp
 with the other; merging them changes the compiled module, so 2.7.31's pinned md5
 no longer describes this tree. See the 2.7.32 note.
 
+### Fixed
+- **Flags a map authors as owned at spawn were recorded as neutral for entire
+  matches** (`ktp_stats_capture.inc`, `stats_logging.sma` 1.19.2 -> 1.19.3).
+  `ksc_read_owner` read only `CP_owner`, which carries the engine's *current
+  holder* (`m_iTeam`) — 0 for any control point no team has taken since the
+  last reset. The map's authored owner lives in `m_iDefaultOwner`, exposed
+  separately as `CP_default_owner`. A home flag that opens owned and is never
+  contested therefore read neutral for the whole match while the game itself
+  rendered it owned.
+
+  Measured on `dod_armory_b6`, match `1.3-6770-NY1` (NY SCRIM 1, 2026-09-09) —
+  the first home-flag map played after the #97/#99 rollout, on a server
+  carrying both the current plugin and a 2.7.32+ module:
+
+  ```
+  baseline half 1 @ gt=261.01   Allied First=0  Axis First=0
+  baseline half 2 @ gt=77.00    Allied First=0  Axis First=0
+  ```
+
+  Neither flag appears in a single transition row for the whole match — they
+  were never captured, so nothing ever corrected the reading. The map's own
+  BSP authors `point_default_owner=1` on Allied First and `=2` on Axis First
+  (verified by dumping the shipped `.bsp`), and dodx's `cp_index` order matches
+  the plugin's exactly, so this was neither a map-authoring gap nor an
+  index-space mismatch. The same blind spot is visible in `KTPHudObserver`,
+  which reads `CP_owner` the same way.
+
+  `ksc_read_owner` now resolves the two: `CP_owner` wins whenever it names a
+  real team and **latches** so it keeps winning, including a later legitimate
+  drop back to neutral — a real state a contested flag reaches
+  (`dod_armory_b6`'s Warehouse does exactly that at `gt=1139.56`). Only a flag
+  the engine has never reported a holder for falls back to `CP_default_owner`,
+  which is precisely the case `CP_owner` cannot express.
+
+  The latch and the cached defaults are refreshed at both points an ownership
+  baseline is armed — `controlpoints_init` and `ksc_ensure_ownership_baseline`
+  — and always *before* the first `ksc_read_owner` of that map or half. That
+  ordering is load-bearing: the round-restart cascade hands a captured flag
+  back to its authored owner between halves, and a latch left set from the
+  previous half would report that restored flag as neutral for the whole of
+  the next one.
+
+  Degrades safely in both directions it can be wrong: a genuinely neutral map
+  has `CP_default_owner == 0` on every flag, and a module older than the BSP
+  default-owner seed (#9) reports 0 for every flag — both turn the fallback
+  into a no-op rather than a guess. Plugin-only; no module change, no ABI
+  impact, no schema change.
+
+  `scripts/test_stats_life_boundaries.py::test_flag_owner_resolves_against_the_authored_default`
+  locks the precedence, the latch, the both-conditions gate, and the
+  refresh-before-read ordering at both baseline sites.
+
 ### Added
 - **Capture observability contract** (`stats_logging.sma` 1.16.2 -> 1.17.0).
   Every half emits its producer version, schema contract, capability set,

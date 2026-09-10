@@ -732,7 +732,7 @@ def test_physical_boundaries_do_not_use_stats_pause_gate() -> None:
 
 
 def test_plugin_version() -> None:
-    assert re.search(r'#define\s+PLUGIN_VERSION\s+"1\.19\.1"', STATS)
+    assert re.search(r'#define\s+PLUGIN_VERSION\s+"1\.19\.3"', STATS)
 
 
 def test_schema23_manifest_and_two_second_position_contract() -> None:
@@ -1074,7 +1074,7 @@ def test_dodx_grenade_entity_forward_and_direct_dispatch_contract() -> None:
     )
     assert "serial <= 0" in drop_dispatch
     assert "wpnid != 13 && wpnid != 14 && wpnid != 36" in drop_dispatch
-    assert re.search(r'#define\s+PLUGIN_VERSION\s+"1\.19\.1"', STATS)
+    assert re.search(r'#define\s+PLUGIN_VERSION\s+"1\.19\.3"', STATS)
 
 
 def test_ksc_buffer_detects_and_counts_line_truncation() -> None:
@@ -1107,6 +1107,46 @@ def test_capout_requires_a_complete_two_team_partition() -> None:
     defense_body = function_body(CAPTURE, "stock bool:ksc_is_last_flag_defense")
     assert "ksc_is_full_capout_threat(defending_team)" in break_body
     assert "ksc_is_full_capout_threat(killer_team)" in defense_body
+
+
+def test_flag_owner_resolves_against_the_authored_default() -> None:
+    # 2026-09-10: CP_owner carries the CURRENT holder (engine m_iTeam), which is
+    # 0 for a control point no team has taken since the last reset. The map's
+    # authored owner lives in CP_default_owner. dod_armory_b6's two home flags
+    # read neutral for a whole match in production because of this, and were
+    # never captured, so nothing ever corrected them.
+    body = function_body(CAPTURE, "stock ksc_read_owner(f)")
+    assert "CP_owner" in body and "g_kscFlagDefaultOwner[f]" in body
+
+    # CP_owner wins whenever it names a real team, and latches so it keeps
+    # winning -- a contested flag legitimately returns to neutral and must not
+    # be re-promoted to its default (dod_armory_b6's Warehouse does exactly
+    # that mid-match).
+    before(body, "if (raw != 0)", "g_kscFlagDefaultOwner[f] != 0")
+    assert "g_kscFlagOwnerSeen[f] = true" in body
+    assert "!g_kscFlagOwnerSeen[f]" in body
+
+    # The fallback must be gated on BOTH the latch and a non-zero default, so a
+    # genuinely neutral map and an older module (which reports 0 defaults for
+    # every flag) both degrade to the previous behaviour rather than a guess.
+    assert "g_kscFlagDefaultOwner[f] != 0" in body
+
+    refresh = function_body(CAPTURE, "stock ksc_refresh_flag_defaults()")
+    assert "ksc_read_default_owner(f)" in refresh
+    assert "g_kscFlagOwnerSeen[f] = false" in refresh
+
+    default_read = function_body(CAPTURE, "stock ksc_read_default_owner(f)")
+    assert "CP_default_owner" in default_read
+    assert "ksc_normalize_owner" in default_read
+
+    # Both places an ownership baseline is armed must refresh first, and must do
+    # it BEFORE any ksc_read_owner call, or the first reading of a new map/half
+    # is taken against a stale table -- the exact case the fallback exists for.
+    init = function_body(CAPTURE, "public controlpoints_init()")
+    before(init, "ksc_refresh_flag_defaults()", "g_kscOwner[f]      = ksc_read_owner(f)")
+
+    baseline = function_body(CAPTURE, "stock ksc_ensure_ownership_baseline()")
+    before(baseline, "ksc_refresh_flag_defaults()", "g_kscOwner[f] = ksc_read_owner(f)")
 
 
 def main() -> None:
