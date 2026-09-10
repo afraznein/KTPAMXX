@@ -13,6 +13,41 @@ with the other; merging them changes the compiled module, so 2.7.31's pinned md5
 no longer describes this tree. See the 2.7.32 note.
 
 ### Added
+- **Shot-context stream: shooter position and facing on every weapon actuation**
+  (`ktp_stats_capture.inc`, `stats_logging.sma` 1.19.1 -> 1.20.0, schema 23 ->
+  24). Implements `dod_client_weapon_fire`, which fires on every shot
+  (`CMisc.cpp` `saveShot()`) but which no collection plugin previously
+  consumed. Does not duplicate KTPMatchHandler's existing per-shot ledger
+  (`ktp_ac_weapon_fires`, aim geometry included) -- it emits the one thing
+  that ledger cannot: where the shooter was standing and facing at the
+  moment of the shot (`position`, `yaw`, `pitch`, `prone`, `deployed`).
+  Intended join to the AC row is by player identity + weapon + nearest
+  `game_time`/`event_epoch`, the same technique already proven on
+  `frag_context`.
+  - Own ring buffer (`KSC_SHOT_BUF_MAX_ENTRIES` 512 x `KSC_SHOT_BUF_LINE_LEN`
+    640) and own 1s flush task, entirely independent of the shared
+    damage/break/frag_context buffer -- measured production shot rate
+    (~2,500/match, bursting to ~120/s in a fight) is an order of magnitude
+    above what that buffer is sized for, and a burst must never evict a
+    damage or break line.
+  - New cvar `ktp_stats_shots` (default 1) as an operational kill switch,
+    independent of `ktp_stats_capture`.
+  - No shot detection of its own -- reads state off the forward's own
+    dispatch only, per `CMisc.cpp:470-472`'s prohibition on a second
+    detector running alongside the module's clip-decrement path.
+  - No target/hitgroup field. That read belongs to the AC ledger's own
+    `dodx_get_shot_geom` (destructive, single-consumer); duplicating it here
+    would either race it or guess independently of it. Deferred, not
+    dropped -- see `ENGINE_STATS_EXPANSION_PLAN_20260909.md` §3.6b.
+  - `scripts/test_stats_life_boundaries.py::test_shot_context_stream` locks
+    the buffer isolation, the cvar gate, the match-context gate, and the
+    single-detector invariant.
+
+  Part of `ENGINE_STATS_EXPANSION_PLAN_20260909.md` wave 0, compressed to
+  ship ahead of S10's first match day (2026-09-13) at the operator's
+  request. Paired daemon-side change: multi-row batched INSERTs for the
+  `ktp_*` tables (KTPHLStatsX), so this stream's burst rate cannot turn a
+  slow INSERT into a UDP-intake stall for every other stream.
 - **Capture observability contract** (`stats_logging.sma` 1.16.2 -> 1.17.0).
   Every half emits its producer version, schema contract, capability set,
   position cadence, and buffer sizes. All custom markers carry one monotonic
