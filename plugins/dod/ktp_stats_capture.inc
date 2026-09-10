@@ -138,8 +138,21 @@
 // Increment when the producer/daemon storage contract changes. This is
 // emitted in every per-half manifest so mixed fleet deployments are visible
 // without reverse-engineering them from which rows happened to arrive.
-#define KSC_SCHEMA_CONTRACT 24
-#define KSC_CAPABILITIES "frag_context,damage,position,assist,life,break,flag_state,flag_position,objective_attempt,team_membership,grenade_entity,shot,position_state,map_revision,sequence,health"
+//
+// PINNED AT 23 FOR THE FLEET RELEASE LINE (stats_logging 1.19.x), deliberately
+// behind main. main carries schema 24 (the "shot" capability, #102) for
+// forward development; the daemon actually deployed to production authorises
+// schema 23 only (`ktpCaptureManifestAuthorizes`: `== 23` returns 1, 22
+// excludes `position`, 21 allows `team_membership` alone -- 24 falls through
+// every branch to 0). Shipping a 24-contract producer against that daemon
+// silently refuses objective_attempt, grenade_entity, team_membership and
+// position fleet-wide. Do not bump this to 24 on the 1.19.x line until the
+// deployed daemon itself has been upgraded to authorise it -- see
+// KTPAMXX #103/#105's history for what happens when this gets merged forward
+// by accident. "shot" is dropped from KSC_CAPABILITIES to match: it is not an
+// authorized capability under schema 23, so this build does not claim it.
+#define KSC_SCHEMA_CONTRACT 23
+#define KSC_CAPABILITIES "frag_context,damage,position,assist,life,break,flag_state,flag_position,objective_attempt,team_membership,grenade_entity,position_state,map_revision,sequence,health"
 
 enum {
 	KSC_EVENT_LIFE = 0,

@@ -13,6 +13,32 @@ with the other; merging them changes the compiled module, so 2.7.31's pinned md5
 no longer describes this tree. See the 2.7.32 note.
 
 ### Fixed
+- **stats_logging 1.19.3: the fleet release line, pinned to schema 23**
+  (`ktp_stats_capture.inc`, `stats_logging.sma` 1.19.2 -> 1.19.3). Ships the
+  flag-ownership default-owner fallback below (already on `main` as of
+  1.20.1) against the schema the currently-deployed daemon actually
+  authorises.
+
+  `main` carries `KSC_SCHEMA_CONTRACT 24` for forward development (the `shot`
+  capability, #102). The daemon deployed to production authorises schema 23
+  only — `ktpCaptureManifestAuthorizes` returns 1 for `== 23`, excludes
+  `position` at 22, allows `team_membership` alone at 21, and 24 falls
+  through every branch to 0. A 24-contract producer would have
+  `objective_attempt`, `grenade_entity`, `team_membership` and `position`
+  refused fleet-wide, silently.
+
+  This line (`1.19.x`) stays pinned at schema 23 until the deployed daemon is
+  upgraded to authorise 24; `main` (`1.20.x`) keeps moving forward
+  independently. `KSC_CAPABILITIES` drops `"shot"` to match — it is not an
+  authorized capability under schema 23, so this build does not claim it; the
+  shot-emission code itself is unaffected and simply goes unauthorized until
+  this line's schema catches up. **Do not merge this branch into `main`, and
+  do not merge `main` into this branch** — a normal merge silently resolves
+  the schema line to whichever side touched it since the last common
+  ancestor, which is exactly the failure this pin exists to prevent (see
+  KTPAMXX #103's history, and the PR discussion for #105 which this
+  supersedes).
+
 - **Flags a map authors as owned at spawn were recorded as neutral for entire
   matches** (`ktp_stats_capture.inc`, `stats_logging.sma` 1.20.0 -> 1.20.1).
   `ksc_read_owner` read only `CP_owner`, which carries the engine's *current
