@@ -65,6 +65,23 @@ no longer describes this tree. See the 2.7.32 note.
   refresh-before-read ordering at both baseline sites.
 
 ### Added
+- **`dodx_is_deployed(id)` native, and the shot-context stream now compiles
+  against the fleet's module stack** (`dodx` `NBase.cpp`/`CMisc.h`/`dodx.inc`;
+  `ktp_stats_capture.inc`, `stats_logging.sma` 1.20.1 -> 1.20.2). The shot
+  stream read its `deployed` field through `dod_is_deployed`, which is a
+  **dodfun** native -- declared in `dodfun.inc`, which `stats_logging.sma` does
+  not include. Lane B failed at compile:
+  `ktp_stats_capture.inc(2254): undefined symbol "dod_is_deployed"`. The
+  obvious fix was a trap: the fleet loads exactly `amxxcurl`, `reapi`, `dodx`
+  (Tier-2 runner `modules.ini`), so adding `#include <dodfun>` would compile
+  and then fail at load time on every server. Ported the native into dodx
+  instead -- same pdata read (`STEAM_PDOFFSET_WDEPLOY`, 230+LINUXOFFSET),
+  same validity guard as `dodx_set_user_class`, `dodx_` prefix so it cannot
+  collide with dodfun's registration -- and retargeted the one call site.
+  **This raises the plugin's module floor: `stats_logging` 1.20.2+ requires
+  dodx 2.7.33+.** On a 2.7.32 module the plugin fails to load (missing
+  native), which is loud, not silent. Source-only; built and staged by the
+  operator per the usual workflow.
 - **Shot-context stream: shooter position and facing on every weapon actuation**
   (`ktp_stats_capture.inc`, `stats_logging.sma` 1.19.1 -> 1.20.0, schema 23 ->
   24). Implements `dod_client_weapon_fire`, which fires on every shot

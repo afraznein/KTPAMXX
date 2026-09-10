@@ -198,6 +198,23 @@ static cell AMX_NATIVE_CALL dodx_set_user_class(AMX *amx, cell *params)
 	return 1;
 }
 
+// KTP: Is the player's weapon deployed (MG bipod / rest)? Ported from
+// dodfun's dod_is_deployed -- same pdata read -- because dodfun is not loaded
+// on the fleet and the shot-context stream reads this on every shot. Named
+// dodx_ so it cannot collide with dodfun's registration if that module is
+// ever loaded alongside. Same validity guard as dodx_set_user_class above.
+static cell AMX_NATIVE_CALL dodx_is_deployed(AMX *amx, cell *params)
+{
+	int index = params[1];
+	CHECK_PLAYER(index);
+
+	CPlayer* pPlayer = GET_PLAYER_POINTER_I(index);
+	if (!pPlayer->ingame || !pPlayer->pEdict || pPlayer->pEdict->free || !pPlayer->pEdict->pvPrivateData)
+		return 0;
+
+	return (*((int*)pPlayer->pEdict->pvPrivateData + STEAM_PDOFFSET_WDEPLOY) == 1) ? 1 : 0;
+}
+
 // KTP: Set player team (ported from dodfun, extension mode compatible)
 static cell AMX_NATIVE_CALL dodx_set_user_team(AMX *amx, cell *params)
 {
@@ -2522,6 +2539,7 @@ AMX_NATIVE_INFO base_Natives[] =
 	{"dodx_get_user_bounds", dodx_get_user_bounds},
 	{"dodx_set_user_origin", dodx_set_user_origin},
 	{"dodx_get_user_angles", dodx_get_user_angles},
+	{"dodx_is_deployed", dodx_is_deployed},
 	{"dodx_set_user_angles", dodx_set_user_angles},
 
 	// KTP: TEST-ONLY forward dispatch primitives for Tier 2 integration tests.

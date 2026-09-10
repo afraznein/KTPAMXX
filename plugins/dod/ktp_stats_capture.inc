@@ -2251,7 +2251,7 @@ public dod_client_weapon_fire(id, weapon, Float:gametime) {
 	ksc_player_str(id, pstr, charsmax(pstr))
 
 	new prone = dod_get_pronestate(id)
-	new deployed = dod_is_deployed(id) ? 1 : 0
+	new deployed = dodx_is_deployed(id) ? 1 : 0
 
 	new mapname[32]
 	get_mapname(mapname, charsmax(mapname))
