@@ -722,7 +722,9 @@ native dodx_get_user_angles(id, Float:angles[3]);
 /**
  * Is the player's weapon deployed (MG bipod / rest)?
  * Ported from dodfun's dod_is_deployed -- dodfun is not loaded on the fleet.
- * Requires dodx 2.7.33+; on an older module the plugin fails to load.
+ * Covers standing and crouched deploys, which dod_get_pronestate cannot.
+ * No caller yet: the pdata offset is inherited from dodfun and has never run
+ * against this fleet's DoD build, so validate it before wiring one.
  *
  * @param id        Player index
  * @return          1 if deployed, 0 otherwise (or not in game)

@@ -32,9 +32,9 @@
 // KTP: Private data offsets for player class/team manipulation
 #define STEAM_PDOFFSET_CLASS	367 + LINUXOFFSET  // player class
 #define STEAM_PDOFFSET_RCLASS	368 + LINUXOFFSET  // random class flag
-// KTP: weapon deploy flag (MG bipod / rest). Same offset dodfun's
-// dod_is_deployed reads (dodfun/CMisc.h); ported here because dodfun is not
-// in the fleet module stack and the shot-context stream needs it.
+// KTP: weapon deploy flag (MG bipod / rest). Inherited verbatim from
+// dodfun/CMisc.h and never measured against this fleet's DoD build -- dodfun
+// is not in the module stack, so validate it before anything reads it.
 #define STEAM_PDOFFSET_WDEPLOY	230 + LINUXOFFSET  // weapon deploy
 
 #define DOD_VERSION "0.1"

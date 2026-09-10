@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - stats_logging 1.19.3, schema 23 pin for the fleet release line
+
+`ktp_stats_capture.inc`, `stats_logging.sma` 1.20.x -> 1.19.3. Ships #104's
+flag-ownership fix (already on `main`) against schema 23, which is what the
+deployed daemon actually authorizes. `main` carries schema 24 for forward
+work (the `shot` capability); this line stays at 23 until the deployed
+daemon is upgraded to accept it. `KSC_CAPABILITIES` drops `"shot"` to match.
+
+### Fixed - the shipped stats plugin did not compile
+
+`ktp_stats_capture.inc` called `dod_is_deployed(id)` on the shot row.
+That is a **dodfun** native; this plugin includes `<amxmodx>` and `<dodx>`
+and does not depend on dodfun, so merged `main` failed to build:
+
+```
+ktp_stats_capture.inc(2254) : error 017: undefined symbol "dod_is_deployed"
+```
+
+Nothing caught it. KTPAMXX CI skips plugin compilation by design, and
+KTPInfrastructure's plugin build swallowed the compiler's exit status, so a
+failed compile produced a SUCCESSFUL image that simply lacked
+`stats_logging.amxx` -- and a server with no stats_logging collects nothing at
+all, silently. Found by running the real `amxxpc` against merged main.
+
+The field is removed rather than repaired. Both repairs were worse: adding
+`#include <dodfun>` makes stats collection fail to load anywhere that module
+isn't present, and deriving it from `dod_get_pronestate() == 2` catches only
+PRONE deploys and silently misses standing or crouched ones -- a mislabelled
+field rather than an absent one. `prone` already carries 0/1/2 from dodx's own
+native, whose contract defines 2 as prone with the weapon deployed, so the
+prone-deploy case is still on the row. Full deploy state wants a dodx
+accessor; see ENGINE_STATS_EXPANSION_PLAN §3.7.
+
+PLUGIN_VERSION 1.20.1 -> 1.20.2. Verified with amxxpc 2.7.33.5799: exit 0,
+artifact produced.
+
+
 **These entries are now part of the 2.7.32 re-cut below-the-line, not of 2.7.31.**
 The `main` fixes and the 2.7.31 cut were developed in parallel and neither shipped
 with the other; merging them changes the compiled module, so 2.7.31's pinned md5
@@ -65,23 +102,31 @@ no longer describes this tree. See the 2.7.32 note.
   refresh-before-read ordering at both baseline sites.
 
 ### Added
-- **`dodx_is_deployed(id)` native, and the shot-context stream now compiles
-  against the fleet's module stack** (`dodx` `NBase.cpp`/`CMisc.h`/`dodx.inc`;
-  `ktp_stats_capture.inc`, `stats_logging.sma` 1.20.1 -> 1.20.2). The shot
-  stream read its `deployed` field through `dod_is_deployed`, which is a
-  **dodfun** native -- declared in `dodfun.inc`, which `stats_logging.sma` does
-  not include. Lane B failed at compile:
-  `ktp_stats_capture.inc(2254): undefined symbol "dod_is_deployed"`. The
-  obvious fix was a trap: the fleet loads exactly `amxxcurl`, `reapi`, `dodx`
-  (Tier-2 runner `modules.ini`), so adding `#include <dodfun>` would compile
-  and then fail at load time on every server. Ported the native into dodx
-  instead -- same pdata read (`STEAM_PDOFFSET_WDEPLOY`, 230+LINUXOFFSET),
-  same validity guard as `dodx_set_user_class`, `dodx_` prefix so it cannot
-  collide with dodfun's registration -- and retargeted the one call site.
-  **This raises the plugin's module floor: `stats_logging` 1.20.2+ requires
-  dodx 2.7.33+.** On a 2.7.32 module the plugin fails to load (missing
-  native), which is loud, not silent. Source-only; built and staged by the
-  operator per the usual workflow.
+- **`dodx_is_deployed(id)` native** (`dodx` `NBase.cpp`/`CMisc.h`/`dodx.inc`).
+  Module-side only: nothing calls it yet. It exists because the `deployed`
+  field it was written for was removed rather than repaired (see *the shipped
+  stats plugin did not compile*, above), and that entry names what is missing:
+  *"Full deploy state wants a dodx accessor"*. This is that accessor.
+  `dod_get_pronestate` cannot substitute -- its `2` is *prone* with the weapon
+  deployed, so a standing or crouched deploy on a rest reads 0.
+  `dod_is_deployed` cannot be used either: it is a **dodfun** native, and the
+  fleet loads exactly `amxxcurl`, `reapi`, `dodx` (Tier-2 runner
+  `modules.ini`), so an `#include <dodfun>` compiles green and then fails at
+  load time on every server -- a loud build error traded for a silent
+  fleet-wide collection outage.
+  Straight port of dodfun's `is_weapon_deployed`: same pdata read
+  (`STEAM_PDOFFSET_WDEPLOY`, `230 + LINUXOFFSET`), same `== 1` test, same
+  validity guard `dodx_set_user_class` already uses. Named `dodx_` so it
+  cannot collide with dodfun's registration if that module is ever loaded
+  alongside.
+  **The offset is inherited, not measured on this fleet.** dodfun is on 0 of 5
+  hosts, so `230 + LINUXOFFSET` has never been exercised against the DoD build
+  the fleet runs. A wrong offset here reads a neighbouring int and reports a
+  plausible 0/1 -- it does not crash. That risk is dormant while the native has
+  no callers; **validate the offset before wiring a call site**, not after.
+  Re-adding a `deployed` field is therefore a three-part change for later, not
+  part of this one: this native + the column back in `migrate_027` + the call
+  site, with the `dodx 2.7.33+` plugin floor called out at that point.
 - **Shot-context stream: shooter position and facing on every weapon actuation**
   (`ktp_stats_capture.inc`, `stats_logging.sma` 1.19.1 -> 1.20.0, schema 23 ->
   24). Implements `dod_client_weapon_fire`, which fires on every shot

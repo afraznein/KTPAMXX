@@ -2250,8 +2250,23 @@ public dod_client_weapon_fire(id, weapon, Float:gametime) {
 	new pstr[96]
 	ksc_player_str(id, pstr, charsmax(pstr))
 
+	// dod_get_pronestate is a dodx native (already this plugin's hard
+	// dependency) and its own contract is 0 = upright, 1 = prone, 2 = prone
+	// with the weapon deployed -- so the deploy signal for a prone MG/BAR is
+	// already in this one value.
+	//
+	// There is deliberately no separate `deployed` field. It was written as
+	// `dod_is_deployed(id)`, which is a dodFUN native -- a module this plugin
+	// does not include and does not depend on -- so the shipped source did not
+	// compile at all (undefined symbol, caught 2026-09-10 by running the real
+	// amxxpc against merged main). The two candidate repairs were both worse
+	// than dropping it: adding `#include <dodfun>` makes stats collection fail
+	// to load anywhere the dodfun module isn't present, and deriving it from
+	// pronestate == 2 would catch only PRONE deploys and silently miss a
+	// standing or crouched one, which is a mislabelled field rather than a
+	// missing one. Full deploy state wants a dodx accessor; until then this
+	// row carries prone honestly and claims nothing else.
 	new prone = dod_get_pronestate(id)
-	new deployed = dodx_is_deployed(id) ? 1 : 0
 
 	new mapname[32]
 	get_mapname(mapname, charsmax(mapname))
@@ -2261,10 +2276,10 @@ public dod_client_weapon_fire(id, weapon, Float:gametime) {
 
 	new line[KSC_SHOT_BUF_LINE_LEN]
 	formatex(line, charsmax(line),
-		"^"%s^" triggered ^"shot^" (weapon_id ^"%d^") (position ^"%s^") (yaw ^"%.2f^") (pitch ^"%.2f^") (prone ^"%d^") (deployed ^"%d^") (map ^"%s^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^")",
+		"^"%s^" triggered ^"shot^" (weapon_id ^"%d^") (position ^"%s^") (yaw ^"%.2f^") (pitch ^"%.2f^") (prone ^"%d^") (map ^"%s^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^")",
 		pstr, weapon, pos,
 		has_angles ? angles[1] : -999.0, has_angles ? angles[0] : -999.0,
-		prone, deployed, mapname,
+		prone, mapname,
 		producer_matchid, producer_half, gametime, event_epoch, sequence)
 
 	ksc_shot_buffer(line)

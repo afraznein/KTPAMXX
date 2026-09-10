@@ -198,11 +198,10 @@ static cell AMX_NATIVE_CALL dodx_set_user_class(AMX *amx, cell *params)
 	return 1;
 }
 
-// KTP: Is the player's weapon deployed (MG bipod / rest)? Ported from
-// dodfun's dod_is_deployed -- same pdata read -- because dodfun is not loaded
-// on the fleet and the shot-context stream reads this on every shot. Named
-// dodx_ so it cannot collide with dodfun's registration if that module is
-// ever loaded alongside. Same validity guard as dodx_set_user_class above.
+// KTP: Is the player's weapon deployed (MG bipod / rest)? Ported from dodfun's
+// dod_is_deployed -- same pdata read -- because dodfun is not on the fleet.
+// Named dodx_ so it cannot collide with dodfun's registration if that module
+// is ever loaded alongside. Same validity guard as dodx_set_user_class above.
 static cell AMX_NATIVE_CALL dodx_is_deployed(AMX *amx, cell *params)
 {
 	int index = params[1];
