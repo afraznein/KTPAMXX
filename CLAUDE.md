@@ -159,6 +159,26 @@ each (27015-27019); Chicago runs 4 (27015-27018). 24 instances total.
 
 See `N:\Nein_\KTP Git Projects\CLAUDE.md` for paramiko SSH documentation.
 
+## Branch protection — editing required checks
+
+The runbook for `repos/afraznein/KTPAMXX/branches/main/protection`. Three ways to break `main` here,
+all of which look like they worked.
+
+🔴 **The required-check string has two plausible spellings and only one works.** The workflow's
+DISPLAY name is `Version Consistency`; the check-run name branch protection matches is
+**`version-consistency`**, set by the job's own `name:`. **Read it off
+`repos/<owner>/<repo>/commits/<sha>/check-runs`, never from the YAML's top-level `name:`.**
+⛔ Requiring the display name requires a check that never reports, which **blocks every PR** until
+somebody works out why.
+
+⚠️ **`gh api -f strict=true` fails 422 — `"true" is not a boolean`.** `-f` sends a string, `-F` sends
+a typed value; booleans and numbers need `-F`. ✅ Good failure mode: the request is rejected whole, so
+it cannot half-apply and silently drop a context.
+
+⛔ **ADD to the contexts list, never REPLACE it.** The API takes the full array and overwrites, so a
+PUT carrying only the check you care about **un-requires the compile gate** — and nothing announces
+it. Read the current array first, append, then send the whole thing back.
+
 ## Related Projects
 - `N:\Nein_\KTP Git Projects\KTPhlsdk` - SDK headers
 - `N:\Nein_\KTP Git Projects\KTP DoD Server` - Test server with staged binaries

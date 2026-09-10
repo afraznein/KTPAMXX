@@ -13,6 +13,41 @@ with the other; merging them changes the compiled module, so 2.7.31's pinned md5
 no longer describes this tree. See the 2.7.32 note.
 
 ### Added
+- **Shot-context stream: shooter position and facing on every weapon actuation**
+  (`ktp_stats_capture.inc`, `stats_logging.sma` 1.19.1 -> 1.20.0, schema 23 ->
+  24). Implements `dod_client_weapon_fire`, which fires on every shot
+  (`CMisc.cpp` `saveShot()`) but which no collection plugin previously
+  consumed. Does not duplicate KTPMatchHandler's existing per-shot ledger
+  (`ktp_ac_weapon_fires`, aim geometry included) -- it emits the one thing
+  that ledger cannot: where the shooter was standing and facing at the
+  moment of the shot (`position`, `yaw`, `pitch`, `prone`, `deployed`).
+  Intended join to the AC row is by player identity + weapon + nearest
+  `game_time`/`event_epoch`, the same technique already proven on
+  `frag_context`.
+  - Own ring buffer (`KSC_SHOT_BUF_MAX_ENTRIES` 512 x `KSC_SHOT_BUF_LINE_LEN`
+    640) and own 1s flush task, entirely independent of the shared
+    damage/break/frag_context buffer -- measured production shot rate
+    (~2,500/match, bursting to ~120/s in a fight) is an order of magnitude
+    above what that buffer is sized for, and a burst must never evict a
+    damage or break line.
+  - New cvar `ktp_stats_shots` (default 1) as an operational kill switch,
+    independent of `ktp_stats_capture`.
+  - No shot detection of its own -- reads state off the forward's own
+    dispatch only, per `CMisc.cpp:470-472`'s prohibition on a second
+    detector running alongside the module's clip-decrement path.
+  - No target/hitgroup field. That read belongs to the AC ledger's own
+    `dodx_get_shot_geom` (destructive, single-consumer); duplicating it here
+    would either race it or guess independently of it. Deferred, not
+    dropped -- see `ENGINE_STATS_EXPANSION_PLAN_20260909.md` §3.6b.
+  - `scripts/test_stats_life_boundaries.py::test_shot_context_stream` locks
+    the buffer isolation, the cvar gate, the match-context gate, and the
+    single-detector invariant.
+
+  Part of `ENGINE_STATS_EXPANSION_PLAN_20260909.md` wave 0, compressed to
+  ship ahead of S10's first match day (2026-09-13) at the operator's
+  request. Paired daemon-side change: multi-row batched INSERTs for the
+  `ktp_*` tables (KTPHLStatsX), so this stream's burst rate cannot turn a
+  slow INSERT into a UDP-intake stall for every other stream.
 - **Capture observability contract** (`stats_logging.sma` 1.16.2 -> 1.17.0).
   Every half emits its producer version, schema contract, capability set,
   position cadence, and buffer sizes. All custom markers carry one monotonic
@@ -66,35 +101,30 @@ no longer describes this tree. See the 2.7.32 note.
   `stats_logging.amxx` correctly leaves producer context fail-closed.
 
 ### Fixed
-- **Flag ownership is read from the control point, not the capture area, and is
-  re-baselined after a round restart** (`ktp_stats_capture.inc`,
-  `stats_logging.sma` 1.19.1 -> 1.19.2). Ships #97 and #99 together.
-  `ksc_read_owner()` now reads `CP_owner` at all three sites that previously
-  went through `CA_owning_team` -- the initial baseline, the zone poll, and
-  `controlpoints_init` -- and a re-baseline is armed when a round restarts, so
-  ownership is re-established rather than carried across the boundary.
+- **Released as `stats_logging.amxx` 1.19.2 and deployed to the fleet 2026-09-10**
+  — a release cut, not a change to this tree. Built from `2f585d28` (#99's merge
+  commit, carrying #97 + #99) plus a version bump; md5
+  `99b36650dd197c2071e6519c2609943e`, 29,596 B, compiled with amxxpc 2.7.33.5812.
 
-  Symptom this fixes: a match records five flags seen but only zero to two of
-  them with any transition, because the capture area reports a stale or default
-  owner while the control point holds the real one. Verify after deployment by
-  `COUNT(DISTINCT CASE WHEN is_initial = 0 THEN flag_index END)` per match --
-  NOT by "rows exist", which is true either way, and NOT by the
-  `team_membership` freshness query, which already passes on the old build and
-  therefore cannot discriminate this change.
+  🔑 **Why it was cut from an older base rather than from `main`.** `main` carries
+  `KSC_SCHEMA_CONTRACT` **24** (the `shot` capability, #102). The daemon deployed
+  at the time authorised **23 only** — `ktpCaptureManifestAuthorizes` returns 1 for
+  `== 23`, excludes `position` at 22, allows `team_membership` alone at 21, and 24
+  falls through every branch to **0**. A 24-contract producer would have had four
+  event families — `objective_attempt`, `grenade_entity`, `team_membership`,
+  `position` — refused fleet-wide, **silently**. So the release was cut at 23.
 
-  **`KSC_SCHEMA_CONTRACT` stays 23, deliberately.** The contract moves to 24 on
-  `main` with the `shot` capability; the deployed daemon authorises 23 only
-  (`ktpCaptureManifestAuthorizes`: `== 23` returns 1, `== 22` excludes
-  `position`, `== 21` allows `team_membership` alone -- 24 falls through every
-  branch and returns 0). A 24-contract producer would have four event families
-  -- `objective_attempt`, `grenade_entity`, `team_membership`, `position` --
-  refused fleet-wide, silently. Building this cut from tip is unsafe until
-  `migrate_027` is applied and the tip daemon deployed.
+  ⚠️ **The version bump is the point of the release, not incidental.** 1.19.1 had
+  been shipped from two different trees, so the running build and its replacement
+  carried the same label and only their md5s distinguished them. Verified on the
+  compiled artifacts by inflating and cell-decoding — a raw `strings`/byte search
+  is a false zero, because the payload is compressed *and* AMX stores one
+  character per 32-bit cell: `1.19.2` 2 vs 0, `1.19.1` 0 vs 2, `1.20.0` 0 vs 0,
+  against controls identical on both sides and a nonsense token at 0.
 
-  **The version bump exists to make the artifact identifiable.** 1.19.1 was
-  shipped twice from different trees, so the running build and its replacement
-  carried the same label and only their md5s differed -- see the pinned hash in
-  the project `CLAUDE.md`.
+  📌 **`main` is deliberately ahead of what is deployed**, and this entry does not
+  move it back. Once `migrate_027` is applied and the tip daemon (which gates on
+  `>= 23`, a superset) is live, a build from tip becomes safe.
 
 - **`team_membership` health telemetry no longer double-counts `attempted`**
   (`ktp_stats_capture.inc`, `stats_logging.sma` 1.19.0 -> 1.19.1).

@@ -113,6 +113,23 @@
 #define KSC_LIFE_BUF_MAX_ENTRIES 64
 #define KSC_LIFE_BUF_LINE_LEN    416
 
+// dod_client_weapon_fire's own queue. Measured production rate: ~2,500 shots
+// per 12-player match (ktp_ac_weapon_fires, 2026-09-01..09), bursting to
+// ~120/s across a fight -- an order of magnitude above what the shared
+// KSC_BUF_MAX_ENTRIES buffer is sized for, and a burst here must never evict a
+// damage/break/frag_context line. Own buffer, own flush cadence
+// (KSC_SHOT_FLUSH_SECS, independent of KSC_BUF_FLUSH_SECS), own drop counter.
+// 512 entries covers the measured burst with headroom; raise if
+// KTP_CAPTURE_HEALTH's "shot" row ever shows dropped > 0.
+//
+// Line budget: one full ksc_player_str() token (~96B incl. quoting) plus map
+// (32) plus matchid (64) plus position/angles/flags/clocks. A synthetic
+// maximum-width line measures under 560B; 640 preserves it with the same
+// truncate-not-corrupt margin the other budgets use.
+#define KSC_SHOT_BUF_MAX_ENTRIES 512
+#define KSC_SHOT_BUF_LINE_LEN    640
+#define KSC_SHOT_FLUSH_SECS      1.0
+
 // Allocation-free owner cache for grenade lifecycle identity. This is double
 // the existing DODX damage-attribution grenade pool and comfortably above a
 // legal match's plausible concurrent grenade count.
@@ -121,8 +138,8 @@
 // Increment when the producer/daemon storage contract changes. This is
 // emitted in every per-half manifest so mixed fleet deployments are visible
 // without reverse-engineering them from which rows happened to arrive.
-#define KSC_SCHEMA_CONTRACT 23
-#define KSC_CAPABILITIES "frag_context,damage,position,assist,life,break,flag_state,flag_position,objective_attempt,team_membership,grenade_entity,position_state,map_revision,sequence,health"
+#define KSC_SCHEMA_CONTRACT 24
+#define KSC_CAPABILITIES "frag_context,damage,position,assist,life,break,flag_state,flag_position,objective_attempt,team_membership,grenade_entity,shot,position_state,map_revision,sequence,health"
 
 enum {
 	KSC_EVENT_LIFE = 0,
@@ -138,6 +155,9 @@ enum {
 	// grenade_entity, so every stream is reconciled before state is cleared.
 	KSC_EVENT_TEAM_MEMBERSHIP,
 	KSC_EVENT_GRENADE_ENTITY,
+	// Own buffer (KSC_SHOT_BUF_*), but health is tracked the same generic way
+	// as every other type -- appended last so no existing index shifts.
+	KSC_EVENT_SHOT,
 	KSC_EVENT_COUNT
 }
 
@@ -149,6 +169,7 @@ enum {
 #define KSC_TASK_ZONES          88011
 #define KSC_TASK_POSITIONS      88012
 #define KSC_TASK_FLAG_POSITIONS 88013
+#define KSC_TASK_SHOT_FLUSH     88014
 
 new g_kscBuffer[KSC_BUF_MAX_ENTRIES][KSC_BUF_LINE_LEN]
 new g_kscBufferType[KSC_BUF_MAX_ENTRIES]
@@ -164,6 +185,14 @@ new g_kscLifeBufferType[KSC_LIFE_BUF_MAX_ENTRIES]
 new g_kscLifeBufferOrder[KSC_LIFE_BUF_MAX_ENTRIES]
 new g_kscLifeBufferCount = 0
 new g_kscLifeDropped = 0
+// Independent ring: own capacity, own flush task (KSC_SHOT_FLUSH_SECS), never
+// merged into ksc_flush()'s order-interleave. A shot burst has no ordering
+// relationship to worry about with life/data markers -- each row is
+// self-contained and carries its own game_time/event_epoch/sequence.
+new g_kscShotBuffer[KSC_SHOT_BUF_MAX_ENTRIES][KSC_SHOT_BUF_LINE_LEN]
+new g_kscShotBufferCount = 0
+new g_kscShotDropped = 0
+new g_kscShotTruncated = 0
 new g_kscBufferOrderNext = 0
 new g_kscAttempted[KSC_EVENT_COUNT]
 new g_kscEnqueued[KSC_EVENT_COUNT]
@@ -173,7 +202,7 @@ new g_kscSequence = 0
 new const g_kscEventNames[KSC_EVENT_COUNT][] = {
 	"life", "damage", "position", "frag", "assist", "break",
 	"flag_state", "flag_position", "objective_attempt", "team_membership",
-	"grenade_entity"
+	"grenade_entity", "shot"
 }
 
 // [victim][attacker] -- enemy damage dealt to victim since their last spawn.
@@ -212,6 +241,11 @@ new g_kscMapRevision[65]
 new bool:g_kscMapRevisionReady = false
 
 new g_kscCvarEnabled
+// Operational kill switch for the shot-context stream specifically, separate
+// from g_kscCvarEnabled. Default on -- this is production data, not a soak
+// trial -- but the one stream in this plugin sized for a burst large enough
+// to be worth a same-server off switch that needs no redeploy.
+new g_kscCvarShots
 
 // ---- Cap-break state, all in dodx objective/area index space ----
 new g_kscFlagCount = 0
@@ -276,7 +310,12 @@ stock ksc_init() {
 	// without a redeploy. Mirrors the dodstats_pause/isDSMActive() gate this
 	// plugin already uses for its stock output.
 	g_kscCvarEnabled = register_cvar("ktp_stats_capture", "1")
+	g_kscCvarShots = register_cvar("ktp_stats_shots", "1")
 	g_kscCvarTimelimit = get_cvar_pointer("mp_timelimit")
+}
+
+stock bool:ksc_shots_enabled() {
+	return ksc_enabled() && get_pcvar_num(g_kscCvarShots) != 0
 }
 
 stock ksc_cfg() {
@@ -286,6 +325,7 @@ stock ksc_cfg() {
 	set_task(KSC_BUF_FLUSH_SECS, "ksc_flush_task", KSC_TASK_FLUSH, .flags="b")
 	set_task(KSC_ZONE_POLL_SECS, "ksc_zone_poll_task", KSC_TASK_ZONES, .flags="b")
 	set_task(KSC_POSITION_BROADCAST_SECS, "ksc_position_broadcast_task", KSC_TASK_POSITIONS, .flags="b")
+	set_task(KSC_SHOT_FLUSH_SECS, "ksc_shot_flush_task", KSC_TASK_SHOT_FLUSH, .flags="b")
 	ksc_capture_map_revision()
 
 	// The arm that actually survives a changelevel. controlpoints_init runs
@@ -2051,6 +2091,101 @@ public ksc_position_broadcast_task() {
 			producer_matchid, producer_half, gt, event_epoch, sequence)
 		ksc_buffer(line, KSC_EVENT_POSITION)
 	}
+}
+
+// Shot-context stream (ENGINE_STATS_EXPANSION_PLAN_20260909.md wave 0, §3.6b).
+// Deliberately does NOT duplicate the per-shot ledger -- KTPMatchHandler
+// already ships every actuation with aim geometry into ktp_ac_weapon_fires.
+// This exists to close the one gap that ledger cannot fill: where the shooter
+// was standing and facing. Join to the AC row by steam_id + weapon_id +
+// nearest game_time/event_epoch, the same nearest-timestamp technique already
+// proven on frag_context (~99.4% correlation in production).
+//
+// No target/hitgroup field: that belongs to the AC ledger's own
+// dodx_get_shot_geom read (destructive, single-consumer) and inferring a
+// second target here would either duplicate that read or guess independently
+// of it. Scope cut for the compressed wave-0 timeline; not a permanent gap.
+stock bool:ksc_shot_buffer(const line[]) {
+	g_kscAttempted[KSC_EVENT_SHOT]++
+	if (g_kscShotBufferCount >= KSC_SHOT_BUF_MAX_ENTRIES) {
+		g_kscShotDropped++
+		g_kscDroppedByType[KSC_EVENT_SHOT]++
+		return false
+	}
+
+	if (strlen(line) >= KSC_SHOT_BUF_LINE_LEN - 1)
+		g_kscShotTruncated++
+
+	copy(g_kscShotBuffer[g_kscShotBufferCount], KSC_SHOT_BUF_LINE_LEN - 1, line)
+	g_kscShotBufferCount++
+	g_kscEnqueued[KSC_EVENT_SHOT]++
+	return true
+}
+
+public ksc_shot_flush_task() {
+	for (new i = 0; i < g_kscShotBufferCount; i++) {
+		log_message("%s", g_kscShotBuffer[i])
+		g_kscEmitted[KSC_EVENT_SHOT]++
+	}
+	g_kscShotBufferCount = 0
+
+	if (g_kscShotDropped > 0) {
+		log_amx("[KTP-STATS] dropped %d shot event(s) -- KSC_SHOT_BUF_MAX_ENTRIES capacity full", g_kscShotDropped)
+		g_kscShotDropped = 0
+	}
+	if (g_kscShotTruncated > 0) {
+		log_amx("[KTP-STATS] truncated %d shot line(s) -- exceeded KSC_SHOT_BUF_LINE_LEN (%d), raise it", g_kscShotTruncated, KSC_SHOT_BUF_LINE_LEN)
+		g_kscShotTruncated = 0
+	}
+}
+
+// Every weapon actuation, hitscan and otherwise -- CMisc.cpp's saveShot(),
+// clip-decrement detection, the same source KTPMatchHandler's AC stream reads.
+// CMisc.cpp:470-472 forbids a second (button/sound-based) shot detector
+// running alongside it; this handler adds no detection of its own, only
+// reads state off the forward's own dispatch.
+public dod_client_weapon_fire(id, weapon, Float:gametime) {
+	if (!ksc_shots_enabled())
+		return
+	if (weapon <= 0 || id < 1 || id > MAX_PLAYERS)
+		return
+	if (!is_user_connected(id) || !is_user_alive(id))
+		return
+	if (get_user_team(id) == 0)
+		return
+
+	new producer_matchid[64], producer_half
+	if (!ksc_event_context(producer_matchid, charsmax(producer_matchid), producer_half))
+		return  // no tracked match -- warmup/pub noise, not wanted here either
+
+	new pos[64]
+	if (!ksc_origin_str(id, pos, charsmax(pos)))
+		return  // could not read origin -- drop rather than emit a malformed position field
+
+	new Float:angles[3]
+	new has_angles = (dodx_get_user_angles(id, angles) == 1)
+
+	new pstr[96]
+	ksc_player_str(id, pstr, charsmax(pstr))
+
+	new prone = dod_get_pronestate(id)
+	new deployed = dod_is_deployed(id) ? 1 : 0
+
+	new mapname[32]
+	get_mapname(mapname, charsmax(mapname))
+
+	new sequence = ksc_next_sequence()
+	new event_epoch = get_systime()
+
+	new line[KSC_SHOT_BUF_LINE_LEN]
+	formatex(line, charsmax(line),
+		"^"%s^" triggered ^"shot^" (weapon_id ^"%d^") (position ^"%s^") (yaw ^"%.2f^") (pitch ^"%.2f^") (prone ^"%d^") (deployed ^"%d^") (map ^"%s^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^")",
+		pstr, weapon, pos,
+		has_angles ? angles[1] : -999.0, has_angles ? angles[0] : -999.0,
+		prone, deployed, mapname,
+		producer_matchid, producer_half, gametime, event_epoch, sequence)
+
+	ksc_shot_buffer(line)
 }
 
 // Reads one player's CURRENT weapon's clip/ammo via dod_get_user_weapon --
