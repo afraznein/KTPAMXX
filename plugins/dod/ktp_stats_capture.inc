@@ -323,7 +323,22 @@ stock ksc_init() {
 	// without a redeploy. Mirrors the dodstats_pause/isDSMActive() gate this
 	// plugin already uses for its stock output.
 	g_kscCvarEnabled = register_cvar("ktp_stats_capture", "1")
-	g_kscCvarShots = register_cvar("ktp_stats_shots", "1")
+	// Default OFF on the 1.19.x line. This line announces schema 23 without the
+	// `shot` capability, so the daemon drops every shot marker at the manifest
+	// gate -- but the sequence numbers those markers consume are still observed.
+	// The shot ring flushes every KSC_SHOT_FLUSH_SECS while everything else
+	// flushes every KSC_BUF_FLUSH_SECS, and both draw from ksc_next_sequence(),
+	// so the two streams interleave out of order on the wire: Lane B run
+	// 34514130350 (this exact schema-23-with-emitter configuration) logged 905
+	// out-of-order sequences in one match, which the daemon booked as
+	// sequence_gap_count=905 / duplicate_or_reordered_count=905 on all eleven
+	// real streams and failed capture_authorization for the half. Production
+	// 1.19.2, which has no emitter, shows duplicate_or_reordered_count=0 on
+	// every half. ksc_shots_enabled() is the first check in
+	// dod_client_weapon_fire, ahead of the sequence allocation, so 0 here means
+	// no marker, no sequence, no interleave. Flip to 1 only on a line that
+	// announces schema 24 AND has the shared-counter ordering fixed.
+	g_kscCvarShots = register_cvar("ktp_stats_shots", "0")
 	g_kscCvarTimelimit = get_cvar_pointer("mp_timelimit")
 }
 

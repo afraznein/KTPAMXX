@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - stats_logging 1.19.4: the schema-23 line must not emit the shot stream
+
+`ktp_stats_capture.inc`, `stats_logging.sma` 1.19.3 -> 1.19.4. 1.19.3 pinned
+the manifest to schema 23 and dropped `shot` from `KSC_CAPABILITIES`, but left
+`dod_client_weapon_fire` compiled in with `ktp_stats_shots` defaulting to 1.
+So every server on it would emit ~300 shot markers per match that the daemon
+drops at the manifest gate ("no accepted schema-24 manifest") -- harmless in
+itself, except that those markers consume sequence numbers from the shared
+`ksc_next_sequence()` counter and flush on their own 1s task while every other
+stream flushes on the 5s task. The two streams interleave out of order on the
+wire, and the daemon's per-half monotonic tracker books every crossing as a
+gap and a reorder.
+
+Measured, not inferred: Lane B run 34514130350 compiled this exact
+configuration (its manifest reads schema 23 without `shot`, and it emitted
+331 shot lines). The game log contains 905 out-of-order sequence numbers,
+and every one of the eleven real streams came back with
+`sequence_gap_count=905, duplicate_or_reordered_count=905`, which fails
+`capture_authorization` for the half and makes report generation raise.
+Production 1.19.2, which predates the emitter, shows
+`duplicate_or_reordered_count=0` on every half in the last 30 hours.
+
+`ktp_stats_shots` now defaults to 0 on this line. `ksc_shots_enabled()` is
+the first check in `dod_client_weapon_fire`, ahead of the sequence
+allocation, so 0 means no marker, no sequence consumed, no interleave -- the
+health loop still emits a zeroed `shot` row, which the daemon accepts (#91).
+The proper fix for the schema-24 line is to give the shot ring its own
+sequence space or flush it with the main ring; until then, any build that
+emits shot markers against a shared counter breaks authorization for every
+match, whether or not the stream is declared.
+
 ### Fixed - stats_logging 1.19.3, schema 23 pin for the fleet release line
 
 `ktp_stats_capture.inc`, `stats_logging.sma` 1.20.x -> 1.19.3. Ships #104's
