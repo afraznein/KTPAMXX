@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - stats_logging 1.19.4: do not emit a stream this line does not declare
+
+**This branch is the fleet build for Season 10.** It is not merged to `main` and
+must not be: `release/stats-logging-1.19.x` and `main` are a deliberate fork
+until the deployed daemon authorises schema 24, and a merge in either direction
+silently resolves `KSC_SCHEMA_CONTRACT` to whichever side touched it. That has
+already happened twice (#103, #110). Build from this branch directly.
+
+1.19.3 flipped only the *declaration* - `KSC_SCHEMA_CONTRACT` 24 -> 23 and
+`"shot"` dropped from `KSC_CAPABILITIES` - while leaving the whole shot
+producer compiled in: `dod_client_weapon_fire`, the 512-entry buffer, the flush
+task, `KSC_EVENT_SHOT` in the health enum, and `ktp_stats_shots` defaulting to
+`1`. So it emitted ~2,500 markers a match that its own manifest did not declare.
+
+That is not cosmetic. The daemon rejects every undeclared marker, but
+`ksc_emit_health` loops over `KSC_EVENT_COUNT` unconditionally, so the half
+still reports a 12th `shot` health row. Analytics expects 11 at schema 23, so
+the half fails `capture_authorization` and `v5_match_report` raises instead of
+writing a report. **A stream nobody asked for costs the match reports everybody
+did.**
+
+Fixed with a compile-time `#if defined KSC_SHOT_STREAM` guard, undefined on this
+line, removing the enum member, event name, buffer, cvar, flush task and
+forward. Not a cvar default: `ktp_stats_shots 0` leaves the health slot in
+place, so the 12th row still emits and reports still break, and it depends on
+config reaching all 25 servers with a silent failure if one is missed.
+
+Nothing existing caught it. The plugin compiles, all 40
+`scripts/test_stats_life_boundaries.py` contract tests pass, and Lane B's
+deterministic corpus lane passes - committed fixture logs contain no shot
+markers. Only the full lane, which fires a weapon, exercises it. Worth a
+contract test asserting every name in `g_kscEventNames` appears in
+`KSC_CAPABILITIES`.
+
+Verification, 2026-09-10, all against daemon `main` on the same harness:
+
+| Build | Schema | Lane B full | Lane B corpus |
+|---|---|---|---|
+| `release/stats-logging-1.19.3` | 23 | 5 failures | success |
+| `main` (1.20.3) | 24 | 4 failures | - |
+| **`release/stats-logging-1.19.4`** | 23 | **no defects found** | **success** |
+
+- full lane 1.19.4: https://github.com/afraznein/KTPInfrastructure/actions/runs/34548074533
+- corpus lane 1.19.4: https://github.com/afraznein/KTPInfrastructure/actions/runs/34549746065
+- the run that exposed it: https://github.com/afraznein/KTPInfrastructure/actions/runs/34514130350
+
+That last run was dispatched against `main` during the ~10 minutes between #110
+and #111, so it built *this* line, not schema 24 - its recorded manifest reads
+`producer_version 1.19.3, schema 23`. It was read for a day as evidence against
+schema 24. Read the manifest a Lane B run recorded, not the ref you asked for.
+
+Compiled with the fleet's own amxxpc 2.7.27.1: clean, and data size fell
+1,989,620 -> 675,208 bytes, which is the 1.3 MB shot ring going away - an
+independent check that the guard took effect rather than merely parsing.
+
+`main` keeps the stream and should define `KSC_SHOT_STREAM` when it next moves.
+Schema 24 is separately blocked on a harness assumption
+(`tests/e2e_stats/assertions.py` hardcodes 11 event types in two places) and on
+migration 027 being applied; both are post-season fixes, neither is a producer
+defect.
+
 ### Fixed - stats_logging 1.19.3, schema 23 pin for the fleet release line
 
 `ktp_stats_capture.inc`, `stats_logging.sma` 1.20.x -> 1.19.3. Ships #104's
