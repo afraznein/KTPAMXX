@@ -102,6 +102,31 @@ no longer describes this tree. See the 2.7.32 note.
   refresh-before-read ordering at both baseline sites.
 
 ### Added
+- **`dodx_is_deployed(id)` native** (`dodx` `NBase.cpp`/`CMisc.h`/`dodx.inc`).
+  Module-side only: nothing calls it yet. It exists because the `deployed`
+  field it was written for was removed rather than repaired (see *the shipped
+  stats plugin did not compile*, above), and that entry names what is missing:
+  *"Full deploy state wants a dodx accessor"*. This is that accessor.
+  `dod_get_pronestate` cannot substitute -- its `2` is *prone* with the weapon
+  deployed, so a standing or crouched deploy on a rest reads 0.
+  `dod_is_deployed` cannot be used either: it is a **dodfun** native, and the
+  fleet loads exactly `amxxcurl`, `reapi`, `dodx` (Tier-2 runner
+  `modules.ini`), so an `#include <dodfun>` compiles green and then fails at
+  load time on every server -- a loud build error traded for a silent
+  fleet-wide collection outage.
+  Straight port of dodfun's `is_weapon_deployed`: same pdata read
+  (`STEAM_PDOFFSET_WDEPLOY`, `230 + LINUXOFFSET`), same `== 1` test, same
+  validity guard `dodx_set_user_class` already uses. Named `dodx_` so it
+  cannot collide with dodfun's registration if that module is ever loaded
+  alongside.
+  **The offset is inherited, not measured on this fleet.** dodfun is on 0 of 5
+  hosts, so `230 + LINUXOFFSET` has never been exercised against the DoD build
+  the fleet runs. A wrong offset here reads a neighbouring int and reports a
+  plausible 0/1 -- it does not crash. That risk is dormant while the native has
+  no callers; **validate the offset before wiring a call site**, not after.
+  Re-adding a `deployed` field is therefore a three-part change for later, not
+  part of this one: this native + the column back in `migrate_027` + the call
+  site, with the `dodx 2.7.33+` plugin floor called out at that point.
 - **Shot-context stream: shooter position and facing on every weapon actuation**
   (`ktp_stats_capture.inc`, `stats_logging.sma` 1.19.1 -> 1.20.0, schema 23 ->
   24). Implements `dod_client_weapon_fire`, which fires on every shot
