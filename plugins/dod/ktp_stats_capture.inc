@@ -141,6 +141,17 @@
 // Pinned at 23 for this release line (stats_logging 1.19.x): the deployed
 // daemon only authorizes schema 23. main tracks 24 for forward work.
 #define KSC_SCHEMA_CONTRACT 23
+
+// KSC_SHOT_STREAM is deliberately NOT defined on this line, and the shot
+// stream compiles out with it. A producer must never emit or report health for
+// a stream its own manifest does not declare -- "shot" is absent from
+// KSC_CAPABILITIES below, so the daemon rejects every shot marker, and each
+// rejection still writes a `shot` row into KTP_CAPTURE_HEALTH. That extra row
+// makes the half fail capture authorization, which stops its match report
+// generating: a stream nobody asked for silently costing the reports everybody
+// did. Measured 2026-09-10 on Lane B run 34514130350 -- 331 markers emitted,
+// 0 stored, all 12 health rows unhealthy, v5_match_report raised.
+// Define it (as main does) only on a line whose KSC_CAPABILITIES says "shot".
 #define KSC_CAPABILITIES "frag_context,damage,position,assist,life,break,flag_state,flag_position,objective_attempt,team_membership,grenade_entity,position_state,map_revision,sequence,health"
 
 enum {
@@ -157,9 +168,11 @@ enum {
 	// grenade_entity, so every stream is reconciled before state is cleared.
 	KSC_EVENT_TEAM_MEMBERSHIP,
 	KSC_EVENT_GRENADE_ENTITY,
+#if defined KSC_SHOT_STREAM
 	// Own buffer (KSC_SHOT_BUF_*), but health is tracked the same generic way
 	// as every other type -- appended last so no existing index shifts.
 	KSC_EVENT_SHOT,
+#endif
 	KSC_EVENT_COUNT
 }
 
@@ -187,6 +200,7 @@ new g_kscLifeBufferType[KSC_LIFE_BUF_MAX_ENTRIES]
 new g_kscLifeBufferOrder[KSC_LIFE_BUF_MAX_ENTRIES]
 new g_kscLifeBufferCount = 0
 new g_kscLifeDropped = 0
+#if defined KSC_SHOT_STREAM
 // Independent ring: own capacity, own flush task (KSC_SHOT_FLUSH_SECS), never
 // merged into ksc_flush()'s order-interleave. A shot burst has no ordering
 // relationship to worry about with life/data markers -- each row is
@@ -195,6 +209,7 @@ new g_kscShotBuffer[KSC_SHOT_BUF_MAX_ENTRIES][KSC_SHOT_BUF_LINE_LEN]
 new g_kscShotBufferCount = 0
 new g_kscShotDropped = 0
 new g_kscShotTruncated = 0
+#endif
 new g_kscBufferOrderNext = 0
 new g_kscAttempted[KSC_EVENT_COUNT]
 new g_kscEnqueued[KSC_EVENT_COUNT]
@@ -204,7 +219,10 @@ new g_kscSequence = 0
 new const g_kscEventNames[KSC_EVENT_COUNT][] = {
 	"life", "damage", "position", "frag", "assist", "break",
 	"flag_state", "flag_position", "objective_attempt", "team_membership",
-	"grenade_entity", "shot"
+	"grenade_entity"
+#if defined KSC_SHOT_STREAM
+	, "shot"
+#endif
 }
 
 // [victim][attacker] -- enemy damage dealt to victim since their last spawn.
@@ -243,11 +261,13 @@ new g_kscMapRevision[65]
 new bool:g_kscMapRevisionReady = false
 
 new g_kscCvarEnabled
+#if defined KSC_SHOT_STREAM
 // Operational kill switch for the shot-context stream specifically, separate
 // from g_kscCvarEnabled. Default on -- this is production data, not a soak
 // trial -- but the one stream in this plugin sized for a burst large enough
 // to be worth a same-server off switch that needs no redeploy.
 new g_kscCvarShots
+#endif
 
 // ---- Cap-break state, all in dodx objective/area index space ----
 new g_kscFlagCount = 0
@@ -323,13 +343,17 @@ stock ksc_init() {
 	// without a redeploy. Mirrors the dodstats_pause/isDSMActive() gate this
 	// plugin already uses for its stock output.
 	g_kscCvarEnabled = register_cvar("ktp_stats_capture", "1")
+#if defined KSC_SHOT_STREAM
 	g_kscCvarShots = register_cvar("ktp_stats_shots", "1")
+#endif
 	g_kscCvarTimelimit = get_cvar_pointer("mp_timelimit")
 }
 
+#if defined KSC_SHOT_STREAM
 stock bool:ksc_shots_enabled() {
 	return ksc_enabled() && get_pcvar_num(g_kscCvarShots) != 0
 }
+#endif
 
 stock ksc_cfg() {
 	// plugin_cfg, not plugin_init: in extension mode plugin_init runs inside a
@@ -338,7 +362,9 @@ stock ksc_cfg() {
 	set_task(KSC_BUF_FLUSH_SECS, "ksc_flush_task", KSC_TASK_FLUSH, .flags="b")
 	set_task(KSC_ZONE_POLL_SECS, "ksc_zone_poll_task", KSC_TASK_ZONES, .flags="b")
 	set_task(KSC_POSITION_BROADCAST_SECS, "ksc_position_broadcast_task", KSC_TASK_POSITIONS, .flags="b")
+#if defined KSC_SHOT_STREAM
 	set_task(KSC_SHOT_FLUSH_SECS, "ksc_shot_flush_task", KSC_TASK_SHOT_FLUSH, .flags="b")
+#endif
 	ksc_capture_map_revision()
 
 	// The arm that actually survives a changelevel. controlpoints_init runs
@@ -2177,6 +2203,7 @@ public ksc_position_broadcast_task() {
 	}
 }
 
+#if defined KSC_SHOT_STREAM
 // Shot-context stream (ENGINE_STATS_EXPANSION_PLAN_20260909.md wave 0, §3.6b).
 // Deliberately does NOT duplicate the per-shot ledger -- KTPMatchHandler
 // already ships every actuation with aim geometry into ktp_ac_weapon_fires.
@@ -2286,6 +2313,7 @@ public dod_client_weapon_fire(id, weapon, Float:gametime) {
 
 	ksc_shot_buffer(line)
 }
+#endif
 
 // Reads one player's CURRENT weapon's clip/ammo via dod_get_user_weapon --
 // not necessarily the weapon that scored the kill (that's wpnindex, read
