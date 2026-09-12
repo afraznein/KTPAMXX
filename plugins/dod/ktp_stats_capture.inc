@@ -349,7 +349,7 @@ stock ksc_init() {
 	// plugin already uses for its stock output.
 	g_kscCvarEnabled = register_cvar("ktp_stats_capture", "1")
 	g_kscCvarShots = register_cvar("ktp_stats_shots", "1")
-	g_kscCvarShotDetail = register_cvar("ktp_stats_shot_detail", "1")
+	g_kscCvarShotDetail = register_cvar("ktp_stats_shot_detail", "0")
 	g_kscCvarTimelimit = get_cvar_pointer("mp_timelimit")
 }
 
@@ -358,7 +358,8 @@ stock ksc_init() {
 // being written either way, while the diagnostic fields cost a native call into
 // DODX on every actuation and widen the wire line by ~230B.
 //
-// 0 = off. The shot row still lands; every diagnostic field is NULL.
+// 0 = off, and the DEFAULT. The shot row still lands; every diagnostic field
+//     is NULL. Production stays here unless a match type is deliberately opted in.
 // 1 = per-shot diagnostics (target state, ping/loss, trace mechanics).
 //
 // Intended policy is 12-mans only, with this flag as the opt-in for anything
