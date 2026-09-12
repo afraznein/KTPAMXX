@@ -272,6 +272,7 @@ new g_kscCvarEnabled
 // trial -- but the one stream in this plugin sized for a burst large enough
 // to be worth a same-server off switch that needs no redeploy.
 new g_kscCvarShots
+new g_kscCvarShotDetail
 
 // ---- Cap-break state, all in dodx objective/area index space ----
 new g_kscFlagCount = 0
@@ -348,7 +349,31 @@ stock ksc_init() {
 	// plugin already uses for its stock output.
 	g_kscCvarEnabled = register_cvar("ktp_stats_capture", "1")
 	g_kscCvarShots = register_cvar("ktp_stats_shots", "1")
+	g_kscCvarShotDetail = register_cvar("ktp_stats_shot_detail", "1")
 	g_kscCvarTimelimit = get_cvar_pointer("mp_timelimit")
+}
+
+// Shot-registration diagnostics are a separate, sampled tier from the shot
+// stream itself, because their costs are nothing alike: the base row is already
+// being written either way, while the diagnostic fields cost a native call into
+// DODX on every actuation and widen the wire line by ~230B.
+//
+// 0 = off. The shot row still lands; every diagnostic field is NULL.
+// 1 = per-shot diagnostics (target state, ping/loss, trace mechanics).
+//
+// Intended policy is 12-mans only, with this flag as the opt-in for anything
+// else -- deliberately NOT hardcoded to a match type here: DODX exposes
+// dodx_set_match_id/dodx_get_match_id and no match TYPE at all, so a plugin-side
+// type gate would have to invent a signal that does not exist. Whoever knows the
+// type (KTPMatchHandler, which drives match setup) sets this cvar per match, and
+// the policy lives with the thing that knows the answer.
+//
+// ⚠️ Sample the SHOT stream and the HITS stream together or not at all. The
+// shot stream is the accuracy denominator: sampling it while hits stay complete
+// makes computed accuracy go UP, which is the accusing direction, and nothing
+// in the data would say so.
+stock bool:ksc_shot_detail_enabled() {
+	return ksc_shots_enabled() && get_pcvar_num(g_kscCvarShotDetail) != 0
 }
 
 stock bool:ksc_shots_enabled() {
@@ -527,6 +552,10 @@ stock ksc_close_producer_context() {
 	ksc_grenade_cache_clear_all()
 	ksc_break_reset_boundary()
 	ksc_flush()
+	// The shot ring is on its own 1s timer and ksc_flush() does not touch it, so
+	// it has to be drained here too -- before health, or the counters health
+	// reports are taken while shots are still sitting in the ring.
+	ksc_shot_flush()
 	if (g_kscProducerContextConfirmed && g_kscProducerMatchId[0] &&
 			g_kscProducerHalf != 0)
 		ksc_emit_health(g_kscProducerMatchId, g_kscProducerHalf)
@@ -2237,6 +2266,22 @@ stock bool:ksc_shot_buffer(const line[]) {
 }
 
 public ksc_shot_flush_task() {
+	ksc_shot_flush()
+}
+
+// Drain the shot ring. Split out of the task so a capture boundary can force
+// it: the ring is on its own 1s timer, separate from the 5s main ring, so a
+// context that closes between ticks leaves shots in it. Those shots are then
+// emitted AFTER ksc_emit_health has already reported its counters and after the
+// match's own end marker -- they carry the right matchid, so the daemon still
+// files them under the match, but the health row cannot reconcile against them
+// and anything scoping by log position never sees them at all.
+//
+// Measured on Lane C run 34713194070: 187 rows in ktp_shot_events against 184
+// markers inside the match's log window, with the health row unreconciled. The
+// rows were not duplicates -- sequences 1..187, all distinct -- they were the
+// stragglers this drain now collects.
+stock ksc_shot_flush() {
 	for (new i = 0; i < g_kscShotBufferCount; i++) {
 		log_message("%s", g_kscShotBuffer[i])
 		g_kscEmitted[KSC_EVENT_SHOT]++
@@ -2322,7 +2367,7 @@ public dod_client_weapon_fire(id, weapon, Float:gametime) {
 	new trace_frac = -1, trace_flags = -1
 	new trace_start_off = -1, cmd_all_traces = -1
 	new target[12]
-	if (dodx_get_shot_target(id, weapon, target) == 1) {
+	if (ksc_shot_detail_enabled() && dodx_get_shot_target(id, weapon, target) == 1) {
 		tgt_health = target[1]
 		tgt_dead = target[2]
 		tgt_team = target[3]
