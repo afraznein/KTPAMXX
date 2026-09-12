@@ -84,6 +84,29 @@ struct KTPShotGeom
 	// tell those samples apart instead of this layer guessing.
 	int startOffUnits;
 
+	// The target's own state at trace time, in a SEPARATE one-shot stash from the
+	// geometry above. Two stashes, not one widened payload, because
+	// dodx_get_shot_geom's read is destructive and has exactly one consumer
+	// (KTPMatchHandler, feeding ktp_ac_weapon_fires). A second consumer sharing
+	// that stash would silently starve whichever one read second; widening its
+	// out[] array instead would overflow the caller's fixed geom[6]. An
+	// independent seq/consume pair leaves that contract byte-identical.
+	//
+	// WHY THIS EXISTS. A trace that hit a real studio hitbox but produced no
+	// damage row has three candidate explanations that only the target's own
+	// state can separate: it was already dead (another shot resolved first in the
+	// same instant), it was a teammate (friendly fire the game DLL zeroed before
+	// the damage hook), or neither -- which is the only one that means damage is
+	// genuinely going missing. Inferring that after the fact from two
+	// independently-ingested tables cannot distinguish them; reading v.health /
+	// v.deadflag / v.team here, at the instant the trace resolved, can.
+	unsigned int tgtSeq;   // cmd this target sample belongs to; 0 = empty/consumed
+	int tgtEntIndex;       // ENTINDEX of the player the trace hit
+	int tgtHealth;         // v.health at trace time; <=0 with deadflag clear is a same-tick kill
+	int tgtDead;           // 1 when v.deadflag != DEAD_NO at trace time
+	int tgtTeam;           // v.team at trace time; compare against the shooter's
+	int tgtShooterTeam;    // shipped alongside so the consumer needs no roster join
+
 	// Previous captured sighting of THIS target, for the bearing rate above.
 	// Per-target, not global: a shooter switching between two enemies would
 	// otherwise read the angle between two different people as one target's
@@ -104,11 +127,27 @@ struct KTPShotGeom
 		prevTarget = 0;
 		prevTime = 0.0;
 		prevDir[0] = prevDir[1] = prevDir[2] = 0.0f;
+		resetTarget();
+	}
+
+	void resetTarget()
+	{
+		tgtSeq = 0;
+		tgtEntIndex = 0;
+		tgtHealth = 0;
+		tgtDead = 0;
+		tgtTeam = 0;
+		tgtShooterTeam = 0;
 	}
 
 	void consume()
 	{
 		geomSeq = 0;
+	}
+
+	void consumeTarget()
+	{
+		tgtSeq = 0;
 	}
 };
 

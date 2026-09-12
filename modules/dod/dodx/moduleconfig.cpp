@@ -1377,6 +1377,17 @@ static void KTPCaptureShotGeom(CPlayer *pPlayer, const float *v1, const float *v
 	sg.sightGapMs = sightGapMs;
 	sg.hitgroup = ptr->iHitgroup;
 	sg.startOffUnits = (int)(sqrtf(ktpshot::dot3(off, off)) + 0.5f);
+
+	// Target state, stamped in the same first-wins window as the geometry but
+	// into its own stash (see KTPShotGeom.h). Read straight off the edict the
+	// trace resolved against, before anything downstream can kill, respawn or
+	// team-switch it -- after the fact none of these are recoverable.
+	sg.tgtSeq = sg.cmdSeq;
+	sg.tgtEntIndex = tgtIdx;
+	sg.tgtHealth = (int)ptr->pHit->v.health;
+	sg.tgtDead = (ptr->pHit->v.deadflag != DEAD_NO) ? 1 : 0;
+	sg.tgtTeam = (int)ptr->pHit->v.team;
+	sg.tgtShooterTeam = (int)pPlayer->pEdict->v.team;
 }
 
 // KTP: pack recorder for the tier-2.7 aim-vs-transmission sensor (KTPPackVis.h).

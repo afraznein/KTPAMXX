@@ -123,9 +123,16 @@
 // KTP_CAPTURE_HEALTH's "shot" row ever shows dropped > 0.
 //
 // Line budget: one full ksc_player_str() token (~96B incl. quoting) plus map
-// (32) plus matchid (64) plus position/angles/flags/clocks. A synthetic
-// maximum-width line measures under 560B; 640 preserves it with the same
-// truncate-not-corrupt margin the other budgets use.
+// (32) plus matchid (64) plus position/angles/flags/clocks. Re-measured when the
+// four target-state fields (tgt_health, tgt_dead, tgt_team, shooter_team) joined
+// the line: worst case went 504B -> 610B, still inside 640 (639 usable), so the
+// budget holds without widening.
+//
+// Widening is not free here and the arithmetic is easy to get wrong: a Pawn
+// string is one 4-byte cell per character, so this ring is
+// ENTRIES * LINE_LEN * 4 bytes. Going 640 -> 768 measures +262KB of plugin data
+// size, not the +64KB a byte-per-char reading predicts. Check the worst case
+// against the budget before reaching for a bigger one.
 #define KSC_SHOT_BUF_MAX_ENTRIES 512
 #define KSC_SHOT_BUF_LINE_LEN    640
 #define KSC_SHOT_FLUSH_SECS      1.0
@@ -2292,13 +2299,34 @@ public dod_client_weapon_fire(id, weapon, Float:gametime) {
 	new sequence = ksc_next_type_sequence(KSC_EVENT_SHOT)
 	new event_epoch = get_systime()
 
+	// What the trace hit, as it was at the instant it resolved. -1 everywhere is
+	// "no target state belongs to this shot" -- the shot missed, or the stash was
+	// not this dispatch's to read. NOT 0: every one of these is a real value
+	// (health 0, team 0, dead 0), so a zero default would be indistinguishable
+	// from a measurement.
+	//
+	// No hitscan-firearm gate here, unlike KTPMatchHandler's geometry read: the
+	// native already refuses a weapon id that differs from what the shooter held
+	// at trace time, so a grenade or melee dispatch fails that check and records
+	// -1. Failing closed is the same outcome the gate would produce, without a
+	// second copy of the weapon-id list to drift out of step with the first.
+	new tgt_health = -1, tgt_dead = -1, tgt_team = -1, shooter_team = -1
+	new target[5]
+	if (dodx_get_shot_target(id, weapon, target) == 1) {
+		tgt_health = target[1]
+		tgt_dead = target[2]
+		tgt_team = target[3]
+		shooter_team = target[4]
+	}
+
 	new line[KSC_SHOT_BUF_LINE_LEN]
 	formatex(line, charsmax(line),
-		"^"%s^" triggered ^"shot^" (weapon_id ^"%d^") (position ^"%s^") (yaw ^"%.2f^") (pitch ^"%.2f^") (prone ^"%d^") (map ^"%s^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^")",
+		"^"%s^" triggered ^"shot^" (weapon_id ^"%d^") (position ^"%s^") (yaw ^"%.2f^") (pitch ^"%.2f^") (prone ^"%d^") (map ^"%s^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^") (tgt_health ^"%d^") (tgt_dead ^"%d^") (tgt_team ^"%d^") (shooter_team ^"%d^")",
 		pstr, weapon, pos,
 		has_angles ? angles[1] : -999.0, has_angles ? angles[0] : -999.0,
 		prone, mapname,
-		producer_matchid, producer_half, gametime, event_epoch, sequence)
+		producer_matchid, producer_half, gametime, event_epoch, sequence,
+		tgt_health, tgt_dead, tgt_team, shooter_team)
 
 	ksc_shot_buffer(line)
 }

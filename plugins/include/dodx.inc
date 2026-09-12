@@ -1261,6 +1261,38 @@ native dodx_reset_aim_stats(id);
 native dodx_get_shot_geom(id, weapon, geom[6]);
 
 /**
+ * Read the state the shot's TARGET was in at the instant the trace resolved.
+ * Measurements only: no threshold, no verdict.
+ *
+ * Independent of dodx_get_shot_geom's stash, so the two natives can have
+ * separate consumers without either starving the other -- both are destructive
+ * one-shot reads keyed to the same usercmd, but they consume separately. Calling
+ * one does not affect what the other returns.
+ *
+ * WHY: a trace that struck a real studio hitbox and still produced no damage row
+ * has exactly three explanations, and only the target's own state at trace time
+ * separates them -- the target was already dead (another shot resolved first in
+ * the same instant), it was a teammate (friendly-fire damage the game DLL zeroed
+ * before the damage hook ran), or it was neither, which is the only case meaning
+ * damage is genuinely going missing. Reconstructing this afterwards from
+ * separately-ingested tables cannot tell the three apart.
+ *
+ *   [0] ENTINDEX of the player the trace hit.
+ *   [1] target's health at trace time. <=0 while [2] is still 0 is a kill that
+ *       resolved in this same tick.
+ *   [2] 1 when the target's deadflag was set at trace time, else 0.
+ *   [3] target's team at trace time.
+ *   [4] the shooter's team at trace time, so [3] needs no roster join to read.
+ *
+ * @param id        Firing player index (the forward's id argument)
+ * @param weapon    The forward's weapon argument; must match what the shooter held
+ *                  at trace time or the read returns 0
+ * @param target    Output, 5 cells as above
+ * @return  1 with target state, 0 when none belongs to this shot (record NULL)
+ */
+native dodx_get_shot_target(id, weapon, target[5]);
+
+/**
  * Read a player's aim-vs-transmission counters. Measurements only: no threshold,
  * no ratio, no conclusion is applied here.
  *
