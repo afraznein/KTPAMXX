@@ -251,7 +251,18 @@ def test_life_boundaries_have_truthful_ordered_queue() -> None:
 
 def _confirmation_activation_model(pending_facts: int, trigger: str,
                                    confirms: bool = True):
-    """Executable truth table for candidate -> confirmed producer activation."""
+    """Executable truth table for candidate -> confirmed producer activation.
+
+    manifest still draws from the shared g_kscSequence (metadata about the
+    stream, not a stream of its own) and is always 1 right after
+    ksc_reset_health(). The triggering fact draws from its OWN per-type
+    counter (ksc_next_type_sequence) since the 2026-09-12 fix -- it no longer
+    shares g_kscSequence with manifest, so it is 1 too, not a chained 2.
+    sequence_last (a health-marker-only field, decorative -- capture_health's
+    real per-type continuity comes from ktpObserveCaptureMarker's own
+    first/last, not this) reflects g_kscSequence at health-emit time, which
+    only manifest has touched, so it stays 1 regardless of the trigger.
+    """
     wire = [
         {"kind": "pending", "matchid": "-", "half": 0, "sequence": 0}
         for _ in range(pending_facts)
@@ -267,8 +278,8 @@ def _confirmation_activation_model(pending_facts: int, trigger: str,
                  "half": 1, "sequence": 1})
     counters = {"attempted": 1, "enqueued": 1, "emitted": 1}
     wire.append({"kind": trigger, "matchid": "confirmed",
-                 "half": 1, "sequence": 2})
-    health = {**counters, "sequence_last": 2, "emitted_health": True}
+                 "half": 1, "sequence": 1})
+    health = {**counters, "sequence_last": 1, "emitted_health": True}
     return wire, counters, health
 
 
@@ -296,7 +307,8 @@ def test_delayed_dodx_context_activates_only_on_exact_confirmation() -> None:
            "copy(matchid, len, g_kscProducerMatchId)")
 
     # Confirmation by an ordinary fact: 0-3 pending facts drain first, then the
-    # manifest is sequence 1 and the triggering fact sequence 2 every time.
+    # manifest is sequence 1 and the triggering fact is ALSO sequence 1 -- its
+    # own per-type stream's first entry, independent of manifest's counter.
     for pending_facts in range(4):
         wire, counters, health = _confirmation_activation_model(
             pending_facts, "frag")
@@ -304,20 +316,21 @@ def test_delayed_dodx_context_activates_only_on_exact_confirmation() -> None:
             [0] * pending_facts)
         assert [row["kind"] for row in wire[pending_facts:]] == (
             ["manifest", "frag"])
-        assert [row["sequence"] for row in wire[pending_facts:]] == [1, 2]
+        assert [row["sequence"] for row in wire[pending_facts:]] == [1, 1]
         assert counters == {"attempted": 1, "enqueued": 1, "emitted": 1}
         assert health == {"attempted": 1, "enqueued": 1, "emitted": 1,
-                          "sequence_last": 2, "emitted_health": True}
+                          "sequence_last": 1, "emitted_health": True}
 
     # Confirmation by the zone path has the same contract; its first direct
-    # flag-position fact is sequence 2, then the loop may emit the remainder.
+    # flag-position fact is sequence 1 on its own per-type stream, not chained
+    # after manifest's.
     wire, counters, health = _confirmation_activation_model(2, "flag_position")
     assert [(row["kind"], row["sequence"]) for row in wire] == [
         ("pending", 0), ("pending", 0),
-        ("manifest", 1), ("flag_position", 2),
+        ("manifest", 1), ("flag_position", 1),
     ]
     assert counters == {"attempted": 1, "enqueued": 1, "emitted": 1}
-    assert health["sequence_last"] == 2
+    assert health["sequence_last"] == 1
 
     # A candidate that never confirms has no manifest and no health record.
     wire, counters, health = _confirmation_activation_model(
@@ -341,17 +354,21 @@ def test_delayed_dodx_context_activates_only_on_exact_confirmation() -> None:
     assert "g_kscBufferType[data_i] >= 0" in flush
     assert "g_kscBufferType[data_i] < KSC_EVENT_COUNT" in flush
 
-    for signature in (
-        "stock ksc_emit_damage",
-        "stock ksc_emit_frag_context",
-        "stock ksc_on_death",
-        "stock ksc_emit_break",
-        "stock ksc_emit_break_context",
+    # Each stream's continuity now has to be measured against its OWN sequence
+    # space (ksc_next_type_sequence), not the shared g_kscSequence counter that
+    # numbers every stream together -- see ksc_next_type_sequence's comment.
+    # ksc_on_death's sequence call belongs to the assist loop inside it.
+    for signature, event_type in (
+        ("stock ksc_emit_damage", "KSC_EVENT_DAMAGE"),
+        ("stock ksc_emit_frag_context", "KSC_EVENT_FRAG"),
+        ("stock ksc_on_death", "KSC_EVENT_ASSIST"),
+        ("stock ksc_emit_break", "KSC_EVENT_BREAK"),
+        ("stock ksc_emit_break_context", "KSC_EVENT_BREAK"),
     ):
         body = function_body(CAPTURE, signature)
         assert "bool:tracked = ksc_optional_event_context(" in body
         assert "if (!tracked && !untracked)" in body
-        assert "tracked ? ksc_next_sequence() : 0" in body
+        assert f"tracked ? ksc_next_type_sequence({event_type}) : 0" in body
         assert "ksc_buffer_event(" in body
 
     # Candidate-unconfirmed direct flag metadata must not leak a claimed half
@@ -362,7 +379,7 @@ def test_delayed_dodx_context_activates_only_on_exact_confirmation() -> None:
     assert "if (had_candidate || !g_kscAllowUntrackedEvents)" in flag
     before(flag, "if (had_candidate || !g_kscAllowUntrackedEvents)",
            'log_message("KTP_FLAG_POSITION')
-    before(flag, "ksc_event_context(", "ksc_next_sequence()")
+    before(flag, "ksc_event_context(", "ksc_next_type_sequence(KSC_EVENT_FLAG_POSITION)")
 
     ownership = function_body(CAPTURE, "stock ksc_ensure_ownership_baseline")
     before(ownership, "ksc_emit_flag_position(f)", "ksc_emit_flag_state(")

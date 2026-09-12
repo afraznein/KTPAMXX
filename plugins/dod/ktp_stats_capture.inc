@@ -199,6 +199,18 @@ new g_kscEnqueued[KSC_EVENT_COUNT]
 new g_kscDroppedByType[KSC_EVENT_COUNT]
 new g_kscEmitted[KSC_EVENT_COUNT]
 new g_kscSequence = 0
+// One counter per event type, not the shared g_kscSequence above. The daemon
+// (KTPHLStatsX fix/shot-sequence-isolation, hlstats.pl ktpObserveCaptureMarker)
+// now tracks continuity per event type, but a per-type high-water mark is only
+// meaningful against a per-type-contiguous sequence: feeding it g_kscSequence
+// (one number shared by all twelve streams) makes every type's "gap" measure
+// how many OTHER types' markers landed in between, which is not a loss signal
+// at all -- confirmed 2026-09-12 against Lane B run 34665541191, where every
+// type's reported gap tracked (total match events - that type's own count).
+// manifest/health keep using g_kscSequence: they are metadata about the
+// streams, not a stream of their own, and ktpObserveCaptureMarker excludes
+// both from per-type slot allocation.
+new g_kscTypeSequence[KSC_EVENT_COUNT]
 new const g_kscEventNames[KSC_EVENT_COUNT][] = {
 	"life", "damage", "position", "frag", "assist", "break",
 	"flag_state", "flag_position", "objective_attempt", "team_membership",
@@ -385,6 +397,11 @@ stock ksc_next_sequence() {
 	return g_kscSequence
 }
 
+stock ksc_next_type_sequence(event_type) {
+	g_kscTypeSequence[event_type]++
+	return g_kscTypeSequence[event_type]
+}
+
 stock ksc_next_buffer_order() {
 	g_kscBufferOrderNext++
 	return g_kscBufferOrderNext
@@ -398,6 +415,7 @@ stock ksc_reset_health() {
 		g_kscEnqueued[i] = 0
 		g_kscDroppedByType[i] = 0
 		g_kscEmitted[i] = 0
+		g_kscTypeSequence[i] = 0
 	}
 }
 
@@ -852,7 +870,7 @@ stock bool:ksc_emit_grenade_entity(const kind[], entindex, serial, wpnid,
 	ksc_wire_sanitize(mapname, wire_map, charsmax(wire_map))
 	ksc_wire_sanitize(weapon_type, wire_weapon_type, charsmax(wire_weapon_type))
 	ksc_wire_sanitize(owner_str, wire_owner, charsmax(wire_owner))
-	new sequence = ksc_next_sequence()
+	new sequence = ksc_next_type_sequence(KSC_EVENT_GRENADE_ENTITY)
 
 	formatex(line, charsmax(line),
 		"KTP_GRENADE_ENTITY (kind ^"%s^") (matchid ^"%s^") (half ^"%d^") (map ^"%s^") (entindex ^"%d^") (serial ^"%d^") (weapon_id ^"%d^") (weapon_type ^"%s^") (owner ^"%s^") (position ^"%s^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^")",
@@ -1038,7 +1056,7 @@ stock bool:ksc_emit_life_boundary(id, const matchid[], const kind[], const reaso
 	new class_id = dod_get_user_class(id)
 	new event_epoch = get_systime()
 	new Float:game_time = get_gametime()
-	new sequence = ksc_next_sequence()
+	new sequence = ksc_next_type_sequence(KSC_EVENT_LIFE)
 
 	new line[KSC_LIFE_BUF_LINE_LEN]
 	formatex(line, charsmax(line),
@@ -1106,7 +1124,7 @@ stock ksc_emit_team_membership(id, team, oldteam) {
 	}
 	new player_str[96]
 	ksc_player_str(id, player_str, charsmax(player_str))
-	new sequence = ksc_next_sequence()
+	new sequence = ksc_next_type_sequence(KSC_EVENT_TEAM_MEMBERSHIP)
 	new Float:game_time = get_gametime()
 	new line[KSC_BUF_LINE_LEN]
 	formatex(line, charsmax(line),
@@ -1499,7 +1517,7 @@ stock bool:ksc_emit_objective_attempt(const kind[], f, attempt_id,
 	ksc_wire_sanitize(mapname, wire_map, charsmax(wire_map))
 	ksc_wire_sanitize(g_kscFlagName[f], wire_flag_name, charsmax(wire_flag_name))
 	ksc_wire_sanitize(stop_reason, wire_stop_reason, charsmax(wire_stop_reason))
-	event_sequence = ksc_next_sequence()
+	event_sequence = ksc_next_type_sequence(KSC_EVENT_OBJECTIVE_ATTEMPT)
 	new wire_attempt_id = attempt_id ? attempt_id : event_sequence
 
 	formatex(line, charsmax(line),
@@ -1631,7 +1649,7 @@ stock ksc_emit_flag_state(f, owner, is_initial) {
 	// These lines are rare and their ordering relative to KTP_MATCH_START /
 	// KTP_ROUND_FREEZE matters, so do not hold them in the five-second buffer.
 	ksc_flush()
-	new sequence = ksc_next_sequence()
+	new sequence = ksc_next_type_sequence(KSC_EVENT_FLAG_STATE)
 	g_kscAttempted[KSC_EVENT_FLAG_STATE]++
 	g_kscEnqueued[KSC_EVENT_FLAG_STATE]++
 	log_message("KTP_FLAG_STATE (map ^"%s^") (flag_index ^"%d^") (flag_name ^"%s^") (owner ^"%d^") (initial ^"%d^") (game_time ^"%.2f^") (matchid ^"%s^") (half ^"%d^") (sequence ^"%d^") (event_epoch ^"%d^")",
@@ -1710,7 +1728,7 @@ stock ksc_emit_break(f, breaker, victim, contester_count) {
 		producer_matchid, charsmax(producer_matchid), producer_half, untracked)
 	if (!tracked && !untracked)
 		return
-	new sequence = tracked ? ksc_next_sequence() : 0
+	new sequence = tracked ? ksc_next_type_sequence(KSC_EVENT_BREAK) : 0
 	new event_epoch = get_systime()
 	new Float:game_time = get_gametime()
 
@@ -1756,7 +1774,7 @@ stock ksc_emit_break_context(breaker, victim, flag_index, contester_count, Float
 		producer_matchid, charsmax(producer_matchid), producer_half, untracked)
 	if (!tracked && !untracked)
 		return
-	new sequence = tracked ? ksc_next_sequence() : 0
+	new sequence = tracked ? ksc_next_type_sequence(KSC_EVENT_BREAK) : 0
 
 	formatex(line, charsmax(line),
 		"^"%s^" triggered ^"break_context^" (victim ^"%s^") (flag ^"%s^") (flag_index ^"%d^") (contester_count ^"%d^") (time_remaining ^"%.1f^") (is_capout ^"%d^") (matchid ^"%s^") (half ^"%d^") (sequence ^"%d^") (event_epoch ^"%d^") (game_time ^"%.2f^")",
@@ -2116,7 +2134,7 @@ stock ksc_emit_flag_position(f) {
 	} else {
 		// A direct metadata record must follow every older buffered sequence.
 		ksc_flush()
-		sequence = ksc_next_sequence()
+		sequence = ksc_next_type_sequence(KSC_EVENT_FLAG_POSITION)
 		g_kscAttempted[KSC_EVENT_FLAG_POSITION]++
 		g_kscEnqueued[KSC_EVENT_FLAG_POSITION]++
 	}
@@ -2164,7 +2182,7 @@ public ksc_position_broadcast_task() {
 
 		new Float:gt = get_gametime()
 		new event_epoch = get_systime()
-		new sequence = ksc_next_sequence()
+		new sequence = ksc_next_type_sequence(KSC_EVENT_POSITION)
 
 		new line[KSC_BUF_LINE_LEN]
 		formatex(line, charsmax(line),
@@ -2271,7 +2289,7 @@ public dod_client_weapon_fire(id, weapon, Float:gametime) {
 	new mapname[32]
 	get_mapname(mapname, charsmax(mapname))
 
-	new sequence = ksc_next_sequence()
+	new sequence = ksc_next_type_sequence(KSC_EVENT_SHOT)
 	new event_epoch = get_systime()
 
 	new line[KSC_SHOT_BUF_LINE_LEN]
@@ -2339,7 +2357,7 @@ stock ksc_emit_damage(attacker, victim, damage, wpnindex, hitplace) {
 		producer_matchid, charsmax(producer_matchid), producer_half, untracked)
 	if (!tracked && !untracked)
 		return
-	new sequence = tracked ? ksc_next_sequence() : 0
+	new sequence = tracked ? ksc_next_type_sequence(KSC_EVENT_DAMAGE) : 0
 
 	new line[KSC_BUF_LINE_LEN]
 	formatex(line, charsmax(line),
@@ -2438,7 +2456,7 @@ stock ksc_emit_frag_context(killer, victim, wpnindex, hitplace) {
 		producer_matchid, charsmax(producer_matchid), producer_half, untracked)
 	if (!tracked && !untracked)
 		return
-	new sequence = tracked ? ksc_next_sequence() : 0
+	new sequence = tracked ? ksc_next_type_sequence(KSC_EVENT_FRAG) : 0
 
 	new line[KSC_BUF_LINE_LEN]
 	if (have_k_pos && have_v_pos)
@@ -2531,7 +2549,7 @@ stock ksc_on_death(killer, victim, wpnindex, hitplace, TK) {
 			new assister_str[96], line[KSC_BUF_LINE_LEN], assister_pos[40]
 			ksc_player_str(a, assister_str, charsmax(assister_str))
 			new bool:have_assister_pos = ksc_origin_str(a, assister_pos, charsmax(assister_pos))
-			new sequence = tracked ? ksc_next_sequence() : 0
+			new sequence = tracked ? ksc_next_type_sequence(KSC_EVENT_ASSIST) : 0
 
 			// Player-vs-player action shape (hlstats.pl's "triggered ... against"
 			// regex). Requires an hlstats_Actions row for game='dod',
