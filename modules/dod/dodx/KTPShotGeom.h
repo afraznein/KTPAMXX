@@ -161,6 +161,27 @@ struct KTPShotGeom
 	int traceFrac;
 	int traceFlags;
 
+	// allTraceCount counts EVERY trace this shooter owned in the cmd, not just
+	// the player-hitting ones traceCount sees. The difference is the whole point:
+	// a wall-hitting trace never reaches the capture, so traceCount cannot see
+	// the initial trace of a penetration chain, only its continuation.
+	//
+	// WHY IT MATTERS. fStartSolid on its own is ambiguous. DoD penetrates walls
+	// by re-tracing from the wall, so a continuation trace legitimately starts
+	// inside solid and legitimately applies no damage when the bullet fails to
+	// exit -- benign, and indistinguishable from the shooter's own eye being
+	// stuck in geometry, which is not. Two things separate them: startOffUnits
+	// (below) is ~0 for an eye-origin trace and large for a continuation, and a
+	// continuation implies the cmd carried an earlier trace this counter can see.
+	unsigned int allTraceSeq;
+	int allTraceCount;
+
+	// Distance from the shooter's view origin to where the captured trace
+	// STARTED. Already computed for the geometry stash; carried here too so the
+	// shot stream can tell an eye-origin trace from a penetration continuation
+	// without depending on the other stash's single consumer.
+	int tgtStartOff;
+
 	// Previous captured sighting of THIS target, for the bearing rate above.
 	// Per-target, not global: a shooter switching between two enemies would
 	// otherwise read the angle between two different people as one target's
@@ -198,6 +219,9 @@ struct KTPShotGeom
 		traceCount = 0;
 		traceFrac = 0;
 		traceFlags = 0;
+		allTraceSeq = 0;
+		allTraceCount = 0;
+		tgtStartOff = 0;
 	}
 
 	void consume()

@@ -1435,6 +1435,26 @@ static void KTPCaptureShotGeom(CPlayer *pPlayer, const float *v1, const float *v
 		if (ptr->pHit->v.takedamage == DAMAGE_NO)   flags |= 0x8;
 		sg.traceFlags = flags;
 	}
+
+	// Same value the geometry stash ships, carried on this stash too: ~0 means
+	// the trace began at the shooter's eye, large means it began at a wall exit
+	// point, which is what separates a stuck-in-geometry trace from an ordinary
+	// penetration continuation.
+	sg.tgtStartOff = (int)(sqrtf(ktpshot::dot3(off, off)) + 0.5f);
+
+	// Clamp everything this stash ships to a width the wire budget can prove.
+	// The shot line's worst case is computed from each field's maximum decimal
+	// width, and a field whose bound is only "realistically small" makes that
+	// computation an assumption -- silent truncation is how this line fails, so
+	// the bound is enforced here instead of hoped for. A clamped counter reads
+	// as "many", which is all any consumer asks of it.
+	if (sg.tgtHealth >  99999) sg.tgtHealth =  99999;
+	if (sg.tgtHealth < -99999) sg.tgtHealth = -99999;
+	if (sg.tgtPing  > 99999) sg.tgtPing  = 99999;
+	if (sg.tgtLoss  >   999) sg.tgtLoss  =   999;
+	if (sg.tgtStartOff > 99999) sg.tgtStartOff = 99999;
+	if (sg.traceCount    > 999) sg.traceCount    = 999;
+	if (sg.allTraceCount > 999) sg.allTraceCount = 999;
 }
 
 // KTP: pack recorder for the tier-2.7 aim-vs-transmission sensor (KTPPackVis.h).
@@ -1637,6 +1657,35 @@ static void DODX_OnTraceLine(IVoidHookChain<const float *, const float *, int, e
 	// KTP: Validate ptr before accessing
 	if (!ptr)
 		return;
+
+	// Count every trace this shooter owns, whatever it hit, before the
+	// player-hit filter below can discard it. A wall-hitting trace never reaches
+	// KTPCaptureShotGeom, so the player-hitting counter there cannot see the
+	// FIRST trace of a penetration chain -- only its continuation, which is
+	// exactly the case that has to be told apart from an eye-stuck-in-geometry
+	// trace. Cheap: one compare and an increment on a hook that already runs.
+	if (e && !e->free && (e->v.flags & (FL_CLIENT | FL_FAKECLIENT)))
+	{
+		int shooterIdx = ENTINDEX_SAFE(e);
+		if (shooterIdx >= 1 && shooterIdx <= gpGlobals->maxClients)
+		{
+			CPlayer *pShooter = GET_PLAYER_POINTER_I(shooterIdx);
+			if (pShooter->ingame && shooterIdx == g_ktpCmdOwner)
+			{
+				KTPShotGeom &asg = pShooter->ktpShot;
+				if (asg.cmdSeq != 0)
+				{
+					if (asg.allTraceSeq != asg.cmdSeq)
+					{
+						asg.allTraceSeq = asg.cmdSeq;
+						asg.allTraceCount = 0;
+					}
+					if (asg.allTraceCount < 0x7fffffff)
+						asg.allTraceCount++;
+				}
+			}
+		}
+	}
 
 	// Player aiming detection: when player traces and hits another player
 	// Records iHitgroup for headshot tracking

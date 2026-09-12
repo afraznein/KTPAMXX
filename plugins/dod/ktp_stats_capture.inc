@@ -126,8 +126,13 @@
 // (32) plus matchid (64) plus position/angles/flags/clocks. Worst case by field
 // widths, re-measured each time the line grew: 504B bare, 610B with the four
 // target-state fields, 689B once ping/loss/cmd_traces joined -- which no longer
-// fits 640, so this is the raise that measurement actually called for. 768
-// leaves 78B of margin.
+// fit 640, so 768. Now 739B with trace_start_off and cmd_all_traces.
+//
+// That last measurement only holds because the diagnostic fields are CLAMPED at
+// the capture site (see KTPCaptureShotGeom) rather than assumed small. A field
+// bounded only by "realistically it is a small number" turns this budget into a
+// guess, and the failure mode here is silent truncation of the trailing fields
+// -- which are exactly the diagnostic ones. Clamp first, then count.
 //
 // Widening is not free and the arithmetic is easy to get wrong: a Pawn string is
 // one 4-byte CELL per character, so this ring costs ENTRIES * LINE_LEN * 4
@@ -2315,7 +2320,8 @@ public dod_client_weapon_fire(id, weapon, Float:gametime) {
 	new tgt_health = -1, tgt_dead = -1, tgt_team = -1, shooter_team = -1
 	new shot_ping = -1, shot_loss = -1, cmd_traces = -1
 	new trace_frac = -1, trace_flags = -1
-	new target[10]
+	new trace_start_off = -1, cmd_all_traces = -1
+	new target[12]
 	if (dodx_get_shot_target(id, weapon, target) == 1) {
 		tgt_health = target[1]
 		tgt_dead = target[2]
@@ -2326,17 +2332,20 @@ public dod_client_weapon_fire(id, weapon, Float:gametime) {
 		cmd_traces = target[7]
 		trace_frac = target[8]
 		trace_flags = target[9]
+		trace_start_off = target[10]
+		cmd_all_traces = target[11]
 	}
 
 	new line[KSC_SHOT_BUF_LINE_LEN]
 	formatex(line, charsmax(line),
-		"^"%s^" triggered ^"shot^" (weapon_id ^"%d^") (position ^"%s^") (yaw ^"%.2f^") (pitch ^"%.2f^") (prone ^"%d^") (map ^"%s^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^") (tgt_health ^"%d^") (tgt_dead ^"%d^") (tgt_team ^"%d^") (shooter_team ^"%d^") (shot_ping ^"%d^") (shot_loss ^"%d^") (cmd_traces ^"%d^") (trace_frac ^"%d^") (trace_flags ^"%d^")",
+		"^"%s^" triggered ^"shot^" (weapon_id ^"%d^") (position ^"%s^") (yaw ^"%.2f^") (pitch ^"%.2f^") (prone ^"%d^") (map ^"%s^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^") (tgt_health ^"%d^") (tgt_dead ^"%d^") (tgt_team ^"%d^") (shooter_team ^"%d^") (shot_ping ^"%d^") (shot_loss ^"%d^") (cmd_traces ^"%d^") (trace_frac ^"%d^") (trace_flags ^"%d^") (trace_start_off ^"%d^") (cmd_all_traces ^"%d^")",
 		pstr, weapon, pos,
 		has_angles ? angles[1] : -999.0, has_angles ? angles[0] : -999.0,
 		prone, mapname,
 		producer_matchid, producer_half, gametime, event_epoch, sequence,
 		tgt_health, tgt_dead, tgt_team, shooter_team,
-		shot_ping, shot_loss, cmd_traces, trace_frac, trace_flags)
+		shot_ping, shot_loss, cmd_traces, trace_frac, trace_flags,
+		trace_start_off, cmd_all_traces)
 
 	ksc_shot_buffer(line)
 }

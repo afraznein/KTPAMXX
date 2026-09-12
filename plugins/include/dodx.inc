@@ -1299,14 +1299,25 @@ native dodx_get_shot_geom(id, weapon, geom[6]);
  *       the target was SOLID_NOT, bit3 the target was DAMAGE_NO. Either of the
  *       last two means the victim could not have taken damage at that instant,
  *       which explains a hit with no damage without appealing to a lost row.
+ *  [10] distance from the shooter's view origin to where the trace STARTED,
+ *       world units. ~0 is an ordinary eye-origin trace; a large value is a
+ *       wall-penetration continuation, which starts at the wall exit point.
+ *       Read this WITH bit0 of [9]: startsolid on a continuation is expected
+ *       and benign (the bullet failed to exit the wall), while startsolid on an
+ *       eye-origin trace means the shooter's own view origin was inside
+ *       geometry -- a very different thing, and the one that eats real hits.
+ *  [11] every trace this shooter owned in the cmd, not just player-hitting
+ *       ones ([7]). A penetration chain's FIRST trace hits the wall and so is
+ *       invisible to [7]; this counts it, so a continuation can be recognised
+ *       by the cmd carrying more than one trace.
  *
  * @param id        Firing player index (the forward's id argument)
  * @param weapon    The forward's weapon argument; must match what the shooter held
  *                  at trace time or the read returns 0
- * @param target    Output, 10 cells as above
+ * @param target    Output, 12 cells as above
  * @return  1 with target state, 0 when none belongs to this shot (record NULL)
  */
-native dodx_get_shot_target(id, weapon, target[10]);
+native dodx_get_shot_target(id, weapon, target[12]);
 
 /**
  * Read a player's aim-vs-transmission counters. Measurements only: no threshold,
