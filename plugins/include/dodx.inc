@@ -108,9 +108,15 @@ forward dod_client_weaponswitch(id, wpnew, wpnold);
 
 /* Fired per weapon actuation, including pure-miss shots the client_damage
    hits-stream never sees. Coverage envelope:
-   - Firearm shots are detected via CurWeapon clip decrement: never fires for
-     bots, suppressed while stats are paused (dodx_set_stats_paused), no
-     dry-fire events, and MG42 uses a clip+2 heuristic.
+   - Firearm shots are detected via CurWeapon clip decrement: suppressed while
+     stats are paused (dodx_set_stats_paused), no dry-fire events, and MG42
+     uses a clip+2 heuristic. Only a decrement of exactly 1 (or 2 for MG42)
+     counts as a shot, so any other clip change is silently NOT one -- this is
+     a lossy denominator, not a complete count of actuations.
+   - Bots: this DOES fire for them whenever bot ranking is enabled. saveShot()
+     gates on ignoreBots(), which only skips bots when ranking is off, so the
+     previous "never fires for bots" wording here was wrong -- a 12-bot lane
+     run produced 595 shot markers dominated by STG44/BAR/MP40/Thompson.
    - Grenades/rockets also dispatch here via a separate TraceLine path that
      is NOT pause-gated; melee arrives via the damage path (pause-gated,
      hit-only). Filter by firearm weapon id for shots-only use.

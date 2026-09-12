@@ -2305,6 +2305,21 @@ stock ksc_shot_flush() {
 	}
 }
 
+// The weapon ids dodx_get_shot_target may be queried for, per its contract.
+// Kept in step with KTPMatchHandler's is_hitscan_firearm, which gates the
+// sibling geometry read for the same reason.
+stock bool:ksc_is_hitscan_firearm(weapon) {
+	switch (weapon) {
+		case DODW_COLT, DODW_LUGER, DODW_GARAND, DODW_SCOPED_KAR, DODW_THOMPSON,
+			 DODW_STG44, DODW_SPRINGFIELD, DODW_KAR, DODW_BAR, DODW_MP40,
+			 DODW_MG42, DODW_30_CAL, DODW_M1_CARBINE, DODW_MG34, DODW_GREASEGUN,
+			 DODW_FG42, DODW_K43, DODW_ENFIELD, DODW_STEN, DODW_BREN, DODW_WEBLEY,
+			 DODW_SCOPED_FG42, DODW_FOLDING_CARBINE, DODW_SCOPED_ENFIELD:
+			return true
+	}
+	return false
+}
+
 // Every weapon actuation, hitscan and otherwise -- CMisc.cpp's saveShot(),
 // clip-decrement detection, the same source KTPMatchHandler's AC stream reads.
 // CMisc.cpp:470-472 forbids a second (button/sound-based) shot detector
@@ -2364,18 +2379,26 @@ public dod_client_weapon_fire(id, weapon, Float:gametime) {
 	// (health 0, team 0, dead 0), so a zero default would be indistinguishable
 	// from a measurement.
 	//
-	// No hitscan-firearm gate here, unlike KTPMatchHandler's geometry read: the
-	// native already refuses a weapon id that differs from what the shooter held
-	// at trace time, so a grenade or melee dispatch fails that check and records
-	// -1. Failing closed is the same outcome the gate would produce, without a
-	// second copy of the weapon-id list to drift out of step with the first.
+	// Hitscan firearms only, matching dodx_get_shot_target's documented contract
+	// (grenades and rockets trace from the projectile, melee's geometry rides the
+	// damage path, and custom ids above the stock enum are unknown types).
+	//
+	// An earlier version of this comment argued the gate was unnecessary because
+	// the native refuses a weapon id that differs from what the shooter held at
+	// trace time. That was wrong, and a bot match proved it: a knife hit came back
+	// carrying full target state. Melee genuinely populates the stash -- its attack
+	// IS a trace that hits a player -- so the weapon id matches and the read
+	// succeeds. The values are not garbage, but they describe a melee swing rather
+	// than a bullet, and mixing the two silently into a shot-registration
+	// population is how a partition stops meaning anything.
 	new tgt_health = -1, tgt_dead = -1, tgt_team = -1, shooter_team = -1
 	new shot_ping = -1, shot_loss = -1, cmd_traces = -1
 	new trace_frac = -1, trace_flags = -1
 	new trace_start_off = -1, cmd_all_traces = -1
 	new net_lerp = -1, net_dropped = -1, net_backup = -1, net_cmds = -1
 	new target[16]
-	if (ksc_shot_detail_enabled() && dodx_get_shot_target(id, weapon, target) == 1) {
+	if (ksc_shot_detail_enabled() && ksc_is_hitscan_firearm(weapon) &&
+			dodx_get_shot_target(id, weapon, target) == 1) {
 		tgt_health = target[1]
 		tgt_dead = target[2]
 		tgt_team = target[3]
