@@ -182,6 +182,29 @@ struct KTPShotGeom
 	// without depending on the other stash's single consumer.
 	int tgtStartOff;
 
+	// The shooter's own command stream, sampled where the engine establishes the
+	// time base for a packet's worth of usercmds. This is the client-side half of
+	// the picture and nothing else in the stack records it per shot.
+	//
+	// netLerpMsec is the client's ex_interp in ms -- how far into the past it is
+	// rendering. A client interpolating further back aims at an older world than
+	// the one lag compensation rewinds to, which is exactly the mismatch a
+	// registration complaint describes.
+	//
+	// netDropped is how many commands the engine never received for this client.
+	// Above MAX_DROPPED_CMDS the engine REPLAYS lastcmd to fill the gap
+	// (sv_user.cpp:1798-1813) -- fabricated input that nothing counts today, and
+	// a shot resolved against a fabricated command is not a shot the player
+	// actually took at that moment.
+	//
+	// Bots never carry any of this: they have no packets, so these stay 0 and
+	// the whole dimension is unexercisable in a bot lane by construction.
+	unsigned int netSeq;   // cmd ordinal these were sampled against
+	int netLerpMsec;
+	int netDropped;
+	int netBackup;
+	int netCmds;
+
 	// Previous captured sighting of THIS target, for the bearing rate above.
 	// Per-target, not global: a shooter switching between two enemies would
 	// otherwise read the angle between two different people as one target's
@@ -222,6 +245,11 @@ struct KTPShotGeom
 		allTraceSeq = 0;
 		allTraceCount = 0;
 		tgtStartOff = 0;
+		netSeq = 0;
+		netLerpMsec = -1;
+		netDropped = -1;
+		netBackup = -1;
+		netCmds = -1;
 	}
 
 	void consume()

@@ -126,7 +126,13 @@
 // (32) plus matchid (64) plus position/angles/flags/clocks. Worst case by field
 // widths, re-measured each time the line grew: 504B bare, 610B with the four
 // target-state fields, 689B once ping/loss/cmd_traces joined -- which no longer
-// fit 640, so 768. Now 739B with trace_start_off and cmd_all_traces.
+// fit 640, so 768. 739B with trace_start_off and cmd_all_traces. Now 817B with
+// the four SV_EstablishTimeBase fields, which 768 cannot hold -- hence 896.
+//
+// KSC_SHOT_BUF_MAX_ENTRIES stays 512 on purpose. It was sized against the
+// documented ~120 shots/s burst against a 1s flush (~4x headroom) and is pinned
+// by a contract test; trading measured capacity for wire room would be undoing
+// someone else's measurement to avoid paying for my own.
 //
 // That last measurement only holds because the diagnostic fields are CLAMPED at
 // the capture site (see KTPCaptureShotGeom) rather than assumed small. A field
@@ -141,7 +147,7 @@
 // before raising it -- an earlier pass raised this on an assumed overflow that
 // re-measurement showed was still 29B inside the old budget.
 #define KSC_SHOT_BUF_MAX_ENTRIES 512
-#define KSC_SHOT_BUF_LINE_LEN    768
+#define KSC_SHOT_BUF_LINE_LEN    896
 #define KSC_SHOT_FLUSH_SECS      1.0
 
 // Allocation-free owner cache for grenade lifecycle identity. This is double
@@ -2367,7 +2373,8 @@ public dod_client_weapon_fire(id, weapon, Float:gametime) {
 	new shot_ping = -1, shot_loss = -1, cmd_traces = -1
 	new trace_frac = -1, trace_flags = -1
 	new trace_start_off = -1, cmd_all_traces = -1
-	new target[12]
+	new net_lerp = -1, net_dropped = -1, net_backup = -1, net_cmds = -1
+	new target[16]
 	if (ksc_shot_detail_enabled() && dodx_get_shot_target(id, weapon, target) == 1) {
 		tgt_health = target[1]
 		tgt_dead = target[2]
@@ -2380,18 +2387,23 @@ public dod_client_weapon_fire(id, weapon, Float:gametime) {
 		trace_flags = target[9]
 		trace_start_off = target[10]
 		cmd_all_traces = target[11]
+		net_lerp = target[12]
+		net_dropped = target[13]
+		net_backup = target[14]
+		net_cmds = target[15]
 	}
 
 	new line[KSC_SHOT_BUF_LINE_LEN]
 	formatex(line, charsmax(line),
-		"^"%s^" triggered ^"shot^" (weapon_id ^"%d^") (position ^"%s^") (yaw ^"%.2f^") (pitch ^"%.2f^") (prone ^"%d^") (map ^"%s^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^") (tgt_health ^"%d^") (tgt_dead ^"%d^") (tgt_team ^"%d^") (shooter_team ^"%d^") (shot_ping ^"%d^") (shot_loss ^"%d^") (cmd_traces ^"%d^") (trace_frac ^"%d^") (trace_flags ^"%d^") (trace_start_off ^"%d^") (cmd_all_traces ^"%d^")",
+		"^"%s^" triggered ^"shot^" (weapon_id ^"%d^") (position ^"%s^") (yaw ^"%.2f^") (pitch ^"%.2f^") (prone ^"%d^") (map ^"%s^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^") (tgt_health ^"%d^") (tgt_dead ^"%d^") (tgt_team ^"%d^") (shooter_team ^"%d^") (shot_ping ^"%d^") (shot_loss ^"%d^") (cmd_traces ^"%d^") (trace_frac ^"%d^") (trace_flags ^"%d^") (trace_start_off ^"%d^") (cmd_all_traces ^"%d^") (net_lerp ^"%d^") (net_dropped ^"%d^") (net_backup ^"%d^") (net_cmds ^"%d^")",
 		pstr, weapon, pos,
 		has_angles ? angles[1] : -999.0, has_angles ? angles[0] : -999.0,
 		prone, mapname,
 		producer_matchid, producer_half, gametime, event_epoch, sequence,
 		tgt_health, tgt_dead, tgt_team, shooter_team,
 		shot_ping, shot_loss, cmd_traces, trace_frac, trace_flags,
-		trace_start_off, cmd_all_traces)
+		trace_start_off, cmd_all_traces,
+		net_lerp, net_dropped, net_backup, net_cmds)
 
 	ksc_shot_buffer(line)
 }

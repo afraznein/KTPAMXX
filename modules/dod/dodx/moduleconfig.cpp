@@ -52,6 +52,8 @@ static void DODX_OnInitObjMessage(IVoidHookChain<IMessage *> *chain, IMessage *m
 static void DODX_OnClientConnected(IVoidHookChain<IGameClient *> *chain, IGameClient *client);
 static void DODX_OnSV_Spawn_f(IVoidHookChain<> *chain);
 static void DODX_OnSV_DropClient(IVoidHookChain<IGameClient *, bool, const char *> *chain, IGameClient *client, bool crash, const char *reason);
+static void DODX_OnEstablishTimeBase(IVoidHookChain<IGameClient *, struct usercmd_s *, int, int, int> *chain,
+                                     IGameClient *cl, struct usercmd_s *cmds, int dropped, int numbackup, int numcmds);
 static void DODX_OnChangelevel(IVoidHookChain<const char *, const char *> *chain, const char *s1, const char *s2);
 static void DODX_OnSV_ActivateServer(IVoidHookChain<int> *chain, int runPhysics);
 
@@ -1643,6 +1645,59 @@ static void KTPSampleAimVis(CPlayer *pPlayer, TraceResult *ptr)
 		v.windowMsMax = winMs;
 }
 
+// KTP: sample the shooter's command stream where the engine establishes the
+// time base for a packet of usercmds. Read-only; this hook changes nothing.
+//
+// lerp_msec is the client's own interpolation delay -- how far into the past it
+// renders. Lag compensation rewinds to where the server thinks the client saw
+// the world; if those two disagree, the shot resolves against a different world
+// than the shooter aimed at, which is what a registration complaint feels like.
+// Nothing else in this stack records it per shot: the only stored ping anywhere
+// is a per-session average written at disconnect.
+//
+// dropped matters for a second reason. Above MAX_DROPPED_CMDS the engine REPLAYS
+// lastcmd to fill the gap (sv_user.cpp:1798-1813) -- fabricated input nothing
+// counts today. A shot resolved against a replayed command is not a shot the
+// player took at that instant, and today it is indistinguishable from one.
+static void DODX_OnEstablishTimeBase(IVoidHookChain<IGameClient *, struct usercmd_s *, int, int, int> *chain,
+                                     IGameClient *cl, struct usercmd_s *cmds, int dropped, int numbackup, int numcmds)
+{
+	chain->callNext(cl, cmds, dropped, numbackup, numcmds);
+
+	if (!g_bServerActive || !gpGlobals || !cl || !cmds || numcmds <= 0)
+		return;
+
+	// GetId() is 0-based, player index is 1-based (same as DODX_OnClientConnected)
+	int idx = cl->GetId() + 1;
+	if (idx < 1 || idx > gpGlobals->maxClients)
+		return;
+
+	CPlayer *pPlayer = GET_PLAYER_POINTER_I(idx);
+	if (!pPlayer->ingame)
+		return;
+
+	KTPShotGeom &sg = pPlayer->ktpShot;
+	// cmds[0] is the newest command in the packet, which is the one a shot
+	// resolved in this window was taken with.
+	sg.netLerpMsec = (int)cmds[0].lerp_msec;
+	sg.netDropped = dropped;
+	sg.netBackup = numbackup;
+	sg.netCmds = numcmds;
+	// Stamped against the NEXT cmd ordinal: the PreThink hook body bumps cmdSeq
+	// after this runs, so the commands sampled here are the ones that cmd will
+	// execute. Pairing against the current value would attribute a packet's
+	// network state to the cmd before it.
+	// Clamped for the same reason every other diagnostic is: the shot line's
+	// budget is computed from each field's maximum decimal width, and an
+	// unbounded field turns that computation into a guess.
+	if (sg.netLerpMsec >  9999) sg.netLerpMsec =  9999;
+	if (sg.netLerpMsec <  -999) sg.netLerpMsec =  -999;
+	if (sg.netDropped > 999) sg.netDropped = 999;
+	if (sg.netBackup  > 999) sg.netBackup  = 999;
+	if (sg.netCmds    > 999) sg.netCmds    = 999;
+	sg.netSeq = sg.cmdSeq + 1;
+}
+
 // KTP: TraceLine hook handler - replaces FN_TraceLine_Post
 static void DODX_OnTraceLine(IVoidHookChain<const float *, const float *, int, edict_t *, TraceResult *> *chain,
                               const float *v1, const float *v2, int fNoMonsters, edict_t *e, TraceResult *ptr)
@@ -2535,6 +2590,9 @@ static bool DODX_SetupExtensionHooks()
 	// Safe for wallpen because it never changes TraceResult or supercedes the call.
 	if (g_pRehldsHookchains->PF_TraceLine())
 		g_pRehldsHookchains->PF_TraceLine()->registerHook(DODX_OnTraceLine, HC_PRIORITY_DEFAULT);
+
+	if (g_pRehldsHookchains->SV_EstablishTimeBase())
+		g_pRehldsHookchains->SV_EstablishTimeBase()->registerHook(DODX_OnEstablishTimeBase, HC_PRIORITY_DEFAULT);
 
 	// ED_Free is the bundled ReHLDS pre-free hook reached by normal FL_KILLME
 	// cleanup. serialnumber/origin are still trustworthy at this point.
@@ -3557,6 +3615,9 @@ static void DODX_CleanupExtensionHooks()
 		// Unregister TraceLine hook
 		if (g_pRehldsHookchains->PF_TraceLine())
 			g_pRehldsHookchains->PF_TraceLine()->unregisterHook(DODX_OnTraceLine);
+
+		if (g_pRehldsHookchains->SV_EstablishTimeBase())
+			g_pRehldsHookchains->SV_EstablishTimeBase()->unregisterHook(DODX_OnEstablishTimeBase);
 
 		if (g_pRehldsHookchains->ED_Free())
 			g_pRehldsHookchains->ED_Free()->unregisterHook(DODX_OnEdictFree);

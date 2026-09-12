@@ -1310,14 +1310,24 @@ native dodx_get_shot_geom(id, weapon, geom[6]);
  *       ones ([7]). A penetration chain's FIRST trace hits the wall and so is
  *       invisible to [7]; this counts it, so a continuation can be recognised
  *       by the cmd carrying more than one trace.
+ *  [12] the client's lerp_msec (ex_interp) for the packet this shot's command
+ *       arrived in -- how far into the past the client was rendering. Lag
+ *       compensation rewinds to where the server believes the client saw the
+ *       world; a disagreement here is the shape of a registration complaint.
+ *  [13] commands the engine never received for this client in that packet.
+ *       Above MAX_DROPPED_CMDS the engine REPLAYS lastcmd to fill the gap, so
+ *       a shot can resolve against fabricated input.
+ *  [14] command backup depth, [15] commands in the packet.
+ *       All four are -1 when no packet state belongs to this shot, and are
+ *       always -1 for bots, which have no packets at all.
  *
  * @param id        Firing player index (the forward's id argument)
  * @param weapon    The forward's weapon argument; must match what the shooter held
  *                  at trace time or the read returns 0
- * @param target    Output, 12 cells as above
+ * @param target    Output, 16 cells as above
  * @return  1 with target state, 0 when none belongs to this shot (record NULL)
  */
-native dodx_get_shot_target(id, weapon, target[12]);
+native dodx_get_shot_target(id, weapon, target[16]);
 
 /**
  * Read a player's aim-vs-transmission counters. Measurements only: no threshold,
