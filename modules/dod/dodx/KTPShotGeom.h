@@ -143,6 +143,24 @@ struct KTPShotGeom
 	unsigned int traceSeq; // cmd traceCount belongs to
 	int traceCount;        // player-hitting traces this shooter produced that cmd
 
+	// Mechanics of the trace itself, and the victim's capacity to be damaged at
+	// all. Both answer "was this a hit that COULD have applied damage" without
+	// inferring it from whether damage later appeared.
+	//
+	// traceFrac is flFraction x10000: how far along the ray the trace stopped.
+	// traceFlags is a bitfield rather than four columns because the wire line is
+	// already near its budget and these are all booleans:
+	//   bit0 fStartSolid -- the trace STARTED inside solid geometry. A known
+	//        GoldSrc failure mode that silently eats hits, and nothing in this
+	//        stack has ever recorded it.
+	//   bit1 fAllSolid   -- the whole trace was in solid.
+	//   bit2 target was SOLID_NOT at trace time.
+	//   bit3 target had takedamage == DAMAGE_NO at trace time -- an invulnerable
+	//        or not-yet-damageable victim (spawn protection, warmup) explains a
+	//        hit with no damage outright, and is invisible after the fact.
+	int traceFrac;
+	int traceFlags;
+
 	// Previous captured sighting of THIS target, for the bearing rate above.
 	// Per-target, not global: a shooter switching between two enemies would
 	// otherwise read the angle between two different people as one target's
@@ -178,6 +196,8 @@ struct KTPShotGeom
 		tgtLoss = 0;
 		traceSeq = 0;
 		traceCount = 0;
+		traceFrac = 0;
+		traceFlags = 0;
 	}
 
 	void consume()

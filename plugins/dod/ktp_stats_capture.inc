@@ -2314,7 +2314,8 @@ public dod_client_weapon_fire(id, weapon, Float:gametime) {
 	// second copy of the weapon-id list to drift out of step with the first.
 	new tgt_health = -1, tgt_dead = -1, tgt_team = -1, shooter_team = -1
 	new shot_ping = -1, shot_loss = -1, cmd_traces = -1
-	new target[8]
+	new trace_frac = -1, trace_flags = -1
+	new target[10]
 	if (dodx_get_shot_target(id, weapon, target) == 1) {
 		tgt_health = target[1]
 		tgt_dead = target[2]
@@ -2323,17 +2324,19 @@ public dod_client_weapon_fire(id, weapon, Float:gametime) {
 		shot_ping = target[5]
 		shot_loss = target[6]
 		cmd_traces = target[7]
+		trace_frac = target[8]
+		trace_flags = target[9]
 	}
 
 	new line[KSC_SHOT_BUF_LINE_LEN]
 	formatex(line, charsmax(line),
-		"^"%s^" triggered ^"shot^" (weapon_id ^"%d^") (position ^"%s^") (yaw ^"%.2f^") (pitch ^"%.2f^") (prone ^"%d^") (map ^"%s^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^") (tgt_health ^"%d^") (tgt_dead ^"%d^") (tgt_team ^"%d^") (shooter_team ^"%d^") (shot_ping ^"%d^") (shot_loss ^"%d^") (cmd_traces ^"%d^")",
+		"^"%s^" triggered ^"shot^" (weapon_id ^"%d^") (position ^"%s^") (yaw ^"%.2f^") (pitch ^"%.2f^") (prone ^"%d^") (map ^"%s^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^") (tgt_health ^"%d^") (tgt_dead ^"%d^") (tgt_team ^"%d^") (shooter_team ^"%d^") (shot_ping ^"%d^") (shot_loss ^"%d^") (cmd_traces ^"%d^") (trace_frac ^"%d^") (trace_flags ^"%d^")",
 		pstr, weapon, pos,
 		has_angles ? angles[1] : -999.0, has_angles ? angles[0] : -999.0,
 		prone, mapname,
 		producer_matchid, producer_half, gametime, event_epoch, sequence,
 		tgt_health, tgt_dead, tgt_team, shooter_team,
-		shot_ping, shot_loss, cmd_traces)
+		shot_ping, shot_loss, cmd_traces, trace_frac, trace_flags)
 
 	ksc_shot_buffer(line)
 }

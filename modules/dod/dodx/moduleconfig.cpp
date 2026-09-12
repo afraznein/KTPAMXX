@@ -1417,6 +1417,24 @@ static void KTPCaptureShotGeom(CPlayer *pPlayer, const float *v1, const float *v
 		sg.tgtPing = (ping < 0) ? 0 : ping;
 		sg.tgtLoss = (loss < 0) ? 0 : loss;
 	}
+
+	// Trace mechanics and the victim's capacity to take damage at all. A trace
+	// that started in solid, or a target that was non-solid or flagged
+	// DAMAGE_NO at that instant, is a hit that could never have produced damage
+	// -- and none of it is recoverable once the frame is over.
+	{
+		float frac = ptr->flFraction;
+		if (frac < 0.0f) frac = 0.0f;
+		if (frac > 1.0f) frac = 1.0f;
+		sg.traceFrac = (int)(frac * 10000.0f + 0.5f);
+
+		int flags = 0;
+		if (ptr->fStartSolid) flags |= 0x1;
+		if (ptr->fAllSolid)   flags |= 0x2;
+		if (ptr->pHit->v.solid == SOLID_NOT)        flags |= 0x4;
+		if (ptr->pHit->v.takedamage == DAMAGE_NO)   flags |= 0x8;
+		sg.traceFlags = flags;
+	}
 }
 
 // KTP: pack recorder for the tier-2.7 aim-vs-transmission sensor (KTPPackVis.h).

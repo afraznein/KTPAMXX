@@ -1293,14 +1293,20 @@ native dodx_get_shot_geom(id, weapon, geom[6]);
  *       candidate and this sample may be a game-DLL trace that displaced the
  *       bullet's own. Treat a hit with [7] > 1 as unattributed rather than as
  *       evidence a real bullet struck and did nothing. 0 = not attributable.
+ *   [8] the trace's flFraction x10000 -- how far along the ray it stopped.
+ *   [9] trace/target flags: bit0 the trace STARTED in solid (a GoldSrc failure
+ *       mode that silently eats hits), bit1 the whole trace was in solid, bit2
+ *       the target was SOLID_NOT, bit3 the target was DAMAGE_NO. Either of the
+ *       last two means the victim could not have taken damage at that instant,
+ *       which explains a hit with no damage without appealing to a lost row.
  *
  * @param id        Firing player index (the forward's id argument)
  * @param weapon    The forward's weapon argument; must match what the shooter held
  *                  at trace time or the read returns 0
- * @param target    Output, 8 cells as above
+ * @param target    Output, 10 cells as above
  * @return  1 with target state, 0 when none belongs to this shot (record NULL)
  */
-native dodx_get_shot_target(id, weapon, target[8]);
+native dodx_get_shot_target(id, weapon, target[10]);
 
 /**
  * Read a player's aim-vs-transmission counters. Measurements only: no threshold,
