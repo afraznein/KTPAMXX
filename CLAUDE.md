@@ -159,6 +159,42 @@ each (27015-27019); Chicago runs 4 (27015-27018). 24 instances total.
 
 See `N:\Nein_\KTP Git Projects\CLAUDE.md` for paramiko SSH documentation.
 
+## Identifying deployed artifacts
+
+KTPAMXX ships as more than one artifact, and they version independently:
+- **core** — `addons/ktpamx/dlls/ktpamx_i386.so`. It is *not* under `modules/`, so a sweep of
+  `modules/` reads as "core absent".
+- **dodx** — `addons/ktpamx/modules/dodx_ktp_i386.so`. A probe for `dodx_amxx_i386.so` finds nothing
+  on every instance and reads as "dodx missing".
+
+The md5 is the identity. To confirm a specific change is in a module, grep the binary for a symbol
+the change added (a new forward name, say) alongside one that must be present in both builds — a
+zero without that control means nothing.
+
+dodx requires a minimum `REHLDS_API_VERSION_MINOR` (`modules/dod/dodx/moduleconfig.cpp`). Before
+shipping a dodx that raises it, read MINOR from the commit the **live** engine bakes (see KTP-ReHLDS
+`CLAUDE.md`), not from the engine repo's tip.
+
+### `.amxx` plugins
+
+- **Not byte-reproducible.** The build bakes a per-minute `BUILD_TIME`, so rebuilding the same commit
+  gives a different md5 at the same size. Never rebuild an artifact whose md5 is pinned to a review,
+  and never try to recover a build base by rebuilding candidates and comparing hashes — the correct
+  base mismatches too.
+- **Reading strings out of one takes two decodes.** The payload is compressed, and AMX stores
+  unpacked strings as one 32-bit cell per character. `strings` or a byte search on the raw file — or
+  on the inflated blob — returns a false zero. Inflate the payload, then search for the text encoded
+  as little-endian 32-bit cells, with a control string you know is there.
+- If you can't decode it, the build base comes from the source repo's reflog and the artifact's mtime.
+
+### `stats_logging` and the daemon's schema contract
+
+`KSC_SCHEMA_CONTRACT` (`plugins/dod/ktp_stats_capture.inc`) must not run ahead of what the
+**deployed** KTPHLStatsX daemon accepts. The daemon gates each capability on the schema a server
+announces, so a plugin ahead of the daemon loses those streams on that server while kills and damage
+keep flowing — it looks partly healthy. Deploy the daemon first, and build `stats_logging` from a
+base whose contract the live daemon accepts.
+
 ## Branch protection — editing required checks
 
 The runbook for `repos/afraznein/KTPAMXX/branches/main/protection`. Three ways to break `main` here,
