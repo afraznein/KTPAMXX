@@ -749,7 +749,7 @@ def test_physical_boundaries_do_not_use_stats_pause_gate() -> None:
 
 
 def test_plugin_version() -> None:
-    assert re.search(r'#define\s+PLUGIN_VERSION\s+"1\.20\.3"', STATS)
+    assert re.search(r'#define\s+PLUGIN_VERSION\s+"1\.20\.4"', STATS)
 
 
 def test_schema23_manifest_and_two_second_position_contract() -> None:
@@ -1091,7 +1091,7 @@ def test_dodx_grenade_entity_forward_and_direct_dispatch_contract() -> None:
     )
     assert "serial <= 0" in drop_dispatch
     assert "wpnid != 13 && wpnid != 14 && wpnid != 36" in drop_dispatch
-    assert re.search(r'#define\s+PLUGIN_VERSION\s+"1\.20\.3"', STATS)
+    assert re.search(r'#define\s+PLUGIN_VERSION\s+"1\.20\.4"', STATS)
 
 
 def test_ksc_buffer_detects_and_counts_line_truncation() -> None:

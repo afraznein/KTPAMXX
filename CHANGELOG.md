@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - stats_logging 1.20.4, per-shot registration diagnostics (dodx 2.7.33)
+
+`dodx_get_shot_target`, a new DODX native, plus the `SV_EstablishTimeBase`
+hookchain (declared in `rehlds_api.h` and never previously registered).
+Together they capture, at the instant a weapon trace resolves: the target's
+health/deadflag/team, the shooter's team, the shooter's ping and loss, the
+number of traces in that usercmd (player-hitting and total), the trace
+fraction, flags for `fStartSolid`/`fAllSolid`/target `SOLID_NOT`/target
+`DAMAGE_NO`, the trace's start offset from the shooter's eye, and the client's
+`lerp_msec` and dropped-command count.
+
+Stashed independently of `dodx_get_shot_geom`, whose destructive single-consumer
+contract with KTPMatchHandler is unchanged byte for byte -- a second consumer
+sharing that stash would have starved whichever read second, and widening its
+`out[]` would have overflowed the caller's fixed `geom[6]`.
+
+Why: ~24% of shots the server's own lag-compensated trace confirmed struck a
+hitbox produce a matching damage row, fleet-wide and uniform across all 14
+endpoints. These columns separate the explanations (already dead / teammate /
+not damageable / trace started in solid) from the genuinely unexplained. A bot
+lane measured `fStartSolid` at a 0.0% damage rate against 79.0% for clean
+traces -- 87 eye-origin traces that produced no damage between them.
+
+Gated by `ktp_stats_shot_detail`, default **0**: the diagnostics cost a native
+call per actuation and ~230B of wire. KTPMatchHandler raises it per match type
+(`ktp_shot_detail_types`, default 12-mans only). The read is restricted to
+hitscan firearms, per the native's contract -- melee genuinely populates the
+stash, so an ungated read mixes knife swings into a bullet-registration
+population.
+
+`KSC_SHOT_BUF_LINE_LEN` 640 -> 896 for the widened line (worst case measured at
+817B; a Pawn string is one 4-byte cell per character, so the ring costs
+ENTRIES * LINE_LEN * 4). `KSC_SHOT_BUF_MAX_ENTRIES` stays 512, which was sized
+against the documented ~120 shots/s burst.
+
+### Fixed - the shot ring is drained at capture-context close
+
+`ksc_shot_flush()` is split out of the 1s timer task so a closing context can
+force it, and `ksc_close_producer_context` drains it before emitting health.
+Previously a context closing between ticks left shots in the ring, which were
+then emitted after `ksc_emit_health` had taken its counters and after the
+match's end marker: correctly attributed, but unreconcilable against the health
+row.
+
+### Fixed - `dod_client_weapon_fire` documentation
+
+The contract claimed it never fires for bots. `saveShot()` gates on
+`ignoreBots()`, which only skips bots when bot *ranking* is disabled; a 12-bot
+lane run produced 595 markers. Also records that only a clip decrement of
+exactly 1 (or 2 for MG42) counts as a shot, so the stream is a lossy
+denominator rather than a complete actuation count -- which matters because
+accuracy is computed against it.
+
 ### Fixed - stats_logging 1.19.3, schema 23 pin for the fleet release line
 
 `ktp_stats_capture.inc`, `stats_logging.sma` 1.20.x -> 1.19.3. Ships #104's
