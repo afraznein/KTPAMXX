@@ -107,6 +107,42 @@ struct KTPShotGeom
 	int tgtTeam;           // v.team at trace time; compare against the shooter's
 	int tgtShooterTeam;    // shipped alongside so the consumer needs no roster join
 
+	// The shooter's measured ping and loss at trace time. The one field that can
+	// separate a network-caused miss from a server-side one, and it has to be read
+	// HERE: by the time any consumer runs, the shooter's ping has moved, and a
+	// session-average ping (which is all hlstats_Events_StatsmeLatency keeps)
+	// cannot say what it was for one shot.
+	int tgtPing;
+	int tgtLoss;
+
+	// How many player-hitting traces this shooter's cmd produced, and whether the
+	// captured one was the first.
+	//
+	// WHY THIS IS NOT OPTIONAL. The stash is first-wins within a cmd, and the
+	// header above admits what that cannot exclude: a shooter-owned player-hitting
+	// trace that is NOT the bullet -- fired from player Think or a touch handler
+	// between the PreThink hook body and PostThink -- reaches the capture first and
+	// DISPLACES the bullet's own. Such a sample reports a hitgroup, applies no
+	// damage, and leaves the target's health untouched, which is exactly the
+	// signature of the case we are trying to count as "damage went missing".
+	//
+	// Without this counter the two are indistinguishable and every ratio built on
+	// "confirmed hit" is uninterpretable. With it, a consumer can ask whether the
+	// unexplained samples are the ones from cmds that fired more than one
+	// player-hitting trace -- measured, not assumed. Measured on a bot match
+	// 2026-09-12: 41.7% of confirmed live-enemy hits had no damage row and 100% of
+	// those left health flat, which both hypotheses predict equally.
+	//
+	// The count is NOT stamped at capture time: under first-wins the captured
+	// sample is always the cmd's first, so a "was I first" flag would be
+	// tautologically 1 and measure nothing. It is accumulated across the whole cmd
+	// and read afterwards -- the read runs in the next cmd's PreThink, before the
+	// hook body advances cmdSeq, so the counter is still the capture cmd's when a
+	// consumer asks. traceSeq keys it to that cmd so a stale count can never be
+	// reported against a newer sample.
+	unsigned int traceSeq; // cmd traceCount belongs to
+	int traceCount;        // player-hitting traces this shooter produced that cmd
+
 	// Previous captured sighting of THIS target, for the bearing rate above.
 	// Per-target, not global: a shooter switching between two enemies would
 	// otherwise read the angle between two different people as one target's
@@ -138,6 +174,10 @@ struct KTPShotGeom
 		tgtDead = 0;
 		tgtTeam = 0;
 		tgtShooterTeam = 0;
+		tgtPing = 0;
+		tgtLoss = 0;
+		traceSeq = 0;
+		traceCount = 0;
 	}
 
 	void consume()

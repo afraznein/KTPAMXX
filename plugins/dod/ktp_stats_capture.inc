@@ -123,18 +123,20 @@
 // KTP_CAPTURE_HEALTH's "shot" row ever shows dropped > 0.
 //
 // Line budget: one full ksc_player_str() token (~96B incl. quoting) plus map
-// (32) plus matchid (64) plus position/angles/flags/clocks. Re-measured when the
-// four target-state fields (tgt_health, tgt_dead, tgt_team, shooter_team) joined
-// the line: worst case went 504B -> 610B, still inside 640 (639 usable), so the
-// budget holds without widening.
+// (32) plus matchid (64) plus position/angles/flags/clocks. Worst case by field
+// widths, re-measured each time the line grew: 504B bare, 610B with the four
+// target-state fields, 689B once ping/loss/cmd_traces joined -- which no longer
+// fits 640, so this is the raise that measurement actually called for. 768
+// leaves 78B of margin.
 //
-// Widening is not free here and the arithmetic is easy to get wrong: a Pawn
-// string is one 4-byte cell per character, so this ring is
-// ENTRIES * LINE_LEN * 4 bytes. Going 640 -> 768 measures +262KB of plugin data
-// size, not the +64KB a byte-per-char reading predicts. Check the worst case
-// against the budget before reaching for a bigger one.
+// Widening is not free and the arithmetic is easy to get wrong: a Pawn string is
+// one 4-byte CELL per character, so this ring costs ENTRIES * LINE_LEN * 4
+// bytes. 640 -> 768 measures +262KB of plugin data size, not the +64KB a
+// byte-per-char reading predicts. Measure the worst case against the budget
+// before raising it -- an earlier pass raised this on an assumed overflow that
+// re-measurement showed was still 29B inside the old budget.
 #define KSC_SHOT_BUF_MAX_ENTRIES 512
-#define KSC_SHOT_BUF_LINE_LEN    640
+#define KSC_SHOT_BUF_LINE_LEN    768
 #define KSC_SHOT_FLUSH_SECS      1.0
 
 // Allocation-free owner cache for grenade lifecycle identity. This is double
@@ -2311,22 +2313,27 @@ public dod_client_weapon_fire(id, weapon, Float:gametime) {
 	// -1. Failing closed is the same outcome the gate would produce, without a
 	// second copy of the weapon-id list to drift out of step with the first.
 	new tgt_health = -1, tgt_dead = -1, tgt_team = -1, shooter_team = -1
-	new target[5]
+	new shot_ping = -1, shot_loss = -1, cmd_traces = -1
+	new target[8]
 	if (dodx_get_shot_target(id, weapon, target) == 1) {
 		tgt_health = target[1]
 		tgt_dead = target[2]
 		tgt_team = target[3]
 		shooter_team = target[4]
+		shot_ping = target[5]
+		shot_loss = target[6]
+		cmd_traces = target[7]
 	}
 
 	new line[KSC_SHOT_BUF_LINE_LEN]
 	formatex(line, charsmax(line),
-		"^"%s^" triggered ^"shot^" (weapon_id ^"%d^") (position ^"%s^") (yaw ^"%.2f^") (pitch ^"%.2f^") (prone ^"%d^") (map ^"%s^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^") (tgt_health ^"%d^") (tgt_dead ^"%d^") (tgt_team ^"%d^") (shooter_team ^"%d^")",
+		"^"%s^" triggered ^"shot^" (weapon_id ^"%d^") (position ^"%s^") (yaw ^"%.2f^") (pitch ^"%.2f^") (prone ^"%d^") (map ^"%s^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^") (tgt_health ^"%d^") (tgt_dead ^"%d^") (tgt_team ^"%d^") (shooter_team ^"%d^") (shot_ping ^"%d^") (shot_loss ^"%d^") (cmd_traces ^"%d^")",
 		pstr, weapon, pos,
 		has_angles ? angles[1] : -999.0, has_angles ? angles[0] : -999.0,
 		prone, mapname,
 		producer_matchid, producer_half, gametime, event_epoch, sequence,
-		tgt_health, tgt_dead, tgt_team, shooter_team)
+		tgt_health, tgt_dead, tgt_team, shooter_team,
+		shot_ping, shot_loss, cmd_traces)
 
 	ksc_shot_buffer(line)
 }

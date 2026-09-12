@@ -1283,14 +1283,24 @@ native dodx_get_shot_geom(id, weapon, geom[6]);
  *   [2] 1 when the target's deadflag was set at trace time, else 0.
  *   [3] target's team at trace time.
  *   [4] the shooter's team at trace time, so [3] needs no roster join to read.
+ *   [5] the shooter's measured ping in ms at trace time, -1 if unavailable. The
+ *       only per-shot ping there is -- every stored ping elsewhere is a session
+ *       average written at disconnect.
+ *   [6] the shooter's measured loss at trace time, -1 if unavailable.
+ *   [7] how many player-hitting traces the shooter's cmd produced. Under
+ *       first-wins the captured sample is always that cmd's FIRST, so this is
+ *       not a property of the sample: anything > 1 means the cmd had another
+ *       candidate and this sample may be a game-DLL trace that displaced the
+ *       bullet's own. Treat a hit with [7] > 1 as unattributed rather than as
+ *       evidence a real bullet struck and did nothing. 0 = not attributable.
  *
  * @param id        Firing player index (the forward's id argument)
  * @param weapon    The forward's weapon argument; must match what the shooter held
  *                  at trace time or the read returns 0
- * @param target    Output, 5 cells as above
+ * @param target    Output, 8 cells as above
  * @return  1 with target state, 0 when none belongs to this shot (record NULL)
  */
-native dodx_get_shot_target(id, weapon, target[5]);
+native dodx_get_shot_target(id, weapon, target[8]);
 
 /**
  * Read a player's aim-vs-transmission counters. Measurements only: no threshold,

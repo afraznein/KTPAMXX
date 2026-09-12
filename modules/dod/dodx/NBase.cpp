@@ -2394,7 +2394,13 @@ static cell AMX_NATIVE_CALL dodx_get_shot_geom(AMX *amx, cell *params)
 // going missing. Measurement only; no threshold, no verdict.
 //
 // out[] = { target_entindex, target_health, target_dead, target_team,
-//           shooter_team }
+//           shooter_team, shooter_ping_ms, shooter_loss, cmd_trace_count }
+//
+// cmd_trace_count is the number of player-hitting traces the shooter's cmd
+// produced, not a property of the captured sample: under first-wins the sample
+// is always the cmd's first, so anything > 1 means another candidate existed and
+// this sample may not be the bullet's own trace. Read after the cmd completed --
+// the counter is keyed to the same cmd, and 0 means it could not be attributed.
 static cell AMX_NATIVE_CALL dodx_get_shot_target(AMX *amx, cell *params)
 {
 	int index = params[1];
@@ -2424,6 +2430,11 @@ static cell AMX_NATIVE_CALL dodx_get_shot_target(AMX *amx, cell *params)
 	out[2] = sg.tgtDead;
 	out[3] = sg.tgtTeam;
 	out[4] = sg.tgtShooterTeam;
+	out[5] = sg.tgtPing;
+	out[6] = sg.tgtLoss;
+	// Only report the count when it belongs to this sample's own cmd. A counter
+	// from a newer cmd would describe a different shot entirely.
+	out[7] = (sg.traceSeq == sg.tgtSeq) ? sg.traceCount : 0;
 
 	sg.consumeTarget();
 	return 1;

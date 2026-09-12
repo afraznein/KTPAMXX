@@ -1317,6 +1317,20 @@ static void KTPCaptureShotGeom(CPlayer *pPlayer, const float *v1, const float *v
 	if (pPlayer->index != g_ktpCmdOwner || sg.cmdSeq == 0)
 		return;
 
+	// Count every player-hitting trace this cmd, BEFORE first-wins can return.
+	// The displacement class this function cannot exclude is invisible from the
+	// captured sample alone -- the sample that displaced the bullet looks exactly
+	// like the bullet's own. A count > 1 is the only evidence that the cmd had
+	// more than one candidate, so it has to be taken on the traces that get
+	// rejected too, not just the one that wins.
+	if (sg.traceSeq != sg.cmdSeq)
+	{
+		sg.traceSeq = sg.cmdSeq;
+		sg.traceCount = 0;
+	}
+	if (sg.traceCount < 0x7fffffff)
+		sg.traceCount++;
+
 	// First capture wins the cmd: nothing after the bullet's PostThink trace can
 	// replace it. The cost is the pre-PostThink displacement class enumerated
 	// above; last-wins would only swap which unenumerable class is exposed.
@@ -1388,6 +1402,21 @@ static void KTPCaptureShotGeom(CPlayer *pPlayer, const float *v1, const float *v
 	sg.tgtDead = (ptr->pHit->v.deadflag != DEAD_NO) ? 1 : 0;
 	sg.tgtTeam = (int)ptr->pHit->v.team;
 	sg.tgtShooterTeam = (int)pPlayer->pEdict->v.team;
+
+	// The shooter's network state at this instant. Read here for the same reason
+	// everything else in this stash is: by the time a consumer runs, the value has
+	// moved, and the only ping any table currently keeps is a per-session average
+	// written at disconnect -- which cannot say what this shot saw. A missing
+	// engine function leaves both at -1 rather than a fabricated 0.
+	sg.tgtPing = -1;
+	sg.tgtLoss = -1;
+	if (g_engfuncs.pfnGetPlayerStats)
+	{
+		int ping = 0, loss = 0;
+		(*g_engfuncs.pfnGetPlayerStats)(pPlayer->pEdict, &ping, &loss);
+		sg.tgtPing = (ping < 0) ? 0 : ping;
+		sg.tgtLoss = (loss < 0) ? 0 : loss;
+	}
 }
 
 // KTP: pack recorder for the tier-2.7 aim-vs-transmission sensor (KTPPackVis.h).
