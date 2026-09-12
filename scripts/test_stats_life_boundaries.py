@@ -1188,10 +1188,24 @@ def test_shot_context_stream() -> None:
     assert "g_kscDroppedByType[KSC_EVENT_SHOT]++" in enqueue
     before(enqueue, "strlen(line) >= KSC_SHOT_BUF_LINE_LEN - 1", "copy(g_kscShotBuffer")
 
-    flush = function_body(CAPTURE, "public ksc_shot_flush_task()")
+    # The draining lives in ksc_shot_flush, not the task, so a capture boundary
+    # can force it; the task is now just the 1s timer's entry point.
+    flush = function_body(CAPTURE, "stock ksc_shot_flush()")
     assert 'log_message("%s", g_kscShotBuffer[i])' in flush
     assert "g_kscShotBufferCount = 0" in flush
     assert "g_kscShotDropped = 0" in flush
+    assert "ksc_shot_flush()" in function_body(
+        CAPTURE, "public ksc_shot_flush_task()")
+
+    # The shot ring is on its own 1s timer and ksc_flush() does not touch it, so
+    # closing a context without draining it leaves shots to be emitted after
+    # ksc_emit_health has taken its counters and after the match's end marker.
+    # That produced rows the health row could not reconcile against and that
+    # log-scoped counting could not see (Lane C 34713194070: 187 rows vs 184
+    # in-window markers). Order matters as much as presence.
+    close = function_body(CAPTURE, "stock ksc_close_producer_context")
+    assert "ksc_shot_flush()" in close
+    before(close, "ksc_shot_flush()", "ksc_emit_health(")
 
     forward = function_body(CAPTURE, "public dod_client_weapon_fire(id, weapon, Float:gametime)")
     assert "ksc_shots_enabled()" in forward
