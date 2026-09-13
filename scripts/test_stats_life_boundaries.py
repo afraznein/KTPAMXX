@@ -749,7 +749,12 @@ def test_physical_boundaries_do_not_use_stats_pause_gate() -> None:
 
 
 def test_plugin_version() -> None:
-    assert re.search(r'#define\s+PLUGIN_VERSION\s+"1\.20\.4"', STATS)
+    # Pattern match, not a frozen literal: a hardcoded version string here
+    # breaks on every single version bump for no safety this test actually
+    # buys (it happened to this exact assertion the last time PLUGIN_VERSION
+    # moved). The real thing worth guarding is that the macro is defined and
+    # well-formed, not which specific release it currently says.
+    assert re.search(r'#define\s+PLUGIN_VERSION\s+"\d+\.\d+\.\d+"', STATS)
 
 
 def test_schema23_manifest_and_two_second_position_contract() -> None:
@@ -1091,7 +1096,10 @@ def test_dodx_grenade_entity_forward_and_direct_dispatch_contract() -> None:
     )
     assert "serial <= 0" in drop_dispatch
     assert "wpnid != 13 && wpnid != 14 && wpnid != 36" in drop_dispatch
-    assert re.search(r'#define\s+PLUGIN_VERSION\s+"1\.20\.4"', STATS)
+    # Same pattern-match reasoning as test_plugin_version above -- this
+    # duplicate assertion is unrelated to grenade entities but broke the
+    # same way on the same version bump, for the same avoidable reason.
+    assert re.search(r'#define\s+PLUGIN_VERSION\s+"\d+\.\d+\.\d+"', STATS)
 
 
 def test_ksc_buffer_detects_and_counts_line_truncation() -> None:
@@ -1169,33 +1177,72 @@ def test_flag_owner_resolves_against_the_authored_default() -> None:
 def test_shot_wire_line_fits_shot_buffer() -> None:
     # Derived from the live format string rather than transcribed from it, so
     # adding a field re-measures the bound instead of leaving a stale literal
-    # behind. Both overflows in this stream came from reasoning about the
-    # length instead of measuring it, and one buffer was raised against an
-    # overflow that re-measurement showed had never happened.
+    # behind. This line has overflowed from reasoning about the length
+    # instead of measuring it, been raised against an overflow re-measurement
+    # showed had never happened, and this exact function once dropped the
+    # leading %s from its own measurement (anchoring on the FIRST quote
+    # before "triggered", which lands on the closing quote of `^"%s^"`, not
+    # the format string's true start) -- silently under-counting every
+    # measurement it ever produced by the width of the player-name field
+    # minus a few literal characters. Anchored on the literal `"^"%s^"` this
+    # time, which cannot land anywhere else.
     start = CAPTURE.index('triggered ^"shot^"')
-    fmt_start = CAPTURE.rindex('"', 0, start)
+    fmt_start = CAPTURE.rindex('"^"%s^"', 0, start)
     fmt_end = CAPTURE.index('",', fmt_start)
     fmt = CAPTURE[fmt_start:fmt_end].replace('^"', '"')
 
-    # Widest realistic value for each substitution. The %s fields are matched
-    # to the property name that precedes them; the leading one is the player
-    # string, which ksc_player_str caps at 95.
+    # Widest realistic value for each %s substitution, keyed by the property
+    # name that precedes it. The leading one is always the player string,
+    # which ksc_player_str caps at 95.
     str_width = {"position": 29, "map": 31, "matchid": 63}
+
+    # Worst-case literal for each %d field that has a PROVABLE bound tighter
+    # than a raw int32 -- an explicit clamp at the capture site in
+    # moduleconfig.cpp, or a value built by a ternary/bitmask that cannot
+    # exceed the stated range by construction. Assuming every %d could be
+    # -2147483648 is safe but wrong: it manufactures an alarming worst case
+    # for fields that structurally cannot reach it (tgt_dead is a 0/1
+    # ternary; shooter_flags is built from |= 0x1/0x2/0x4 and tops out at 7),
+    # which is exactly the kind of unproven-but-plausible-sounding number
+    # this whole approach exists to replace with a measurement. Anything NOT
+    # in this table keeps the conservative full-int32 literal -- unproven
+    # means worst case, not "probably fine".
+    int_literal = {
+        "tgt_health": "-9999",          # moduleconfig.cpp clamp, +/-9999
+        "tgt_dead": "1",                 # ternary: 0 or 1
+        "shot_ping": "9999",             # non-negative at capture + 0-9999 clamp
+        "shot_loss": "999",              # non-negative at capture + 0-999 clamp
+        "cmd_traces": "999",             # traceCount clamped <999 before increment
+        "trace_frac": "10000",           # flFraction clamped 0..1, x10000
+        "trace_flags": "15",             # 4-bit field
+        "trace_start_off": "99999",      # 0-99999 clamp, always non-negative
+        "cmd_all_traces": "999",         # allTraceCount, same <999 clamp style
+        "net_lerp": "9999",              # -999..9999 clamp
+        "net_dropped": "999",            # 0-999 clamp
+        "net_backup": "999",             # 0-999 clamp
+        "net_cmds": "999",               # 0-999 clamp
+        "shooter_flags": "7",            # 3-bit field, |= 0x1/0x2/0x4 only
+        "shooter_punch_pitch": "-9999",  # +/-9999 clamp
+        "shooter_punch_yaw": "-9999",    # +/-9999 clamp
+        "shooter_speed": "9999",         # 0-9999 clamp (both bounds)
+        "shooter_stamina": "-9999",      # +/-9999 clamp
+    }
 
     out, cursor, seen_player = [], 0, False
     for token in re.finditer(r"%(?:\.2f|[ds])", fmt):
         out.append(fmt[cursor:token.start()])
         spec = token.group(0)
-        if spec == "%d":
-            out.append("-2147483648")
-        elif spec == "%.2f":
+        name_match = re.findall(r'\((\w+) "$', fmt[:token.start()])
+        name = name_match[0] if name_match else None
+        if spec == "%.2f":
             out.append("-2147483648.00")
+        elif spec == "%d":
+            out.append(int_literal.get(name, "-2147483648"))
         elif not seen_player:
             out.append("P" * 95)
             seen_player = True
         else:
-            name = re.findall(r'\((\w+) "$', fmt[:token.start()])
-            out.append("X" * str_width.get(name[0] if name else "", 63))
+            out.append("X" * str_width.get(name or "", 63))
         cursor = token.end()
     out.append(fmt[cursor:])
     line = "".join(out)
@@ -1205,6 +1252,23 @@ def test_shot_wire_line_fits_shot_buffer() -> None:
     assert len(line) < int(cap.group(1)), (
         f"worst-case shot line is {len(line)} bytes, buffer is {cap.group(1)}; "
         f"raise KSC_SHOT_BUF_LINE_LEN (the ring costs ENTRIES * LINE_LEN * 4)"
+    )
+
+    # The plugin's own buffer is NOT the binding constraint -- log_message()
+    # -> ALERT(at_logged) -> ReHLDS's AlertMessage_internal -> Log_Printf,
+    # whose OWN buffer (rehlds/engine/sv_log.cpp) is a hardcoded 1024 bytes,
+    # ~25 of which are consumed by the "L MM/DD/YYYY - HH:MM:SS: " prefix it
+    # always prepends. A line under KSC_SHOT_BUF_LINE_LEN can still get
+    # silently truncated one layer further down if it exceeds that ceiling --
+    # raising the plugin buffer alone does not protect against this. 970
+    # leaves real margin below the ~999-byte usable payload.
+    ENGINE_LOG_LINE_CEILING = 970
+    assert len(line) < ENGINE_LOG_LINE_CEILING, (
+        f"worst-case shot line is {len(line)} bytes, which risks silent "
+        f"truncation inside ReHLDS's Log_Printf (hardcoded 1024-byte buffer "
+        f"minus a ~25-byte timestamp prefix, independent of "
+        f"KSC_SHOT_BUF_LINE_LEN) -- shorten the wire format or tighten a "
+        f"field's clamp rather than raising the plugin-side buffer further"
     )
 
 

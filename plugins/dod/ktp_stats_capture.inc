@@ -147,11 +147,19 @@
 // before raising it -- an earlier pass raised this on an assumed overflow that
 // re-measurement showed was still 29B inside the old budget.
 #define KSC_SHOT_BUF_MAX_ENTRIES 512
-// Raised 896 -> 1152 for the shooter stance/spread fields (measured worst
-// case 1039B; see test_shot_wire_line_fits_shot_buffer, which derives this
-// number from the live format string rather than trusting a comment -- the
-// same test that has caught every prior miscalculation on this line).
-#define KSC_SHOT_BUF_LINE_LEN    1152
+// Raised 896 -> 960 for the shooter stance/spread fields. See
+// test_shot_wire_line_fits_shot_buffer, which derives the true worst case
+// from the live format string using each field's PROVABLE bound (an
+// explicit C++ clamp, not a blanket "every %d could be -2147483648"
+// assumption) -- 936B for this wire, comfortably under both this buffer and
+// the real binding constraint, which is NOT this buffer: log_message()'s
+// eventual path through ReHLDS's Log_Printf has a hardcoded 1024-byte
+// buffer with a ~25-byte timestamp prefix always prepended, so anything
+// approaching ~999B risks silent truncation one layer further down
+// regardless of what this constant says. Keep this under ~965 for exactly
+// that reason -- raising it further does not buy real headroom the way it
+// looks like it would.
+#define KSC_SHOT_BUF_LINE_LEN    960
 #define KSC_SHOT_FLUSH_SECS      1.0
 
 // Allocation-free owner cache for grenade lifecycle identity. This is double
@@ -2434,7 +2442,7 @@ public dod_client_weapon_fire(id, weapon, Float:gametime) {
 	new shooter_speed = -1, shooter_stamina = -1
 	new target[21]
 	if (ksc_shot_detail_enabled() && ksc_is_hitscan_firearm(weapon) &&
-			dodx_get_shot_target(id, weapon, target) == 1) {
+			dodx_get_shot_target2(id, weapon, target) == 1) {
 		// target[0] is the ENTINDEX of the player the trace hit. Without a
 		// target identity a shot can only be correlated to damage by
 		// (attacker, time), which cannot tell "this shot damaged its target"

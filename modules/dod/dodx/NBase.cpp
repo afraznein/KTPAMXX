@@ -2397,8 +2397,7 @@ static cell AMX_NATIVE_CALL dodx_get_shot_geom(AMX *amx, cell *params)
 //           shooter_team, shooter_ping_ms, shooter_loss, cmd_trace_count,
 //           trace_fraction_x10000, trace_flags, trace_start_off_units,
 //           cmd_all_trace_count, lerp_msec, dropped_cmds, cmd_backup,
-//           cmd_count, shooter_flags, shooter_punch_pitch_x100,
-//           shooter_punch_yaw_x100, shooter_speed_units, shooter_stamina }
+//           cmd_count }
 //
 // cmd_trace_count is the number of player-hitting traces the shooter's cmd
 // produced, not a property of the captured sample: under first-wins the sample
@@ -2406,18 +2405,35 @@ static cell AMX_NATIVE_CALL dodx_get_shot_geom(AMX *amx, cell *params)
 // this sample may not be the bullet's own trace. Read after the cmd completed --
 // the counter is keyed to the same cmd, and 0 means it could not be attributed.
 //
-// shooter_flags bit0 FL_ONGROUND, bit1 FL_DUCKING, bit2 IN_ATTACK2 held
-// (bipod/scope), all read off the SHOOTER's own edict, not the target's --
-// see KTPShotGeom.h's struct comment for why these exist.
-//
-// The output array is a fixed 21 cells with no size parameter, so a caller that
+// The output array is a fixed 16 cells with no size parameter, so a caller that
 // passes a shorter array writes past it. That is the convention every sibling
 // here already follows (dodx_get_shot_geom, dodx_get_aim_stats,
 // dodx_get_aim_window) and it is not worth breaking for this one native: adding
 // a size cell changes a signature in plugins/include/dodx.inc, which every KTP
 // plugin compiles against, so it would force a recompile of the whole plugin set
 // to harden one call site. The contract is stated in the .inc; the sole caller
-// (ksc_emit_shot_detail) declares target[21].
+// (ksc_emit_shot_detail) declares target[16].
+//
+// DO NOT widen this array in place. It did widen once, in review, and an
+// independent reviewer caught why that is dangerous beyond the usual
+// recompile-the-plugin-set cost: this native is bound by STRING NAME at
+// runtime, not by a compile-time link, and this fleet has shipped skewed
+// module/plugin pairs before (KTPAMXX 1.19.4 vs main's 1.20.x is a standing,
+// documented split). A dodx module built from a widened version of this
+// function paired with an OLDER stats_logging.amxx still calling this same
+// name with `target[16]` would have the module write 5 cells past the end
+// of that caller's array on every hitscan trace that hits a player --
+// silent memory corruption in the AMX data segment, on every live 12-man
+// this ships to, with no compiler or loader able to catch it. The mirror
+// case is worse: a NEWER plugin against an OLDER module reads Pawn's
+// zero-initialized tail of its own array as if it were captured data --
+// fabricated evidence, the one failure KTPShotGeom.h's own header calls
+// unforgivable, and it would look exactly like a real measurement.
+//
+// A new field group gets a NEW native name (dodx_get_shot_target2 below),
+// never a wider array under this one. Any version mismatch then fails loud
+// -- the plugin refuses to load on an unresolved native -- instead of
+// corrupting memory or manufacturing data silently.
 static cell AMX_NATIVE_CALL dodx_get_shot_target(AMX *amx, cell *params)
 {
 	int index = params[1];
@@ -2458,6 +2474,68 @@ static cell AMX_NATIVE_CALL dodx_get_shot_target(AMX *amx, cell *params)
 	out[11] = (sg.allTraceSeq == sg.tgtSeq) ? sg.allTraceCount : 0;
 	// Only report the packet's network state when it was sampled against this
 	// sample's own cmd; a neighbouring packet describes a different moment.
+	const bool netOk = (sg.netSeq == sg.tgtSeq);
+	out[12] = netOk ? sg.netLerpMsec : -1;
+	out[13] = netOk ? sg.netDropped  : -1;
+	out[14] = netOk ? sg.netBackup   : -1;
+	out[15] = netOk ? sg.netCmds     : -1;
+
+	sg.consumeTarget();
+	return 1;
+}
+
+// KTP: dodx_get_shot_target2 -- same read as dodx_get_shot_target above, plus
+// the shooter's own stance/movement group (KTPShotGeom.h's shooter* fields).
+// A SEPARATE native under a NEW name, deliberately not a widened
+// dodx_get_shot_target -- see the block comment on that function for why.
+//
+// out[] = { ...all 16 fields of dodx_get_shot_target, in the same order...,
+//           shooter_flags, shooter_punch_pitch_x100, shooter_punch_yaw_x100,
+//           shooter_speed_units, shooter_stamina }
+//
+// shooter_flags bit0 FL_ONGROUND, bit1 FL_DUCKING, bit2 IN_ATTACK2 held (a
+// raw button read, not a deploy-state proxy -- DoD's bipod/scope deploy is
+// widely believed to be a toggle rather than a held state, which this
+// stack cannot verify against closed-source dod.so; treat bit2 as exactly
+// what its name says and nothing more until that is confirmed).
+//
+// The output array is a fixed 21 cells with no size parameter, same
+// convention and same reasoning as dodx_get_shot_target's own 16. The sole
+// caller (ksc_emit_shot_detail) declares target[21].
+static cell AMX_NATIVE_CALL dodx_get_shot_target2(AMX *amx, cell *params)
+{
+	int index = params[1];
+	CHECK_PLAYER(index);
+
+	CPlayer *pPlayer = GET_PLAYER_POINTER_I(index);
+	if (!pPlayer->ingame || !pPlayer->pEdict || pPlayer->pEdict->free)
+		return 0;
+
+	KTPShotGeom &sg = pPlayer->ktpShot;
+
+	if (sg.tgtSeq == 0)
+		return 0;
+	if (sg.tgtSeq != sg.cmdSeq)
+	{
+		sg.consumeTarget();
+		return 0;
+	}
+	if ((int)params[2] != sg.geomWeapon)
+		return 0;
+
+	cell *out = MF_GetAmxAddr(amx, params[3]);
+	out[0] = sg.tgtEntIndex;
+	out[1] = sg.tgtHealth;
+	out[2] = sg.tgtDead;
+	out[3] = sg.tgtTeam;
+	out[4] = sg.tgtShooterTeam;
+	out[5] = sg.tgtPing;
+	out[6] = sg.tgtLoss;
+	out[7] = (sg.traceSeq == sg.tgtSeq) ? sg.traceCount : 0;
+	out[8] = sg.traceFrac;
+	out[9] = sg.traceFlags;
+	out[10] = sg.tgtStartOff;
+	out[11] = (sg.allTraceSeq == sg.tgtSeq) ? sg.allTraceCount : 0;
 	const bool netOk = (sg.netSeq == sg.tgtSeq);
 	out[12] = netOk ? sg.netLerpMsec : -1;
 	out[13] = netOk ? sg.netDropped  : -1;
@@ -2662,6 +2740,7 @@ AMX_NATIVE_INFO base_Natives[] =
 	// KTP: per-shot aim geometry (blind audit tier 2.3)
 	{"dodx_get_shot_geom",                   dodx_get_shot_geom},
 	{"dodx_get_shot_target",                 dodx_get_shot_target},
+	{"dodx_get_shot_target2",                dodx_get_shot_target2},
 
 	// KTP: aim-vs-transmission counters (blind audit tier 2.7)
 	{"dodx_get_aim_vis_stats",               dodx_get_aim_vis_stats},

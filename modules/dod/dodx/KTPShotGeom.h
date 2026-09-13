@@ -233,8 +233,14 @@ struct KTPShotGeom
 	// wire line is close to its budget and these are all one bit each):
 	//   bit0 FL_ONGROUND at trace time.
 	//   bit1 FL_DUCKING at trace time.
-	//   bit2 IN_ATTACK2 held -- MG42/BAR bipod deploy or a scoped weapon's
-	//        scope, both real accuracy-model inputs, not decoration.
+	//   bit2 IN_ATTACK2 held at trace time. A raw button read, NOT a
+	//        confirmed deploy/scope-state proxy: DoD's bipod and scope
+	//        deploy are widely believed to be TOGGLES (press once, then
+	//        fire on +attack1), which would read this bit as 0 on
+	//        essentially every shot regardless of deploy state. dod.so is
+	//        closed source and this stack cannot confirm either way from
+	//        here -- treat this as exactly what it measures until real
+	//        data says otherwise, not as evidence about deploy state.
 	int shooterFlags;
 	// v.punchangle at trace time, centidegrees (x100, matching traceFrac's
 	// style of a fixed-point int rather than a float on the wire). Recoil
@@ -250,9 +256,12 @@ struct KTPShotGeom
 	// for a question this doesn't answer.
 	int shooterSpeedUnits;
 	// v.fuser4 -- DoD's stamina gauge, exhaustion penalizes accuracy the
-	// same way movement does. Raw int; DoD's own range is documented
-	// nowhere accessible from here, so this ships unscaled rather than
-	// guessing a normalization that could be wrong.
+	// same way movement does. Raw int, unscaled. dodfun's moduleconfig.cpp
+	// clamps this to a default 0-100 (staminaMin/Max) ONLY when a plugin has
+	// called its stamina-limit native to opt in (staminaSet) -- this stack
+	// never does, so the real live range here is whatever DoD's own internal
+	// stamina logic produces, believed but not confirmed to be 0-100. Ships
+	// unscaled rather than assuming that belief is exactly right.
 	int shooterStamina;
 
 	// Previous captured sighting of THIS target, for the bearing rate above.

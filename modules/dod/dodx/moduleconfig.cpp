@@ -1497,7 +1497,14 @@ static void KTPCaptureShotGeom(CPlayer *pPlayer, const float *v1, const float *v
 	if (sg.shooterPunchPitch < -9999) sg.shooterPunchPitch = -9999;
 	if (sg.shooterPunchYaw >  9999) sg.shooterPunchYaw =  9999;
 	if (sg.shooterPunchYaw < -9999) sg.shooterPunchYaw = -9999;
+	// Unlike its siblings this one has no legitimate negative value (it's a
+	// magnitude) -- but (int) of a NaN or overflowing velocity is undefined
+	// behavior that commonly yields INT_MIN on this target, which the upper
+	// bound alone does not catch. One out-of-range value fails the whole
+	// batched INSERT and drops the queue for every server sharing that
+	// flush, so this floor is load-bearing, not decorative.
 	if (sg.shooterSpeedUnits > 9999) sg.shooterSpeedUnits = 9999;
+	if (sg.shooterSpeedUnits < 0)    sg.shooterSpeedUnits = 0;
 	if (sg.shooterStamina >  9999) sg.shooterStamina =  9999;
 	if (sg.shooterStamina < -9999) sg.shooterStamina = -9999;
 }
