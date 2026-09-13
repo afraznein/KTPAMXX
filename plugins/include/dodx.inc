@@ -1326,14 +1326,25 @@ native dodx_get_shot_geom(id, weapon, geom[6]);
  *  [14] command backup depth, [15] commands in the packet.
  *       All four are -1 when no packet state belongs to this shot, and are
  *       always -1 for bots, which have no packets at all.
+ *  [16] the SHOOTER's own stance flags at trace time (not the target's):
+ *       bit0 FL_ONGROUND, bit1 FL_DUCKING, bit2 IN_ATTACK2 held (bipod
+ *       deploy on an MG42/BAR, or a scoped weapon's scope). Real inputs to
+ *       DoD's own accuracy model, explaining a wide miss ([0]'s errUdeg)
+ *       without it being a pipeline defect.
+ *  [17] the shooter's v.punchangle pitch x100 (centidegrees), [18] the same
+ *       for yaw. Unsettled recoil from a prior shot pushes THIS shot's aim
+ *       off by exactly this much.
+ *  [19] magnitude of the shooter's v.velocity, world units/sec -- movement
+ *       speed, not direction.
+ *  [20] the shooter's v.fuser4 (DoD's stamina gauge), unscaled.
  *
  * @param id        Firing player index (the forward's id argument)
  * @param weapon    The forward's weapon argument; must match what the shooter held
  *                  at trace time or the read returns 0
- * @param target    Output, 16 cells as above
+ * @param target    Output, 21 cells as above
  * @return  1 with target state, 0 when none belongs to this shot (record NULL)
  */
-native dodx_get_shot_target(id, weapon, target[16]);
+native dodx_get_shot_target(id, weapon, target[21]);
 
 /**
  * Read a player's aim-vs-transmission counters. Measurements only: no threshold,

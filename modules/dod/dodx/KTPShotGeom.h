@@ -210,6 +210,51 @@ struct KTPShotGeom
 	int netBackup;
 	int netCmds;
 
+	// The SHOOTER's own stance and movement at trace time -- not the target's,
+	// and not redundant with `prone` on the wire (that already comes from
+	// dod_get_pronestate at the Pawn layer). These answer a different
+	// question: was this shooter in a state DoD's own accuracy model
+	// penalizes, at the exact instant the trace fired.
+	//
+	// WHY. errUdeg already reports the resolved miss angle, but not WHY it
+	// was wide. DoD applies real accuracy penalties for movement and stance
+	// that the traced ray already reflects, so a shooter moving fast, mid-
+	// air, or hip-firing a bipod weapon explains a wide miss without any
+	// pipeline defect -- while the same wide miss from a stationary, prone,
+	// deployed shooter does not. Bucketing the still-open MP40 low-vs-high
+	// trace_frac split (bot lane: 50% vs 100% registration, n=37) by these
+	// fields is the first thing worth trying once real match data exists.
+	//
+	// Same stash, same lifecycle as the target group above: sampled once at
+	// trace resolve, from pPlayer's own edict, which by construction is
+	// exactly this shot's shooter.
+	//
+	// shooterFlags packs three booleans (same reasoning as traceFlags: the
+	// wire line is close to its budget and these are all one bit each):
+	//   bit0 FL_ONGROUND at trace time.
+	//   bit1 FL_DUCKING at trace time.
+	//   bit2 IN_ATTACK2 held -- MG42/BAR bipod deploy or a scoped weapon's
+	//        scope, both real accuracy-model inputs, not decoration.
+	int shooterFlags;
+	// v.punchangle at trace time, centidegrees (x100, matching traceFrac's
+	// style of a fixed-point int rather than a float on the wire). Recoil
+	// that has not settled between shots pushes the NEXT shot's aim off by
+	// exactly this much, and nothing else in this stack has ever recorded
+	// it. Pitch and yaw only -- roll is not meaningful for aim in this
+	// engine's weapon-fire path.
+	int shooterPunchPitch;
+	int shooterPunchYaw;
+	// Speed magnitude of v.velocity, world units/sec. Not a vector: the
+	// consumer wants "was this shooter moving fast", not the direction,
+	// and a direction would cost two more fields on an already-tight wire
+	// for a question this doesn't answer.
+	int shooterSpeedUnits;
+	// v.fuser4 -- DoD's stamina gauge, exhaustion penalizes accuracy the
+	// same way movement does. Raw int; DoD's own range is documented
+	// nowhere accessible from here, so this ships unscaled rather than
+	// guessing a normalization that could be wrong.
+	int shooterStamina;
+
 	// Previous captured sighting of THIS target, for the bearing rate above.
 	// Per-target, not global: a shooter switching between two enemies would
 	// otherwise read the angle between two different people as one target's
@@ -256,6 +301,11 @@ struct KTPShotGeom
 		netDropped = -1;
 		netBackup = -1;
 		netCmds = -1;
+		shooterFlags = 0;
+		shooterPunchPitch = 0;
+		shooterPunchYaw = 0;
+		shooterSpeedUnits = 0;
+		shooterStamina = 0;
 	}
 
 	void consume()

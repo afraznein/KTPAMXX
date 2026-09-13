@@ -1411,6 +1411,28 @@ static void KTPCaptureShotGeom(CPlayer *pPlayer, const float *v1, const float *v
 	sg.tgtTeam = (int)ptr->pHit->v.team;
 	sg.tgtShooterTeam = (int)pPlayer->pEdict->v.team;
 
+	// The shooter's own stance and movement at trace time (see the struct
+	// comment for why: errUdeg reports the miss angle, this explains it).
+	// Read off pPlayer's edict -- the shooter, not the target -- same
+	// instant as everything else in this stash.
+	{
+		int flags = 0;
+		if (pPlayer->pEdict->v.flags & FL_ONGROUND) flags |= 0x1;
+		if (pPlayer->pEdict->v.flags & FL_DUCKING)  flags |= 0x2;
+		if ((int)pPlayer->pEdict->v.button & IN_ATTACK2) flags |= 0x4;
+		sg.shooterFlags = flags;
+
+		sg.shooterPunchPitch = (int)(pPlayer->pEdict->v.punchangle[0] * 100.0f);
+		sg.shooterPunchYaw   = (int)(pPlayer->pEdict->v.punchangle[1] * 100.0f);
+
+		float vel[3] = { pPlayer->pEdict->v.velocity[0],
+		                 pPlayer->pEdict->v.velocity[1],
+		                 pPlayer->pEdict->v.velocity[2] };
+		sg.shooterSpeedUnits = (int)(sqrtf(ktpshot::dot3(vel, vel)) + 0.5f);
+
+		sg.shooterStamina = (int)pPlayer->pEdict->v.fuser4;
+	}
+
 	// The shooter's network state at this instant. Read here for the same reason
 	// everything else in this stash is: by the time a consumer runs, the value has
 	// moved, and the only ping any table currently keeps is a per-session average
@@ -1466,6 +1488,18 @@ static void KTPCaptureShotGeom(CPlayer *pPlayer, const float *v1, const float *v
 	if (sg.tgtLoss >  999) sg.tgtLoss =  999;
 	// trace_start_off is MEDIUMINT, so 99999 is in range there.
 	if (sg.tgtStartOff > 99999) sg.tgtStartOff = 99999;
+	// shooterFlags is a 3-bit field (0-7); no clamp needed. Punch angle and
+	// speed clamped to the same 4-digit width as the rest of this stash --
+	// real values never approach it (recoil kick is single-digit degrees,
+	// x100 keeps it under 2000; DoD run speed tops out in the low hundreds
+	// of units/sec), so this bounds the wire, not the physics.
+	if (sg.shooterPunchPitch >  9999) sg.shooterPunchPitch =  9999;
+	if (sg.shooterPunchPitch < -9999) sg.shooterPunchPitch = -9999;
+	if (sg.shooterPunchYaw >  9999) sg.shooterPunchYaw =  9999;
+	if (sg.shooterPunchYaw < -9999) sg.shooterPunchYaw = -9999;
+	if (sg.shooterSpeedUnits > 9999) sg.shooterSpeedUnits = 9999;
+	if (sg.shooterStamina >  9999) sg.shooterStamina =  9999;
+	if (sg.shooterStamina < -9999) sg.shooterStamina = -9999;
 }
 
 // KTP: pack recorder for the tier-2.7 aim-vs-transmission sensor (KTPPackVis.h).

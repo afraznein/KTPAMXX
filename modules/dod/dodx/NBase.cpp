@@ -2397,7 +2397,8 @@ static cell AMX_NATIVE_CALL dodx_get_shot_geom(AMX *amx, cell *params)
 //           shooter_team, shooter_ping_ms, shooter_loss, cmd_trace_count,
 //           trace_fraction_x10000, trace_flags, trace_start_off_units,
 //           cmd_all_trace_count, lerp_msec, dropped_cmds, cmd_backup,
-//           cmd_count }
+//           cmd_count, shooter_flags, shooter_punch_pitch_x100,
+//           shooter_punch_yaw_x100, shooter_speed_units, shooter_stamina }
 //
 // cmd_trace_count is the number of player-hitting traces the shooter's cmd
 // produced, not a property of the captured sample: under first-wins the sample
@@ -2405,14 +2406,18 @@ static cell AMX_NATIVE_CALL dodx_get_shot_geom(AMX *amx, cell *params)
 // this sample may not be the bullet's own trace. Read after the cmd completed --
 // the counter is keyed to the same cmd, and 0 means it could not be attributed.
 //
-// The output array is a fixed 16 cells with no size parameter, so a caller that
+// shooter_flags bit0 FL_ONGROUND, bit1 FL_DUCKING, bit2 IN_ATTACK2 held
+// (bipod/scope), all read off the SHOOTER's own edict, not the target's --
+// see KTPShotGeom.h's struct comment for why these exist.
+//
+// The output array is a fixed 21 cells with no size parameter, so a caller that
 // passes a shorter array writes past it. That is the convention every sibling
 // here already follows (dodx_get_shot_geom, dodx_get_aim_stats,
 // dodx_get_aim_window) and it is not worth breaking for this one native: adding
 // a size cell changes a signature in plugins/include/dodx.inc, which every KTP
 // plugin compiles against, so it would force a recompile of the whole plugin set
 // to harden one call site. The contract is stated in the .inc; the sole caller
-// (ksc_emit_shot_detail) declares target[16].
+// (ksc_emit_shot_detail) declares target[21].
 static cell AMX_NATIVE_CALL dodx_get_shot_target(AMX *amx, cell *params)
 {
 	int index = params[1];
@@ -2458,6 +2463,11 @@ static cell AMX_NATIVE_CALL dodx_get_shot_target(AMX *amx, cell *params)
 	out[13] = netOk ? sg.netDropped  : -1;
 	out[14] = netOk ? sg.netBackup   : -1;
 	out[15] = netOk ? sg.netCmds     : -1;
+	out[16] = sg.shooterFlags;
+	out[17] = sg.shooterPunchPitch;
+	out[18] = sg.shooterPunchYaw;
+	out[19] = sg.shooterSpeedUnits;
+	out[20] = sg.shooterStamina;
 
 	sg.consumeTarget();
 	return 1;
