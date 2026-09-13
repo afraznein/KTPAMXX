@@ -199,7 +199,12 @@ struct KTPShotGeom
 	//
 	// Bots never carry any of this: they have no packets, so these stay 0 and
 	// the whole dimension is unexercisable in a bot lane by construction.
-	unsigned int netSeq;   // cmd ordinal these were sampled against
+	unsigned int netSeq;   // cmd ordinal these were sampled against, once claimed
+	// Set by the packet hook, cleared by the next PreThink that claims the sample.
+	// The packet hook cannot compute netSeq itself: with dropped commands the
+	// engine replays lastcmd first and each replay bumps cmdSeq, so any prediction
+	// lands on a replayed cmd instead of the real one.
+	int netPending;
 	int netLerpMsec;
 	int netDropped;
 	int netBackup;
@@ -246,6 +251,7 @@ struct KTPShotGeom
 		allTraceCount = 0;
 		tgtStartOff = 0;
 		netSeq = 0;
+		netPending = 0;
 		netLerpMsec = -1;
 		netDropped = -1;
 		netBackup = -1;

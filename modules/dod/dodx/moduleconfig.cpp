@@ -1330,7 +1330,13 @@ static void KTPCaptureShotGeom(CPlayer *pPlayer, const float *v1, const float *v
 		sg.traceSeq = sg.cmdSeq;
 		sg.traceCount = 0;
 	}
-	if (sg.traceCount < 0x7fffffff)
+	// Clamped HERE, at the increment, not in the capture block below: the
+	// first-wins return sits between them, so every trace after the winning one
+	// would otherwise increment unbounded. The column is SMALLINT, and one
+	// out-of-range value fails the whole 200-row batch INSERT under strict mode,
+	// which discards the queue -- so an unclamped counter is a data-loss path for
+	// every server sharing that flush, not a cosmetic overflow.
+	if (sg.traceCount < 999)
 		sg.traceCount++;
 
 	// First capture wins the cmd: nothing after the bullet's PostThink trace can
@@ -1450,13 +1456,16 @@ static void KTPCaptureShotGeom(CPlayer *pPlayer, const float *v1, const float *v
 	// computation an assumption -- silent truncation is how this line fails, so
 	// the bound is enforced here instead of hoped for. A clamped counter reads
 	// as "many", which is all any consumer asks of it.
-	if (sg.tgtHealth >  99999) sg.tgtHealth =  99999;
-	if (sg.tgtHealth < -99999) sg.tgtHealth = -99999;
-	if (sg.tgtPing  > 99999) sg.tgtPing  = 99999;
-	if (sg.tgtLoss  >   999) sg.tgtLoss  =   999;
+	// Bounds match the DESTINATION COLUMN, not just the wire width. tgt_health,
+	// shot_ping and the counters are SMALLINT (+/-32767); clamping them to 99999
+	// kept the line short while still handing MySQL an out-of-range value, and a
+	// single one of those fails the entire batch.
+	if (sg.tgtHealth >  9999) sg.tgtHealth =  9999;
+	if (sg.tgtHealth < -9999) sg.tgtHealth = -9999;
+	if (sg.tgtPing > 9999) sg.tgtPing = 9999;
+	if (sg.tgtLoss >  999) sg.tgtLoss =  999;
+	// trace_start_off is MEDIUMINT, so 99999 is in range there.
 	if (sg.tgtStartOff > 99999) sg.tgtStartOff = 99999;
-	if (sg.traceCount    > 999) sg.traceCount    = 999;
-	if (sg.allTraceCount > 999) sg.allTraceCount = 999;
 }
 
 // KTP: pack recorder for the tier-2.7 aim-vs-transmission sensor (KTPPackVis.h).
@@ -1695,7 +1704,19 @@ static void DODX_OnEstablishTimeBase(IVoidHookChain<IGameClient *, struct usercm
 	if (sg.netDropped > 999) sg.netDropped = 999;
 	if (sg.netBackup  > 999) sg.netBackup  = 999;
 	if (sg.netCmds    > 999) sg.netCmds    = 999;
-	sg.netSeq = sg.cmdSeq + 1;
+	// Marked PENDING rather than predicted. An earlier version stamped
+	// netSeq = cmdSeq + 1, on the theory that the next cmd is this packet's.
+	// That is false whenever dropped > 0: the engine replays lastcmd for each
+	// dropped command before reaching cmds[0], and every replay runs PreThink and
+	// bumps cmdSeq. The +1 therefore lands on a replayed command -- so a real shot
+	// reads netSeq != tgtSeq and blanks all four columns, precisely in the
+	// dropped-command case this hook exists to measure, while a shot in a replayed
+	// cmd gets cmds[0]'s interp attributed to it.
+	//
+	// Leaving it unclaimed and letting the next PreThink bind it to whatever
+	// cmdSeq actually becomes needs no arithmetic about the engine's replay
+	// behaviour -- which is the point, since that behaviour is what got this wrong.
+	sg.netPending = 1;
 }
 
 // KTP: TraceLine hook handler - replaces FN_TraceLine_Post
@@ -1735,7 +1756,8 @@ static void DODX_OnTraceLine(IVoidHookChain<const float *, const float *, int, e
 						asg.allTraceSeq = asg.cmdSeq;
 						asg.allTraceCount = 0;
 					}
-					if (asg.allTraceCount < 0x7fffffff)
+					// Same SMALLINT bound as traceCount, for the same reason.
+					if (asg.allTraceCount < 999)
 						asg.allTraceCount++;
 				}
 			}
@@ -2076,6 +2098,17 @@ static void DODX_OnPlayerPreThink(IVoidHookChain<edict_t *, float> *chain, edict
 	// KTPShotGeom.h walks the ordering.
 	pPlayer->ktpShot.cmdSeq++;
 	g_ktpCmdOwner = index;
+
+	// Bind a pending SV_EstablishTimeBase sample to the cmd that actually runs
+	// next. The packet hook cannot know that ordinal: when commands were dropped
+	// the engine replays lastcmd first, and each replay passes through here. The
+	// first cmd after the sample claims it; later cmds in the same packet leave it
+	// bound where it is, so a replayed command never steals the reading.
+	if (pPlayer->ktpShot.netPending)
+	{
+		pPlayer->ktpShot.netSeq = pPlayer->ktpShot.cmdSeq;
+		pPlayer->ktpShot.netPending = 0;
+	}
 
 	// KTP: sample aim/movement BEFORE the isModuleActive() gate. Those pauses are
 	// round-freeze and dodstats_pause -- scoring concerns. A fire window that spans a
