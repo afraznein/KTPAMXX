@@ -1166,6 +1166,48 @@ def test_flag_owner_resolves_against_the_authored_default() -> None:
     before(baseline, "ksc_refresh_flag_defaults()", "g_kscOwner[f] = ksc_read_owner(f)")
 
 
+def test_shot_wire_line_fits_shot_buffer() -> None:
+    # Derived from the live format string rather than transcribed from it, so
+    # adding a field re-measures the bound instead of leaving a stale literal
+    # behind. Both overflows in this stream came from reasoning about the
+    # length instead of measuring it, and one buffer was raised against an
+    # overflow that re-measurement showed had never happened.
+    start = CAPTURE.index('triggered ^"shot^"')
+    fmt_start = CAPTURE.rindex('"', 0, start)
+    fmt_end = CAPTURE.index('",', fmt_start)
+    fmt = CAPTURE[fmt_start:fmt_end].replace('^"', '"')
+
+    # Widest realistic value for each substitution. The %s fields are matched
+    # to the property name that precedes them; the leading one is the player
+    # string, which ksc_player_str caps at 95.
+    str_width = {"position": 29, "map": 31, "matchid": 63}
+
+    out, cursor, seen_player = [], 0, False
+    for token in re.finditer(r"%(?:\.2f|[ds])", fmt):
+        out.append(fmt[cursor:token.start()])
+        spec = token.group(0)
+        if spec == "%d":
+            out.append("-2147483648")
+        elif spec == "%.2f":
+            out.append("-2147483648.00")
+        elif not seen_player:
+            out.append("P" * 95)
+            seen_player = True
+        else:
+            name = re.findall(r'\((\w+) "$', fmt[:token.start()])
+            out.append("X" * str_width.get(name[0] if name else "", 63))
+        cursor = token.end()
+    out.append(fmt[cursor:])
+    line = "".join(out)
+
+    cap = re.search(r"#define\s+KSC_SHOT_BUF_LINE_LEN\s+(\d+)", CAPTURE)
+    assert cap, "missing KSC_SHOT_BUF_LINE_LEN"
+    assert len(line) < int(cap.group(1)), (
+        f"worst-case shot line is {len(line)} bytes, buffer is {cap.group(1)}; "
+        f"raise KSC_SHOT_BUF_LINE_LEN (the ring costs ENTRIES * LINE_LEN * 4)"
+    )
+
+
 def test_shot_context_stream() -> None:
     # ENGINE_STATS_EXPANSION_PLAN_20260909.md wave 0 (§3.6b): own buffer, own
     # cvar, own flush task -- must never share capacity with the damage/break

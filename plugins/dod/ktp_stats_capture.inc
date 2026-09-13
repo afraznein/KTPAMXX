@@ -2420,6 +2420,7 @@ public dod_client_weapon_fire(id, weapon, Float:gametime) {
 	// succeeds. The values are not garbage, but they describe a melee swing rather
 	// than a bullet, and mixing the two silently into a shot-registration
 	// population is how a partition stops meaning anything.
+	new tgt_userid = -1
 	new tgt_health = -1, tgt_dead = -1, tgt_team = -1, shooter_team = -1
 	new shot_ping = -1, shot_loss = -1, cmd_traces = -1
 	new trace_frac = -1, trace_flags = -1
@@ -2428,6 +2429,22 @@ public dod_client_weapon_fire(id, weapon, Float:gametime) {
 	new target[16]
 	if (ksc_shot_detail_enabled() && ksc_is_hitscan_firearm(weapon) &&
 			dodx_get_shot_target(id, weapon, target) == 1) {
+		// target[0] is the ENTINDEX of the player the trace hit. Without a
+		// target identity a shot can only be correlated to damage by
+		// (attacker, time), which cannot tell "this shot damaged its target"
+		// from "this shot registered nothing while an unrelated shot by the
+		// same player landed on somebody else inside the window" -- and
+		// measuring exactly that is the point of the stream.
+		//
+		// Sent as the engine userid, not the raw entindex. Both cost the same
+		// on the wire, but an entindex is a slot number that is reused after a
+		// disconnect, so it identifies a player only within a life, while a
+		// userid is unique for the whole connection and is what the daemon
+		// already resolves to a player id (lookupPlayer). For players the
+		// entity index and the AMXX player index are the same value, so this
+		// needs nothing from the native beyond what it already returns.
+		if (target[0] >= 1 && target[0] <= MAX_PLAYERS && is_user_connected(target[0]))
+			tgt_userid = get_user_userid(target[0])
 		tgt_health = target[1]
 		tgt_dead = target[2]
 		tgt_team = target[3]
@@ -2447,11 +2464,11 @@ public dod_client_weapon_fire(id, weapon, Float:gametime) {
 
 	new line[KSC_SHOT_BUF_LINE_LEN]
 	formatex(line, charsmax(line),
-		"^"%s^" triggered ^"shot^" (weapon_id ^"%d^") (position ^"%s^") (yaw ^"%.2f^") (pitch ^"%.2f^") (prone ^"%d^") (map ^"%s^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^") (tgt_health ^"%d^") (tgt_dead ^"%d^") (tgt_team ^"%d^") (shooter_team ^"%d^") (shot_ping ^"%d^") (shot_loss ^"%d^") (cmd_traces ^"%d^") (trace_frac ^"%d^") (trace_flags ^"%d^") (trace_start_off ^"%d^") (cmd_all_traces ^"%d^") (net_lerp ^"%d^") (net_dropped ^"%d^") (net_backup ^"%d^") (net_cmds ^"%d^")",
+		"^"%s^" triggered ^"shot^" (weapon_id ^"%d^") (position ^"%s^") (yaw ^"%.2f^") (pitch ^"%.2f^") (prone ^"%d^") (map ^"%s^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^") (tgt_userid ^"%d^") (tgt_health ^"%d^") (tgt_dead ^"%d^") (tgt_team ^"%d^") (shooter_team ^"%d^") (shot_ping ^"%d^") (shot_loss ^"%d^") (cmd_traces ^"%d^") (trace_frac ^"%d^") (trace_flags ^"%d^") (trace_start_off ^"%d^") (cmd_all_traces ^"%d^") (net_lerp ^"%d^") (net_dropped ^"%d^") (net_backup ^"%d^") (net_cmds ^"%d^")",
 		pstr, weapon, pos,
 		has_angles ? angles[1] : -999.0, has_angles ? angles[0] : -999.0,
 		prone, mapname,
-		producer_matchid, producer_half, gametime, event_epoch, sequence,
+		producer_matchid, producer_half, gametime, event_epoch, sequence, tgt_userid,
 		tgt_health, tgt_dead, tgt_team, shooter_team,
 		shot_ping, shot_loss, cmd_traces, trace_frac, trace_flags,
 		trace_start_off, cmd_all_traces,
