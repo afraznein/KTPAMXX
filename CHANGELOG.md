@@ -42,6 +42,27 @@ population.
 ENTRIES * LINE_LEN * 4). `KSC_SHOT_BUF_MAX_ENTRIES` stays 512, which was sized
 against the documented ~120 shots/s burst.
 
+### Added - the shot target's identity, and a measured wire budget
+
+The native already returned the target's ENTINDEX as `out[0]`; the producer
+read `out[1]` onward and threw it away. That discarded the one field that makes
+an exact shot-to-damage join possible, leaving correlation to (attacker, time),
+which cannot tell a shot that hit its target from one that registered nothing
+while an unrelated shot by the same player landed on somebody else.
+
+Sent as the engine userid rather than the raw entindex -- same wire cost, but an
+entindex is a slot number reused after a disconnect, so it identifies a player
+only within a life. For players the entity index and the AMXX player index are
+the same value, so this needs nothing new from the native.
+
+`test_shot_wire_line_fits_shot_buffer` derives the worst case from the live
+format string instead of transcribing it, so adding a field re-measures the
+bound rather than leaving a stale literal behind. This stream has overflowed
+twice from reasoning about the length instead of measuring it, and once had its
+buffer raised against an overflow that re-measurement showed never happened.
+Worst case is now 880 bytes against the 896 cap, with every numeric at INT_MIN
+width -- a bound that cannot actually co-occur, so it is provable, not assumed.
+
 ### Fixed - the per-type sequence space is scoped to (match, half), not to context activation
 
 `ksc_reset_health()` zeroed `g_kscTypeSequence[]` on every producer-context
