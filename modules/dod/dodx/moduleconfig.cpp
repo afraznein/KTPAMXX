@@ -1411,6 +1411,28 @@ static void KTPCaptureShotGeom(CPlayer *pPlayer, const float *v1, const float *v
 	sg.tgtTeam = (int)ptr->pHit->v.team;
 	sg.tgtShooterTeam = (int)pPlayer->pEdict->v.team;
 
+	// The shooter's own stance and movement at trace time (see the struct
+	// comment for why: errUdeg reports the miss angle, this explains it).
+	// Read off pPlayer's edict -- the shooter, not the target -- same
+	// instant as everything else in this stash.
+	{
+		int flags = 0;
+		if (pPlayer->pEdict->v.flags & FL_ONGROUND) flags |= 0x1;
+		if (pPlayer->pEdict->v.flags & FL_DUCKING)  flags |= 0x2;
+		if ((int)pPlayer->pEdict->v.button & IN_ATTACK2) flags |= 0x4;
+		sg.shooterFlags = flags;
+
+		sg.shooterPunchPitch = (int)(pPlayer->pEdict->v.punchangle[0] * 100.0f);
+		sg.shooterPunchYaw   = (int)(pPlayer->pEdict->v.punchangle[1] * 100.0f);
+
+		float vel[3] = { pPlayer->pEdict->v.velocity[0],
+		                 pPlayer->pEdict->v.velocity[1],
+		                 pPlayer->pEdict->v.velocity[2] };
+		sg.shooterSpeedUnits = (int)(sqrtf(ktpshot::dot3(vel, vel)) + 0.5f);
+
+		sg.shooterStamina = (int)pPlayer->pEdict->v.fuser4;
+	}
+
 	// The shooter's network state at this instant. Read here for the same reason
 	// everything else in this stash is: by the time a consumer runs, the value has
 	// moved, and the only ping any table currently keeps is a per-session average
@@ -1466,6 +1488,25 @@ static void KTPCaptureShotGeom(CPlayer *pPlayer, const float *v1, const float *v
 	if (sg.tgtLoss >  999) sg.tgtLoss =  999;
 	// trace_start_off is MEDIUMINT, so 99999 is in range there.
 	if (sg.tgtStartOff > 99999) sg.tgtStartOff = 99999;
+	// shooterFlags is a 3-bit field (0-7); no clamp needed. Punch angle and
+	// speed clamped to the same 4-digit width as the rest of this stash --
+	// real values never approach it (recoil kick is single-digit degrees,
+	// x100 keeps it under 2000; DoD run speed tops out in the low hundreds
+	// of units/sec), so this bounds the wire, not the physics.
+	if (sg.shooterPunchPitch >  9999) sg.shooterPunchPitch =  9999;
+	if (sg.shooterPunchPitch < -9999) sg.shooterPunchPitch = -9999;
+	if (sg.shooterPunchYaw >  9999) sg.shooterPunchYaw =  9999;
+	if (sg.shooterPunchYaw < -9999) sg.shooterPunchYaw = -9999;
+	// Unlike its siblings this one has no legitimate negative value (it's a
+	// magnitude) -- but (int) of a NaN or overflowing velocity is undefined
+	// behavior that commonly yields INT_MIN on this target, which the upper
+	// bound alone does not catch. One out-of-range value fails the whole
+	// batched INSERT and drops the queue for every server sharing that
+	// flush, so this floor is load-bearing, not decorative.
+	if (sg.shooterSpeedUnits > 9999) sg.shooterSpeedUnits = 9999;
+	if (sg.shooterSpeedUnits < 0)    sg.shooterSpeedUnits = 0;
+	if (sg.shooterStamina >  9999) sg.shooterStamina =  9999;
+	if (sg.shooterStamina < -9999) sg.shooterStamina = -9999;
 }
 
 // KTP: pack recorder for the tier-2.7 aim-vs-transmission sensor (KTPPackVis.h).
@@ -2169,6 +2210,19 @@ static int DODX_OnRegUserMsg(IHookChain<int, const char *, int> *chain, const ch
 {
 	// Call original first to get the message ID
 	int id = chain->callNext(pszName, iSize);
+
+	// KTP research probe, read-only, zero cost: registration happens once per
+	// usermessage name per map load, never per-frame. dod.so is closed
+	// source, so the only way to know whether "Damage" uses the standard
+	// vanilla HLSDK layout (WRITE_BYTE armor, WRITE_BYTE damage, WRITE_LONG
+	// bitsDamage, WRITE_COORD x3 -- 17 bytes) without guessing at a parser is
+	// to observe what it actually declares here. iSize == -1 means variable-
+	// length (tells us nothing); a fixed iSize is real evidence either way.
+	// This logs the fact and parses nothing -- see
+	// handover/HITREG_SHOT_DIAGNOSTICS_PHASE1_CLOSEOUT_20260913.md for why
+	// this question exists before committing to building the parser.
+	if (strcmp(pszName, "Damage") == 0)
+		MF_Log("[DODX-research] Damage usermsg registered with iSize=%d", iSize);
 
 	// Post-hook logic (same as RegUserMsg_Post)
 	for (int i = 0; g_user_msg[i].name; ++i)

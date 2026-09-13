@@ -1336,6 +1336,44 @@ native dodx_get_shot_geom(id, weapon, geom[6]);
 native dodx_get_shot_target(id, weapon, target[16]);
 
 /**
+ * Same read as dodx_get_shot_target [0]-[15] above, plus the SHOOTER's own
+ * stance/movement group. A separate native under a new name rather than a
+ * widened dodx_get_shot_target -- this is bound by string name at runtime,
+ * not a compile-time link, and a version-skewed module/plugin pair calling
+ * the SAME name with different array sizes would either write past the
+ * caller's array (module newer than plugin) or read the plugin's own
+ * zero-initialized tail as if it were captured data (plugin newer than
+ * module) -- silently, in both directions. A new name makes any such
+ * mismatch fail loud (unresolved native, plugin refuses to load) instead.
+ *
+ *  [16] the SHOOTER's own stance flags at trace time (not the target's):
+ *       bit0 FL_ONGROUND, bit1 FL_DUCKING, bit2 IN_ATTACK2 held. This is a
+ *       raw button read, not a confirmed deploy-state proxy -- DoD's
+ *       bipod/scope deploy is widely believed to be a toggle rather than a
+ *       held state, which cannot be verified against closed-source dod.so
+ *       from here. Treat it as exactly what it measures until that's
+ *       confirmed with real data.
+ *  [17] the shooter's v.punchangle pitch x100 (centidegrees), [18] the same
+ *       for yaw. Unsettled recoil from a prior shot pushes THIS shot's aim
+ *       off by exactly this much -- IF DoD's weapon-fire code actually
+ *       drives this HLSDK-standard field the way vanilla HL1 weapons do,
+ *       which is likewise unconfirmed; see the phase-1 closeout doc.
+ *  [19] magnitude of the shooter's v.velocity, world units/sec -- movement
+ *       speed, not direction.
+ *  [20] the shooter's v.fuser4 (DoD's stamina gauge), unscaled. Believed but
+ *       not confirmed to run 0-100 (dodfun's moduleconfig.cpp clamps it to
+ *       that range only when a plugin opts in via its stamina-limit native,
+ *       which this stack does not).
+ *
+ * @param id        Firing player index (the forward's id argument)
+ * @param weapon    The forward's weapon argument; must match what the shooter held
+ *                  at trace time or the read returns 0
+ * @param target    Output, 21 cells as above
+ * @return  1 with target state, 0 when none belongs to this shot (record NULL)
+ */
+native dodx_get_shot_target2(id, weapon, target[21]);
+
+/**
  * Read a player's aim-vs-transmission counters. Measurements only: no threshold,
  * no ratio, no conclusion is applied here.
  *

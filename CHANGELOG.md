@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - stats_logging 1.20.5, the shooter's stance and movement at trace time
+
+`dodx_get_shot_target`'s output array grows 16 -> 21 cells: `shooterFlags`
+(FL_ONGROUND/FL_DUCKING/IN_ATTACK2, packed the same way `traceFlags` already
+is), `v.punchangle` pitch/yaw x100, `|v.velocity|`, and `v.fuser4` (DoD's
+stamina gauge). All sampled at the same trace-time instant as the existing
+target-state group, off the SHOOTER's own edict.
+
+Why: `errUdeg` already reports how far a shot's resolved angle missed by, not
+why. DoD's own accuracy model penalizes movement, ducking/hip-fire, and
+unsettled recoil, and none of that has ever been recorded per shot -- so a
+wide miss from a sprinting or hip-firing shooter reads identically to one
+from a stationary, deployed shooter without it. Same gate as the rest of this
+stack: `ktp_stats_shot_detail`, default off, 12-mans only.
+
+`KSC_SHOT_BUF_LINE_LEN` 896 -> 1152 for the 5 new wire fields -- measured
+worst case 1039B via `test_shot_wire_line_fits_shot_buffer`, which derives
+the bound from the live format string rather than a transcribed one.
+
 ### Added - stats_logging 1.20.4, per-shot registration diagnostics (dodx 2.7.33)
 
 `dodx_get_shot_target`, a new DODX native, plus the `SV_EstablishTimeBase`
