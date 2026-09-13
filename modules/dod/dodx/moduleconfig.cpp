@@ -2204,6 +2204,19 @@ static int DODX_OnRegUserMsg(IHookChain<int, const char *, int> *chain, const ch
 	// Call original first to get the message ID
 	int id = chain->callNext(pszName, iSize);
 
+	// KTP research probe, read-only, zero cost: registration happens once per
+	// usermessage name per map load, never per-frame. dod.so is closed
+	// source, so the only way to know whether "Damage" uses the standard
+	// vanilla HLSDK layout (WRITE_BYTE armor, WRITE_BYTE damage, WRITE_LONG
+	// bitsDamage, WRITE_COORD x3 -- 17 bytes) without guessing at a parser is
+	// to observe what it actually declares here. iSize == -1 means variable-
+	// length (tells us nothing); a fixed iSize is real evidence either way.
+	// This logs the fact and parses nothing -- see
+	// handover/HITREG_SHOT_DIAGNOSTICS_PHASE1_CLOSEOUT_20260913.md for why
+	// this question exists before committing to building the parser.
+	if (strcmp(pszName, "Damage") == 0)
+		MF_Log("[DODX-research] Damage usermsg registered with iSize=%d", iSize);
+
 	// Post-hook logic (same as RegUserMsg_Post)
 	for (int i = 0; g_user_msg[i].name; ++i)
 	{
