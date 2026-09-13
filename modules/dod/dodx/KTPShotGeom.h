@@ -84,6 +84,132 @@ struct KTPShotGeom
 	// tell those samples apart instead of this layer guessing.
 	int startOffUnits;
 
+	// The target's own state at trace time, in a SEPARATE one-shot stash from the
+	// geometry above. Two stashes, not one widened payload, because
+	// dodx_get_shot_geom's read is destructive and has exactly one consumer
+	// (KTPMatchHandler, feeding ktp_ac_weapon_fires). A second consumer sharing
+	// that stash would silently starve whichever one read second; widening its
+	// out[] array instead would overflow the caller's fixed geom[6]. An
+	// independent seq/consume pair leaves that contract byte-identical.
+	//
+	// WHY THIS EXISTS. A trace that hit a real studio hitbox but produced no
+	// damage row has three candidate explanations that only the target's own
+	// state can separate: it was already dead (another shot resolved first in the
+	// same instant), it was a teammate (friendly fire the game DLL zeroed before
+	// the damage hook), or neither -- which is the only one that means damage is
+	// genuinely going missing. Inferring that after the fact from two
+	// independently-ingested tables cannot distinguish them; reading v.health /
+	// v.deadflag / v.team here, at the instant the trace resolved, can.
+	unsigned int tgtSeq;   // cmd this target sample belongs to; 0 = empty/consumed
+	int tgtEntIndex;       // ENTINDEX of the player the trace hit
+	int tgtHealth;         // v.health at trace time; <=0 with deadflag clear is a same-tick kill
+	int tgtDead;           // 1 when v.deadflag != DEAD_NO at trace time
+	int tgtTeam;           // v.team at trace time; compare against the shooter's
+	int tgtShooterTeam;    // shipped alongside so the consumer needs no roster join
+
+	// The shooter's measured ping and loss at trace time. The one field that can
+	// separate a network-caused miss from a server-side one, and it has to be read
+	// HERE: by the time any consumer runs, the shooter's ping has moved, and a
+	// session-average ping (which is all hlstats_Events_StatsmeLatency keeps)
+	// cannot say what it was for one shot.
+	int tgtPing;
+	int tgtLoss;
+
+	// How many player-hitting traces this shooter's cmd produced, and whether the
+	// captured one was the first.
+	//
+	// WHY THIS IS NOT OPTIONAL. The stash is first-wins within a cmd, and the
+	// header above admits what that cannot exclude: a shooter-owned player-hitting
+	// trace that is NOT the bullet -- fired from player Think or a touch handler
+	// between the PreThink hook body and PostThink -- reaches the capture first and
+	// DISPLACES the bullet's own. Such a sample reports a hitgroup, applies no
+	// damage, and leaves the target's health untouched, which is exactly the
+	// signature of the case we are trying to count as "damage went missing".
+	//
+	// Without this counter the two are indistinguishable and every ratio built on
+	// "confirmed hit" is uninterpretable. With it, a consumer can ask whether the
+	// unexplained samples are the ones from cmds that fired more than one
+	// player-hitting trace -- measured, not assumed. Measured on a bot match
+	// 2026-09-12: 41.7% of confirmed live-enemy hits had no damage row and 100% of
+	// those left health flat, which both hypotheses predict equally.
+	//
+	// The count is NOT stamped at capture time: under first-wins the captured
+	// sample is always the cmd's first, so a "was I first" flag would be
+	// tautologically 1 and measure nothing. It is accumulated across the whole cmd
+	// and read afterwards -- the read runs in the next cmd's PreThink, before the
+	// hook body advances cmdSeq, so the counter is still the capture cmd's when a
+	// consumer asks. traceSeq keys it to that cmd so a stale count can never be
+	// reported against a newer sample.
+	unsigned int traceSeq; // cmd traceCount belongs to
+	int traceCount;        // player-hitting traces this shooter produced that cmd
+
+	// Mechanics of the trace itself, and the victim's capacity to be damaged at
+	// all. Both answer "was this a hit that COULD have applied damage" without
+	// inferring it from whether damage later appeared.
+	//
+	// traceFrac is flFraction x10000: how far along the ray the trace stopped.
+	// traceFlags is a bitfield rather than four columns because the wire line is
+	// already near its budget and these are all booleans:
+	//   bit0 fStartSolid -- the trace STARTED inside solid geometry. A known
+	//        GoldSrc failure mode that silently eats hits, and nothing in this
+	//        stack has ever recorded it.
+	//   bit1 fAllSolid   -- the whole trace was in solid.
+	//   bit2 target was SOLID_NOT at trace time.
+	//   bit3 target had takedamage == DAMAGE_NO at trace time -- an invulnerable
+	//        or not-yet-damageable victim (spawn protection, warmup) explains a
+	//        hit with no damage outright, and is invisible after the fact.
+	int traceFrac;
+	int traceFlags;
+
+	// allTraceCount counts EVERY trace this shooter owned in the cmd, not just
+	// the player-hitting ones traceCount sees. The difference is the whole point:
+	// a wall-hitting trace never reaches the capture, so traceCount cannot see
+	// the initial trace of a penetration chain, only its continuation.
+	//
+	// WHY IT MATTERS. fStartSolid on its own is ambiguous. DoD penetrates walls
+	// by re-tracing from the wall, so a continuation trace legitimately starts
+	// inside solid and legitimately applies no damage when the bullet fails to
+	// exit -- benign, and indistinguishable from the shooter's own eye being
+	// stuck in geometry, which is not. Two things separate them: startOffUnits
+	// (below) is ~0 for an eye-origin trace and large for a continuation, and a
+	// continuation implies the cmd carried an earlier trace this counter can see.
+	unsigned int allTraceSeq;
+	int allTraceCount;
+
+	// Distance from the shooter's view origin to where the captured trace
+	// STARTED. Already computed for the geometry stash; carried here too so the
+	// shot stream can tell an eye-origin trace from a penetration continuation
+	// without depending on the other stash's single consumer.
+	int tgtStartOff;
+
+	// The shooter's own command stream, sampled where the engine establishes the
+	// time base for a packet's worth of usercmds. This is the client-side half of
+	// the picture and nothing else in the stack records it per shot.
+	//
+	// netLerpMsec is the client's ex_interp in ms -- how far into the past it is
+	// rendering. A client interpolating further back aims at an older world than
+	// the one lag compensation rewinds to, which is exactly the mismatch a
+	// registration complaint describes.
+	//
+	// netDropped is how many commands the engine never received for this client.
+	// Above MAX_DROPPED_CMDS the engine REPLAYS lastcmd to fill the gap
+	// (sv_user.cpp:1798-1813) -- fabricated input that nothing counts today, and
+	// a shot resolved against a fabricated command is not a shot the player
+	// actually took at that moment.
+	//
+	// Bots never carry any of this: they have no packets, so these stay 0 and
+	// the whole dimension is unexercisable in a bot lane by construction.
+	unsigned int netSeq;   // cmd ordinal these were sampled against, once claimed
+	// Set by the packet hook, cleared by the next PreThink that claims the sample.
+	// The packet hook cannot compute netSeq itself: with dropped commands the
+	// engine replays lastcmd first and each replay bumps cmdSeq, so any prediction
+	// lands on a replayed cmd instead of the real one.
+	int netPending;
+	int netLerpMsec;
+	int netDropped;
+	int netBackup;
+	int netCmds;
+
 	// Previous captured sighting of THIS target, for the bearing rate above.
 	// Per-target, not global: a shooter switching between two enemies would
 	// otherwise read the angle between two different people as one target's
@@ -104,11 +230,42 @@ struct KTPShotGeom
 		prevTarget = 0;
 		prevTime = 0.0;
 		prevDir[0] = prevDir[1] = prevDir[2] = 0.0f;
+		resetTarget();
+	}
+
+	void resetTarget()
+	{
+		tgtSeq = 0;
+		tgtEntIndex = 0;
+		tgtHealth = 0;
+		tgtDead = 0;
+		tgtTeam = 0;
+		tgtShooterTeam = 0;
+		tgtPing = 0;
+		tgtLoss = 0;
+		traceSeq = 0;
+		traceCount = 0;
+		traceFrac = 0;
+		traceFlags = 0;
+		allTraceSeq = 0;
+		allTraceCount = 0;
+		tgtStartOff = 0;
+		netSeq = 0;
+		netPending = 0;
+		netLerpMsec = -1;
+		netDropped = -1;
+		netBackup = -1;
+		netCmds = -1;
 	}
 
 	void consume()
 	{
 		geomSeq = 0;
+	}
+
+	void consumeTarget()
+	{
+		tgtSeq = 0;
 	}
 };
 

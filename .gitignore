@@ -125,3 +125,8 @@ setup_wsl_build.ps1
 # Accidental nul file (Windows artifact)
 nul
 .claude/settings.local.json
+
+# Python bytecode caches. Three of these were tracked, so every local pytest
+# run dirtied the tree and they turned up as binary noise in commit diffs.
+__pycache__/
+*.pyc

@@ -7,6 +7,100 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - stats_logging 1.20.4, per-shot registration diagnostics (dodx 2.7.33)
+
+`dodx_get_shot_target`, a new DODX native, plus the `SV_EstablishTimeBase`
+hookchain (declared in `rehlds_api.h` and never previously registered).
+Together they capture, at the instant a weapon trace resolves: the target's
+health/deadflag/team, the shooter's team, the shooter's ping and loss, the
+number of traces in that usercmd (player-hitting and total), the trace
+fraction, flags for `fStartSolid`/`fAllSolid`/target `SOLID_NOT`/target
+`DAMAGE_NO`, the trace's start offset from the shooter's eye, and the client's
+`lerp_msec` and dropped-command count.
+
+Stashed independently of `dodx_get_shot_geom`, whose destructive single-consumer
+contract with KTPMatchHandler is unchanged byte for byte -- a second consumer
+sharing that stash would have starved whichever read second, and widening its
+`out[]` would have overflowed the caller's fixed `geom[6]`.
+
+Why: ~24% of shots the server's own lag-compensated trace confirmed struck a
+hitbox produce a matching damage row, fleet-wide and uniform across all 14
+endpoints. These columns separate the explanations (already dead / teammate /
+not damageable / trace started in solid) from the genuinely unexplained. A bot
+lane measured `fStartSolid` at a 0.0% damage rate against 79.0% for clean
+traces -- 87 eye-origin traces that produced no damage between them.
+
+Gated by `ktp_stats_shot_detail`, default **0**: the diagnostics cost a native
+call per actuation and ~230B of wire. KTPMatchHandler raises it per match type
+(`ktp_shot_detail_types`, default 12-mans only). The read is restricted to
+hitscan firearms, per the native's contract -- melee genuinely populates the
+stash, so an ungated read mixes knife swings into a bullet-registration
+population.
+
+`KSC_SHOT_BUF_LINE_LEN` 640 -> 896 for the widened line (worst case measured at
+817B; a Pawn string is one 4-byte cell per character, so the ring costs
+ENTRIES * LINE_LEN * 4). `KSC_SHOT_BUF_MAX_ENTRIES` stays 512, which was sized
+against the documented ~120 shots/s burst.
+
+### Added - the shot target's identity, and a measured wire budget
+
+The native already returned the target's ENTINDEX as `out[0]`; the producer
+read `out[1]` onward and threw it away. That discarded the one field that makes
+an exact shot-to-damage join possible, leaving correlation to (attacker, time),
+which cannot tell a shot that hit its target from one that registered nothing
+while an unrelated shot by the same player landed on somebody else.
+
+Sent as the engine userid rather than the raw entindex -- same wire cost, but an
+entindex is a slot number reused after a disconnect, so it identifies a player
+only within a life. For players the entity index and the AMXX player index are
+the same value, so this needs nothing new from the native.
+
+`test_shot_wire_line_fits_shot_buffer` derives the worst case from the live
+format string instead of transcribing it, so adding a field re-measures the
+bound rather than leaving a stale literal behind. This stream has overflowed
+twice from reasoning about the length instead of measuring it, and once had its
+buffer raised against an overflow that re-measurement showed never happened.
+Worst case is now 880 bytes against the 896 cap, with every numeric at INT_MIN
+width -- a bound that cannot actually co-occur, so it is provable, not assumed.
+
+### Fixed - the per-type sequence space is scoped to (match, half), not to context activation
+
+`ksc_reset_health()` zeroed `g_kscTypeSequence[]` on every producer-context
+activation, and a context can re-activate inside a half -- any DODX match-id
+mismatch closes and re-opens it. Sequences then restarted at 1 partway through
+a half that already had a shot 1.
+
+That was survivable while duplicates were merely visible. It is not survivable
+alongside HLStatsX migration 028, which makes
+`(server_id, match_id, half, producer_sequence)` UNIQUE and turns the insert
+into `ON DUPLICATE KEY UPDATE id=id` so a retried batch is a no-op: a restarted
+sequence makes every genuinely new shot after the restart collide with a real
+earlier row and be swallowed as a retry. The dedup guard would have converted a
+visible duplicate into silent loss, which is strictly worse.
+
+The health counters still reset per activation -- that is per-activation
+accounting and should. The sequence space now resets only when the producer's
+`(matchid, half)` actually changes, which is the same scope the daemon keys its
+gap tracking by.
+
+### Fixed - the shot ring is drained at capture-context close
+
+`ksc_shot_flush()` is split out of the 1s timer task so a closing context can
+force it, and `ksc_close_producer_context` drains it before emitting health.
+Previously a context closing between ticks left shots in the ring, which were
+then emitted after `ksc_emit_health` had taken its counters and after the
+match's end marker: correctly attributed, but unreconcilable against the health
+row.
+
+### Fixed - `dod_client_weapon_fire` documentation
+
+The contract claimed it never fires for bots. `saveShot()` gates on
+`ignoreBots()`, which only skips bots when bot *ranking* is disabled; a 12-bot
+lane run produced 595 markers. Also records that only a clip decrement of
+exactly 1 (or 2 for MG42) counts as a shot, so the stream is a lossy
+denominator rather than a complete actuation count -- which matters because
+accuracy is computed against it.
+
 ### Fixed - stats_logging 1.19.3, schema 23 pin for the fleet release line
 
 `ktp_stats_capture.inc`, `stats_logging.sma` 1.20.x -> 1.19.3. Ships #104's

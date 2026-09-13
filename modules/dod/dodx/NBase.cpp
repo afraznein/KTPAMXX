@@ -2382,6 +2382,87 @@ static cell AMX_NATIVE_CALL dodx_get_shot_geom(AMX *amx, cell *params)
 	return 1;
 }
 
+// KTP: read the state the shot's TARGET was in when the trace resolved. Same
+// first-wins cmd-pairing and destructive-read discipline as dodx_get_shot_geom
+// above, against an independent stash -- so this native and that one can each
+// have their own consumer without either starving the other, and this one's
+// existence leaves that one's out[6] contract untouched.
+//
+// Answers the question two independently-ingested tables cannot: a trace that hit
+// a real hitbox and produced no damage row was either aimed at someone already
+// dead, at a teammate, or at neither -- and only the last of those means damage is
+// going missing. Measurement only; no threshold, no verdict.
+//
+// out[] = { target_entindex, target_health, target_dead, target_team,
+//           shooter_team, shooter_ping_ms, shooter_loss, cmd_trace_count,
+//           trace_fraction_x10000, trace_flags, trace_start_off_units,
+//           cmd_all_trace_count, lerp_msec, dropped_cmds, cmd_backup,
+//           cmd_count }
+//
+// cmd_trace_count is the number of player-hitting traces the shooter's cmd
+// produced, not a property of the captured sample: under first-wins the sample
+// is always the cmd's first, so anything > 1 means another candidate existed and
+// this sample may not be the bullet's own trace. Read after the cmd completed --
+// the counter is keyed to the same cmd, and 0 means it could not be attributed.
+//
+// The output array is a fixed 16 cells with no size parameter, so a caller that
+// passes a shorter array writes past it. That is the convention every sibling
+// here already follows (dodx_get_shot_geom, dodx_get_aim_stats,
+// dodx_get_aim_window) and it is not worth breaking for this one native: adding
+// a size cell changes a signature in plugins/include/dodx.inc, which every KTP
+// plugin compiles against, so it would force a recompile of the whole plugin set
+// to harden one call site. The contract is stated in the .inc; the sole caller
+// (ksc_emit_shot_detail) declares target[16].
+static cell AMX_NATIVE_CALL dodx_get_shot_target(AMX *amx, cell *params)
+{
+	int index = params[1];
+	CHECK_PLAYER(index);
+
+	CPlayer *pPlayer = GET_PLAYER_POINTER_I(index);
+	if (!pPlayer->ingame || !pPlayer->pEdict || pPlayer->pEdict->free)
+		return 0;
+
+	KTPShotGeom &sg = pPlayer->ktpShot;
+
+	if (sg.tgtSeq == 0)
+		return 0;
+	if (sg.tgtSeq != sg.cmdSeq)
+	{
+		sg.consumeTarget();
+		return 0;
+	}
+	// Same non-consuming weapon mismatch as the geometry read: the stash may still
+	// belong to a dispatch that has not read yet.
+	if ((int)params[2] != sg.geomWeapon)
+		return 0;
+
+	cell *out = MF_GetAmxAddr(amx, params[3]);
+	out[0] = sg.tgtEntIndex;
+	out[1] = sg.tgtHealth;
+	out[2] = sg.tgtDead;
+	out[3] = sg.tgtTeam;
+	out[4] = sg.tgtShooterTeam;
+	out[5] = sg.tgtPing;
+	out[6] = sg.tgtLoss;
+	// Only report the count when it belongs to this sample's own cmd. A counter
+	// from a newer cmd would describe a different shot entirely.
+	out[7] = (sg.traceSeq == sg.tgtSeq) ? sg.traceCount : 0;
+	out[8] = sg.traceFrac;
+	out[9] = sg.traceFlags;
+	out[10] = sg.tgtStartOff;
+	out[11] = (sg.allTraceSeq == sg.tgtSeq) ? sg.allTraceCount : 0;
+	// Only report the packet's network state when it was sampled against this
+	// sample's own cmd; a neighbouring packet describes a different moment.
+	const bool netOk = (sg.netSeq == sg.tgtSeq);
+	out[12] = netOk ? sg.netLerpMsec : -1;
+	out[13] = netOk ? sg.netDropped  : -1;
+	out[14] = netOk ? sg.netBackup   : -1;
+	out[15] = netOk ? sg.netCmds     : -1;
+
+	sg.consumeTarget();
+	return 1;
+}
+
 // KTP: clear a player's counters after a successful flush. Separate from the read so
 // a failed POST does not silently discard the window that justified it.
 static cell AMX_NATIVE_CALL dodx_reset_aim_stats(AMX *amx, cell *params)
@@ -2570,6 +2651,7 @@ AMX_NATIVE_INFO base_Natives[] =
 
 	// KTP: per-shot aim geometry (blind audit tier 2.3)
 	{"dodx_get_shot_geom",                   dodx_get_shot_geom},
+	{"dodx_get_shot_target",                 dodx_get_shot_target},
 
 	// KTP: aim-vs-transmission counters (blind audit tier 2.7)
 	{"dodx_get_aim_vis_stats",               dodx_get_aim_vis_stats},

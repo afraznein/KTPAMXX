@@ -123,11 +123,31 @@
 // KTP_CAPTURE_HEALTH's "shot" row ever shows dropped > 0.
 //
 // Line budget: one full ksc_player_str() token (~96B incl. quoting) plus map
-// (32) plus matchid (64) plus position/angles/flags/clocks. A synthetic
-// maximum-width line measures under 560B; 640 preserves it with the same
-// truncate-not-corrupt margin the other budgets use.
+// (32) plus matchid (64) plus position/angles/flags/clocks. Worst case by field
+// widths, re-measured each time the line grew: 504B bare, 610B with the four
+// target-state fields, 689B once ping/loss/cmd_traces joined -- which no longer
+// fit 640, so 768. 739B with trace_start_off and cmd_all_traces. Now 817B with
+// the four SV_EstablishTimeBase fields, which 768 cannot hold -- hence 896.
+//
+// KSC_SHOT_BUF_MAX_ENTRIES stays 512 on purpose. It was sized against the
+// documented ~120 shots/s burst against a 1s flush (~4x headroom) and is pinned
+// by a contract test; trading measured capacity for wire room would be undoing
+// someone else's measurement to avoid paying for my own.
+//
+// That last measurement only holds because the diagnostic fields are CLAMPED at
+// the capture site (see KTPCaptureShotGeom) rather than assumed small. A field
+// bounded only by "realistically it is a small number" turns this budget into a
+// guess, and the failure mode here is silent truncation of the trailing fields
+// -- which are exactly the diagnostic ones. Clamp first, then count.
+//
+// Widening is not free and the arithmetic is easy to get wrong: a Pawn string is
+// one 4-byte CELL per character, so this ring costs ENTRIES * LINE_LEN * 4
+// bytes. 640 -> 768 measures +262KB of plugin data size, not the +64KB a
+// byte-per-char reading predicts. Measure the worst case against the budget
+// before raising it -- an earlier pass raised this on an assumed overflow that
+// re-measurement showed was still 29B inside the old budget.
 #define KSC_SHOT_BUF_MAX_ENTRIES 512
-#define KSC_SHOT_BUF_LINE_LEN    640
+#define KSC_SHOT_BUF_LINE_LEN    896
 #define KSC_SHOT_FLUSH_SECS      1.0
 
 // Allocation-free owner cache for grenade lifecycle identity. This is double
@@ -199,6 +219,23 @@ new g_kscEnqueued[KSC_EVENT_COUNT]
 new g_kscDroppedByType[KSC_EVENT_COUNT]
 new g_kscEmitted[KSC_EVENT_COUNT]
 new g_kscSequence = 0
+// One counter per event type, not the shared g_kscSequence above. The daemon
+// (KTPHLStatsX fix/shot-sequence-isolation, hlstats.pl ktpObserveCaptureMarker)
+// now tracks continuity per event type, but a per-type high-water mark is only
+// meaningful against a per-type-contiguous sequence: feeding it g_kscSequence
+// (one number shared by all twelve streams) makes every type's "gap" measure
+// how many OTHER types' markers landed in between, which is not a loss signal
+// at all -- confirmed 2026-09-12 against Lane B run 34665541191, where every
+// type's reported gap tracked (total match events - that type's own count).
+// manifest/health keep using g_kscSequence: they are metadata about the
+// streams, not a stream of their own, and ktpObserveCaptureMarker excludes
+// both from per-type slot allocation.
+new g_kscTypeSequence[KSC_EVENT_COUNT]
+// The (match, half) the per-type sequence space currently belongs to. The
+// daemon keys its gap tracking by (server, match, half), so the producer's
+// sequence space has to have the SAME scope or the two disagree.
+new g_kscSeqMatchId[64]
+new g_kscSeqHalf = 0
 new const g_kscEventNames[KSC_EVENT_COUNT][] = {
 	"life", "damage", "position", "frag", "assist", "break",
 	"flag_state", "flag_position", "objective_attempt", "team_membership",
@@ -246,6 +283,7 @@ new g_kscCvarEnabled
 // trial -- but the one stream in this plugin sized for a burst large enough
 // to be worth a same-server off switch that needs no redeploy.
 new g_kscCvarShots
+new g_kscCvarShotDetail
 
 // ---- Cap-break state, all in dodx objective/area index space ----
 new g_kscFlagCount = 0
@@ -322,7 +360,32 @@ stock ksc_init() {
 	// plugin already uses for its stock output.
 	g_kscCvarEnabled = register_cvar("ktp_stats_capture", "1")
 	g_kscCvarShots = register_cvar("ktp_stats_shots", "1")
+	g_kscCvarShotDetail = register_cvar("ktp_stats_shot_detail", "0")
 	g_kscCvarTimelimit = get_cvar_pointer("mp_timelimit")
+}
+
+// Shot-registration diagnostics are a separate, sampled tier from the shot
+// stream itself, because their costs are nothing alike: the base row is already
+// being written either way, while the diagnostic fields cost a native call into
+// DODX on every actuation and widen the wire line by ~230B.
+//
+// 0 = off, and the DEFAULT. The shot row still lands; every diagnostic field
+//     is NULL. Production stays here unless a match type is deliberately opted in.
+// 1 = per-shot diagnostics (target state, ping/loss, trace mechanics).
+//
+// Intended policy is 12-mans only, with this flag as the opt-in for anything
+// else -- deliberately NOT hardcoded to a match type here: DODX exposes
+// dodx_set_match_id/dodx_get_match_id and no match TYPE at all, so a plugin-side
+// type gate would have to invent a signal that does not exist. Whoever knows the
+// type (KTPMatchHandler, which drives match setup) sets this cvar per match, and
+// the policy lives with the thing that knows the answer.
+//
+// ⚠️ Sample the SHOT stream and the HITS stream together or not at all. The
+// shot stream is the accuracy denominator: sampling it while hits stay complete
+// makes computed accuracy go UP, which is the accusing direction, and nothing
+// in the data would say so.
+stock bool:ksc_shot_detail_enabled() {
+	return ksc_shots_enabled() && get_pcvar_num(g_kscCvarShotDetail) != 0
 }
 
 stock bool:ksc_shots_enabled() {
@@ -385,6 +448,11 @@ stock ksc_next_sequence() {
 	return g_kscSequence
 }
 
+stock ksc_next_type_sequence(event_type) {
+	g_kscTypeSequence[event_type]++
+	return g_kscTypeSequence[event_type]
+}
+
 stock ksc_next_buffer_order() {
 	g_kscBufferOrderNext++
 	return g_kscBufferOrderNext
@@ -393,11 +461,28 @@ stock ksc_next_buffer_order() {
 stock ksc_reset_health() {
 	g_kscSequence = 0
 	g_kscBufferOrderNext = 0
+	// The health counters are per-activation accounting and reset every time.
+	// The SEQUENCE space must not: it is keyed to (match, half), because that is
+	// what the daemon keys gap tracking by, and because migrate_028 made
+	// producer_sequence part of a UNIQUE key. A context that closes and
+	// re-activates inside the same half -- which a DODX match-id mismatch can
+	// cause -- would restart sequences at 1, and the daemon's
+	// ON DUPLICATE KEY UPDATE would then swallow every genuinely new shot as a
+	// retried resend. Before the dedup guard that produced visible duplicates;
+	// after it, it would be silent loss, which is strictly worse.
+	new bool:new_stream = (g_kscProducerHalf != g_kscSeqHalf ||
+		!equal(g_kscProducerMatchId, g_kscSeqMatchId))
 	for (new i = 0; i < KSC_EVENT_COUNT; i++) {
 		g_kscAttempted[i] = 0
 		g_kscEnqueued[i] = 0
 		g_kscDroppedByType[i] = 0
 		g_kscEmitted[i] = 0
+		if (new_stream)
+			g_kscTypeSequence[i] = 0
+	}
+	if (new_stream) {
+		copy(g_kscSeqMatchId, charsmax(g_kscSeqMatchId), g_kscProducerMatchId)
+		g_kscSeqHalf = g_kscProducerHalf
 	}
 }
 
@@ -495,6 +580,10 @@ stock ksc_close_producer_context() {
 	ksc_grenade_cache_clear_all()
 	ksc_break_reset_boundary()
 	ksc_flush()
+	// The shot ring is on its own 1s timer and ksc_flush() does not touch it, so
+	// it has to be drained here too -- before health, or the counters health
+	// reports are taken while shots are still sitting in the ring.
+	ksc_shot_flush()
 	if (g_kscProducerContextConfirmed && g_kscProducerMatchId[0] &&
 			g_kscProducerHalf != 0)
 		ksc_emit_health(g_kscProducerMatchId, g_kscProducerHalf)
@@ -852,7 +941,7 @@ stock bool:ksc_emit_grenade_entity(const kind[], entindex, serial, wpnid,
 	ksc_wire_sanitize(mapname, wire_map, charsmax(wire_map))
 	ksc_wire_sanitize(weapon_type, wire_weapon_type, charsmax(wire_weapon_type))
 	ksc_wire_sanitize(owner_str, wire_owner, charsmax(wire_owner))
-	new sequence = ksc_next_sequence()
+	new sequence = ksc_next_type_sequence(KSC_EVENT_GRENADE_ENTITY)
 
 	formatex(line, charsmax(line),
 		"KTP_GRENADE_ENTITY (kind ^"%s^") (matchid ^"%s^") (half ^"%d^") (map ^"%s^") (entindex ^"%d^") (serial ^"%d^") (weapon_id ^"%d^") (weapon_type ^"%s^") (owner ^"%s^") (position ^"%s^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^")",
@@ -1038,7 +1127,7 @@ stock bool:ksc_emit_life_boundary(id, const matchid[], const kind[], const reaso
 	new class_id = dod_get_user_class(id)
 	new event_epoch = get_systime()
 	new Float:game_time = get_gametime()
-	new sequence = ksc_next_sequence()
+	new sequence = ksc_next_type_sequence(KSC_EVENT_LIFE)
 
 	new line[KSC_LIFE_BUF_LINE_LEN]
 	formatex(line, charsmax(line),
@@ -1106,7 +1195,7 @@ stock ksc_emit_team_membership(id, team, oldteam) {
 	}
 	new player_str[96]
 	ksc_player_str(id, player_str, charsmax(player_str))
-	new sequence = ksc_next_sequence()
+	new sequence = ksc_next_type_sequence(KSC_EVENT_TEAM_MEMBERSHIP)
 	new Float:game_time = get_gametime()
 	new line[KSC_BUF_LINE_LEN]
 	formatex(line, charsmax(line),
@@ -1499,7 +1588,7 @@ stock bool:ksc_emit_objective_attempt(const kind[], f, attempt_id,
 	ksc_wire_sanitize(mapname, wire_map, charsmax(wire_map))
 	ksc_wire_sanitize(g_kscFlagName[f], wire_flag_name, charsmax(wire_flag_name))
 	ksc_wire_sanitize(stop_reason, wire_stop_reason, charsmax(wire_stop_reason))
-	event_sequence = ksc_next_sequence()
+	event_sequence = ksc_next_type_sequence(KSC_EVENT_OBJECTIVE_ATTEMPT)
 	new wire_attempt_id = attempt_id ? attempt_id : event_sequence
 
 	formatex(line, charsmax(line),
@@ -1631,7 +1720,7 @@ stock ksc_emit_flag_state(f, owner, is_initial) {
 	// These lines are rare and their ordering relative to KTP_MATCH_START /
 	// KTP_ROUND_FREEZE matters, so do not hold them in the five-second buffer.
 	ksc_flush()
-	new sequence = ksc_next_sequence()
+	new sequence = ksc_next_type_sequence(KSC_EVENT_FLAG_STATE)
 	g_kscAttempted[KSC_EVENT_FLAG_STATE]++
 	g_kscEnqueued[KSC_EVENT_FLAG_STATE]++
 	log_message("KTP_FLAG_STATE (map ^"%s^") (flag_index ^"%d^") (flag_name ^"%s^") (owner ^"%d^") (initial ^"%d^") (game_time ^"%.2f^") (matchid ^"%s^") (half ^"%d^") (sequence ^"%d^") (event_epoch ^"%d^")",
@@ -1710,7 +1799,7 @@ stock ksc_emit_break(f, breaker, victim, contester_count) {
 		producer_matchid, charsmax(producer_matchid), producer_half, untracked)
 	if (!tracked && !untracked)
 		return
-	new sequence = tracked ? ksc_next_sequence() : 0
+	new sequence = tracked ? ksc_next_type_sequence(KSC_EVENT_BREAK) : 0
 	new event_epoch = get_systime()
 	new Float:game_time = get_gametime()
 
@@ -1756,7 +1845,7 @@ stock ksc_emit_break_context(breaker, victim, flag_index, contester_count, Float
 		producer_matchid, charsmax(producer_matchid), producer_half, untracked)
 	if (!tracked && !untracked)
 		return
-	new sequence = tracked ? ksc_next_sequence() : 0
+	new sequence = tracked ? ksc_next_type_sequence(KSC_EVENT_BREAK) : 0
 
 	formatex(line, charsmax(line),
 		"^"%s^" triggered ^"break_context^" (victim ^"%s^") (flag ^"%s^") (flag_index ^"%d^") (contester_count ^"%d^") (time_remaining ^"%.1f^") (is_capout ^"%d^") (matchid ^"%s^") (half ^"%d^") (sequence ^"%d^") (event_epoch ^"%d^") (game_time ^"%.2f^")",
@@ -2116,7 +2205,7 @@ stock ksc_emit_flag_position(f) {
 	} else {
 		// A direct metadata record must follow every older buffered sequence.
 		ksc_flush()
-		sequence = ksc_next_sequence()
+		sequence = ksc_next_type_sequence(KSC_EVENT_FLAG_POSITION)
 		g_kscAttempted[KSC_EVENT_FLAG_POSITION]++
 		g_kscEnqueued[KSC_EVENT_FLAG_POSITION]++
 	}
@@ -2164,7 +2253,7 @@ public ksc_position_broadcast_task() {
 
 		new Float:gt = get_gametime()
 		new event_epoch = get_systime()
-		new sequence = ksc_next_sequence()
+		new sequence = ksc_next_type_sequence(KSC_EVENT_POSITION)
 
 		new line[KSC_BUF_LINE_LEN]
 		formatex(line, charsmax(line),
@@ -2205,6 +2294,30 @@ stock bool:ksc_shot_buffer(const line[]) {
 }
 
 public ksc_shot_flush_task() {
+	ksc_shot_flush()
+}
+
+// Drain the shot ring. Split out of the task so a capture boundary can force
+// it: the ring is on its own 1s timer, separate from the 5s main ring, so a
+// context that closes between ticks leaves shots in it. Those shots are then
+// emitted AFTER ksc_emit_health has already reported its counters and after the
+// match's own end marker -- they carry the right matchid, so the daemon still
+// files them under the match, but the health row cannot reconcile against them
+// and anything scoping by log position never sees them at all.
+//
+// Measured on Lane C run 34713194070: 187 rows in ktp_shot_events against 184
+// markers inside the match's log window, with the health row unreconciled. The
+// rows were not duplicates -- sequences 1..187, all distinct -- they were the
+// stragglers this drain now collects.
+//
+// This forced drain is not a new burst shape for the daemon's single-threaded
+// UDP intake, and deliberately isn't throttled. KSC_SHOT_FLUSH_SECS is 1.0, so
+// the ring only ever holds about one second of production; the boundary drain
+// emits the same volume the 1s task already emits every second in steady
+// state, just triggered early. The ring can only exceed that if it fills
+// outright, and that path increments g_kscShotDropped and says so above rather
+// than accumulating silently into a larger burst.
+stock ksc_shot_flush() {
 	for (new i = 0; i < g_kscShotBufferCount; i++) {
 		log_message("%s", g_kscShotBuffer[i])
 		g_kscEmitted[KSC_EVENT_SHOT]++
@@ -2219,6 +2332,21 @@ public ksc_shot_flush_task() {
 		log_amx("[KTP-STATS] truncated %d shot line(s) -- exceeded KSC_SHOT_BUF_LINE_LEN (%d), raise it", g_kscShotTruncated, KSC_SHOT_BUF_LINE_LEN)
 		g_kscShotTruncated = 0
 	}
+}
+
+// The weapon ids dodx_get_shot_target may be queried for, per its contract.
+// Kept in step with KTPMatchHandler's is_hitscan_firearm, which gates the
+// sibling geometry read for the same reason.
+stock bool:ksc_is_hitscan_firearm(weapon) {
+	switch (weapon) {
+		case DODW_COLT, DODW_LUGER, DODW_GARAND, DODW_SCOPED_KAR, DODW_THOMPSON,
+			 DODW_STG44, DODW_SPRINGFIELD, DODW_KAR, DODW_BAR, DODW_MP40,
+			 DODW_MG42, DODW_30_CAL, DODW_M1_CARBINE, DODW_MG34, DODW_GREASEGUN,
+			 DODW_FG42, DODW_K43, DODW_ENFIELD, DODW_STEN, DODW_BREN, DODW_WEBLEY,
+			 DODW_SCOPED_FG42, DODW_FOLDING_CARBINE, DODW_SCOPED_ENFIELD:
+			return true
+	}
+	return false
 }
 
 // Every weapon actuation, hitscan and otherwise -- CMisc.cpp's saveShot(),
@@ -2271,16 +2399,80 @@ public dod_client_weapon_fire(id, weapon, Float:gametime) {
 	new mapname[32]
 	get_mapname(mapname, charsmax(mapname))
 
-	new sequence = ksc_next_sequence()
+	new sequence = ksc_next_type_sequence(KSC_EVENT_SHOT)
 	new event_epoch = get_systime()
+
+	// What the trace hit, as it was at the instant it resolved. -1 everywhere is
+	// "no target state belongs to this shot" -- the shot missed, or the stash was
+	// not this dispatch's to read. NOT 0: every one of these is a real value
+	// (health 0, team 0, dead 0), so a zero default would be indistinguishable
+	// from a measurement.
+	//
+	// Hitscan firearms only, matching dodx_get_shot_target's documented contract
+	// (grenades and rockets trace from the projectile, melee's geometry rides the
+	// damage path, and custom ids above the stock enum are unknown types).
+	//
+	// An earlier version of this comment argued the gate was unnecessary because
+	// the native refuses a weapon id that differs from what the shooter held at
+	// trace time. That was wrong, and a bot match proved it: a knife hit came back
+	// carrying full target state. Melee genuinely populates the stash -- its attack
+	// IS a trace that hits a player -- so the weapon id matches and the read
+	// succeeds. The values are not garbage, but they describe a melee swing rather
+	// than a bullet, and mixing the two silently into a shot-registration
+	// population is how a partition stops meaning anything.
+	new tgt_userid = -1
+	new tgt_health = -1, tgt_dead = -1, tgt_team = -1, shooter_team = -1
+	new shot_ping = -1, shot_loss = -1, cmd_traces = -1
+	new trace_frac = -1, trace_flags = -1
+	new trace_start_off = -1, cmd_all_traces = -1
+	new net_lerp = -1, net_dropped = -1, net_backup = -1, net_cmds = -1
+	new target[16]
+	if (ksc_shot_detail_enabled() && ksc_is_hitscan_firearm(weapon) &&
+			dodx_get_shot_target(id, weapon, target) == 1) {
+		// target[0] is the ENTINDEX of the player the trace hit. Without a
+		// target identity a shot can only be correlated to damage by
+		// (attacker, time), which cannot tell "this shot damaged its target"
+		// from "this shot registered nothing while an unrelated shot by the
+		// same player landed on somebody else inside the window" -- and
+		// measuring exactly that is the point of the stream.
+		//
+		// Sent as the engine userid, not the raw entindex. Both cost the same
+		// on the wire, but an entindex is a slot number that is reused after a
+		// disconnect, so it identifies a player only within a life, while a
+		// userid is unique for the whole connection and is what the daemon
+		// already resolves to a player id (lookupPlayer). For players the
+		// entity index and the AMXX player index are the same value, so this
+		// needs nothing from the native beyond what it already returns.
+		if (target[0] >= 1 && target[0] <= MAX_PLAYERS && is_user_connected(target[0]))
+			tgt_userid = get_user_userid(target[0])
+		tgt_health = target[1]
+		tgt_dead = target[2]
+		tgt_team = target[3]
+		shooter_team = target[4]
+		shot_ping = target[5]
+		shot_loss = target[6]
+		cmd_traces = target[7]
+		trace_frac = target[8]
+		trace_flags = target[9]
+		trace_start_off = target[10]
+		cmd_all_traces = target[11]
+		net_lerp = target[12]
+		net_dropped = target[13]
+		net_backup = target[14]
+		net_cmds = target[15]
+	}
 
 	new line[KSC_SHOT_BUF_LINE_LEN]
 	formatex(line, charsmax(line),
-		"^"%s^" triggered ^"shot^" (weapon_id ^"%d^") (position ^"%s^") (yaw ^"%.2f^") (pitch ^"%.2f^") (prone ^"%d^") (map ^"%s^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^")",
+		"^"%s^" triggered ^"shot^" (weapon_id ^"%d^") (position ^"%s^") (yaw ^"%.2f^") (pitch ^"%.2f^") (prone ^"%d^") (map ^"%s^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^") (tgt_userid ^"%d^") (tgt_health ^"%d^") (tgt_dead ^"%d^") (tgt_team ^"%d^") (shooter_team ^"%d^") (shot_ping ^"%d^") (shot_loss ^"%d^") (cmd_traces ^"%d^") (trace_frac ^"%d^") (trace_flags ^"%d^") (trace_start_off ^"%d^") (cmd_all_traces ^"%d^") (net_lerp ^"%d^") (net_dropped ^"%d^") (net_backup ^"%d^") (net_cmds ^"%d^")",
 		pstr, weapon, pos,
 		has_angles ? angles[1] : -999.0, has_angles ? angles[0] : -999.0,
 		prone, mapname,
-		producer_matchid, producer_half, gametime, event_epoch, sequence)
+		producer_matchid, producer_half, gametime, event_epoch, sequence, tgt_userid,
+		tgt_health, tgt_dead, tgt_team, shooter_team,
+		shot_ping, shot_loss, cmd_traces, trace_frac, trace_flags,
+		trace_start_off, cmd_all_traces,
+		net_lerp, net_dropped, net_backup, net_cmds)
 
 	ksc_shot_buffer(line)
 }
@@ -2339,7 +2531,7 @@ stock ksc_emit_damage(attacker, victim, damage, wpnindex, hitplace) {
 		producer_matchid, charsmax(producer_matchid), producer_half, untracked)
 	if (!tracked && !untracked)
 		return
-	new sequence = tracked ? ksc_next_sequence() : 0
+	new sequence = tracked ? ksc_next_type_sequence(KSC_EVENT_DAMAGE) : 0
 
 	new line[KSC_BUF_LINE_LEN]
 	formatex(line, charsmax(line),
@@ -2438,7 +2630,7 @@ stock ksc_emit_frag_context(killer, victim, wpnindex, hitplace) {
 		producer_matchid, charsmax(producer_matchid), producer_half, untracked)
 	if (!tracked && !untracked)
 		return
-	new sequence = tracked ? ksc_next_sequence() : 0
+	new sequence = tracked ? ksc_next_type_sequence(KSC_EVENT_FRAG) : 0
 
 	new line[KSC_BUF_LINE_LEN]
 	if (have_k_pos && have_v_pos)
@@ -2531,7 +2723,7 @@ stock ksc_on_death(killer, victim, wpnindex, hitplace, TK) {
 			new assister_str[96], line[KSC_BUF_LINE_LEN], assister_pos[40]
 			ksc_player_str(a, assister_str, charsmax(assister_str))
 			new bool:have_assister_pos = ksc_origin_str(a, assister_pos, charsmax(assister_pos))
-			new sequence = tracked ? ksc_next_sequence() : 0
+			new sequence = tracked ? ksc_next_type_sequence(KSC_EVENT_ASSIST) : 0
 
 			// Player-vs-player action shape (hlstats.pl's "triggered ... against"
 			// regex). Requires an hlstats_Actions row for game='dod',

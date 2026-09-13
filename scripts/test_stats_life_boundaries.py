@@ -251,7 +251,18 @@ def test_life_boundaries_have_truthful_ordered_queue() -> None:
 
 def _confirmation_activation_model(pending_facts: int, trigger: str,
                                    confirms: bool = True):
-    """Executable truth table for candidate -> confirmed producer activation."""
+    """Executable truth table for candidate -> confirmed producer activation.
+
+    manifest still draws from the shared g_kscSequence (metadata about the
+    stream, not a stream of its own) and is always 1 right after
+    ksc_reset_health(). The triggering fact draws from its OWN per-type
+    counter (ksc_next_type_sequence) since the 2026-09-12 fix -- it no longer
+    shares g_kscSequence with manifest, so it is 1 too, not a chained 2.
+    sequence_last (a health-marker-only field, decorative -- capture_health's
+    real per-type continuity comes from ktpObserveCaptureMarker's own
+    first/last, not this) reflects g_kscSequence at health-emit time, which
+    only manifest has touched, so it stays 1 regardless of the trigger.
+    """
     wire = [
         {"kind": "pending", "matchid": "-", "half": 0, "sequence": 0}
         for _ in range(pending_facts)
@@ -267,8 +278,8 @@ def _confirmation_activation_model(pending_facts: int, trigger: str,
                  "half": 1, "sequence": 1})
     counters = {"attempted": 1, "enqueued": 1, "emitted": 1}
     wire.append({"kind": trigger, "matchid": "confirmed",
-                 "half": 1, "sequence": 2})
-    health = {**counters, "sequence_last": 2, "emitted_health": True}
+                 "half": 1, "sequence": 1})
+    health = {**counters, "sequence_last": 1, "emitted_health": True}
     return wire, counters, health
 
 
@@ -296,7 +307,8 @@ def test_delayed_dodx_context_activates_only_on_exact_confirmation() -> None:
            "copy(matchid, len, g_kscProducerMatchId)")
 
     # Confirmation by an ordinary fact: 0-3 pending facts drain first, then the
-    # manifest is sequence 1 and the triggering fact sequence 2 every time.
+    # manifest is sequence 1 and the triggering fact is ALSO sequence 1 -- its
+    # own per-type stream's first entry, independent of manifest's counter.
     for pending_facts in range(4):
         wire, counters, health = _confirmation_activation_model(
             pending_facts, "frag")
@@ -304,20 +316,21 @@ def test_delayed_dodx_context_activates_only_on_exact_confirmation() -> None:
             [0] * pending_facts)
         assert [row["kind"] for row in wire[pending_facts:]] == (
             ["manifest", "frag"])
-        assert [row["sequence"] for row in wire[pending_facts:]] == [1, 2]
+        assert [row["sequence"] for row in wire[pending_facts:]] == [1, 1]
         assert counters == {"attempted": 1, "enqueued": 1, "emitted": 1}
         assert health == {"attempted": 1, "enqueued": 1, "emitted": 1,
-                          "sequence_last": 2, "emitted_health": True}
+                          "sequence_last": 1, "emitted_health": True}
 
     # Confirmation by the zone path has the same contract; its first direct
-    # flag-position fact is sequence 2, then the loop may emit the remainder.
+    # flag-position fact is sequence 1 on its own per-type stream, not chained
+    # after manifest's.
     wire, counters, health = _confirmation_activation_model(2, "flag_position")
     assert [(row["kind"], row["sequence"]) for row in wire] == [
         ("pending", 0), ("pending", 0),
-        ("manifest", 1), ("flag_position", 2),
+        ("manifest", 1), ("flag_position", 1),
     ]
     assert counters == {"attempted": 1, "enqueued": 1, "emitted": 1}
-    assert health["sequence_last"] == 2
+    assert health["sequence_last"] == 1
 
     # A candidate that never confirms has no manifest and no health record.
     wire, counters, health = _confirmation_activation_model(
@@ -341,17 +354,21 @@ def test_delayed_dodx_context_activates_only_on_exact_confirmation() -> None:
     assert "g_kscBufferType[data_i] >= 0" in flush
     assert "g_kscBufferType[data_i] < KSC_EVENT_COUNT" in flush
 
-    for signature in (
-        "stock ksc_emit_damage",
-        "stock ksc_emit_frag_context",
-        "stock ksc_on_death",
-        "stock ksc_emit_break",
-        "stock ksc_emit_break_context",
+    # Each stream's continuity now has to be measured against its OWN sequence
+    # space (ksc_next_type_sequence), not the shared g_kscSequence counter that
+    # numbers every stream together -- see ksc_next_type_sequence's comment.
+    # ksc_on_death's sequence call belongs to the assist loop inside it.
+    for signature, event_type in (
+        ("stock ksc_emit_damage", "KSC_EVENT_DAMAGE"),
+        ("stock ksc_emit_frag_context", "KSC_EVENT_FRAG"),
+        ("stock ksc_on_death", "KSC_EVENT_ASSIST"),
+        ("stock ksc_emit_break", "KSC_EVENT_BREAK"),
+        ("stock ksc_emit_break_context", "KSC_EVENT_BREAK"),
     ):
         body = function_body(CAPTURE, signature)
         assert "bool:tracked = ksc_optional_event_context(" in body
         assert "if (!tracked && !untracked)" in body
-        assert "tracked ? ksc_next_sequence() : 0" in body
+        assert f"tracked ? ksc_next_type_sequence({event_type}) : 0" in body
         assert "ksc_buffer_event(" in body
 
     # Candidate-unconfirmed direct flag metadata must not leak a claimed half
@@ -362,7 +379,7 @@ def test_delayed_dodx_context_activates_only_on_exact_confirmation() -> None:
     assert "if (had_candidate || !g_kscAllowUntrackedEvents)" in flag
     before(flag, "if (had_candidate || !g_kscAllowUntrackedEvents)",
            'log_message("KTP_FLAG_POSITION')
-    before(flag, "ksc_event_context(", "ksc_next_sequence()")
+    before(flag, "ksc_event_context(", "ksc_next_type_sequence(KSC_EVENT_FLAG_POSITION)")
 
     ownership = function_body(CAPTURE, "stock ksc_ensure_ownership_baseline")
     before(ownership, "ksc_emit_flag_position(f)", "ksc_emit_flag_state(")
@@ -732,7 +749,7 @@ def test_physical_boundaries_do_not_use_stats_pause_gate() -> None:
 
 
 def test_plugin_version() -> None:
-    assert re.search(r'#define\s+PLUGIN_VERSION\s+"1\.20\.3"', STATS)
+    assert re.search(r'#define\s+PLUGIN_VERSION\s+"1\.20\.4"', STATS)
 
 
 def test_schema23_manifest_and_two_second_position_contract() -> None:
@@ -1074,7 +1091,7 @@ def test_dodx_grenade_entity_forward_and_direct_dispatch_contract() -> None:
     )
     assert "serial <= 0" in drop_dispatch
     assert "wpnid != 13 && wpnid != 14 && wpnid != 36" in drop_dispatch
-    assert re.search(r'#define\s+PLUGIN_VERSION\s+"1\.20\.3"', STATS)
+    assert re.search(r'#define\s+PLUGIN_VERSION\s+"1\.20\.4"', STATS)
 
 
 def test_ksc_buffer_detects_and_counts_line_truncation() -> None:
@@ -1149,6 +1166,48 @@ def test_flag_owner_resolves_against_the_authored_default() -> None:
     before(baseline, "ksc_refresh_flag_defaults()", "g_kscOwner[f] = ksc_read_owner(f)")
 
 
+def test_shot_wire_line_fits_shot_buffer() -> None:
+    # Derived from the live format string rather than transcribed from it, so
+    # adding a field re-measures the bound instead of leaving a stale literal
+    # behind. Both overflows in this stream came from reasoning about the
+    # length instead of measuring it, and one buffer was raised against an
+    # overflow that re-measurement showed had never happened.
+    start = CAPTURE.index('triggered ^"shot^"')
+    fmt_start = CAPTURE.rindex('"', 0, start)
+    fmt_end = CAPTURE.index('",', fmt_start)
+    fmt = CAPTURE[fmt_start:fmt_end].replace('^"', '"')
+
+    # Widest realistic value for each substitution. The %s fields are matched
+    # to the property name that precedes them; the leading one is the player
+    # string, which ksc_player_str caps at 95.
+    str_width = {"position": 29, "map": 31, "matchid": 63}
+
+    out, cursor, seen_player = [], 0, False
+    for token in re.finditer(r"%(?:\.2f|[ds])", fmt):
+        out.append(fmt[cursor:token.start()])
+        spec = token.group(0)
+        if spec == "%d":
+            out.append("-2147483648")
+        elif spec == "%.2f":
+            out.append("-2147483648.00")
+        elif not seen_player:
+            out.append("P" * 95)
+            seen_player = True
+        else:
+            name = re.findall(r'\((\w+) "$', fmt[:token.start()])
+            out.append("X" * str_width.get(name[0] if name else "", 63))
+        cursor = token.end()
+    out.append(fmt[cursor:])
+    line = "".join(out)
+
+    cap = re.search(r"#define\s+KSC_SHOT_BUF_LINE_LEN\s+(\d+)", CAPTURE)
+    assert cap, "missing KSC_SHOT_BUF_LINE_LEN"
+    assert len(line) < int(cap.group(1)), (
+        f"worst-case shot line is {len(line)} bytes, buffer is {cap.group(1)}; "
+        f"raise KSC_SHOT_BUF_LINE_LEN (the ring costs ENTRIES * LINE_LEN * 4)"
+    )
+
+
 def test_shot_context_stream() -> None:
     # ENGINE_STATS_EXPANSION_PLAN_20260909.md wave 0 (§3.6b): own buffer, own
     # cvar, own flush task -- must never share capacity with the damage/break
@@ -1171,10 +1230,24 @@ def test_shot_context_stream() -> None:
     assert "g_kscDroppedByType[KSC_EVENT_SHOT]++" in enqueue
     before(enqueue, "strlen(line) >= KSC_SHOT_BUF_LINE_LEN - 1", "copy(g_kscShotBuffer")
 
-    flush = function_body(CAPTURE, "public ksc_shot_flush_task()")
+    # The draining lives in ksc_shot_flush, not the task, so a capture boundary
+    # can force it; the task is now just the 1s timer's entry point.
+    flush = function_body(CAPTURE, "stock ksc_shot_flush()")
     assert 'log_message("%s", g_kscShotBuffer[i])' in flush
     assert "g_kscShotBufferCount = 0" in flush
     assert "g_kscShotDropped = 0" in flush
+    assert "ksc_shot_flush()" in function_body(
+        CAPTURE, "public ksc_shot_flush_task()")
+
+    # The shot ring is on its own 1s timer and ksc_flush() does not touch it, so
+    # closing a context without draining it leaves shots to be emitted after
+    # ksc_emit_health has taken its counters and after the match's end marker.
+    # That produced rows the health row could not reconcile against and that
+    # log-scoped counting could not see (Lane C 34713194070: 187 rows vs 184
+    # in-window markers). Order matters as much as presence.
+    close = function_body(CAPTURE, "stock ksc_close_producer_context")
+    assert "ksc_shot_flush()" in close
+    before(close, "ksc_shot_flush()", "ksc_emit_health(")
 
     forward = function_body(CAPTURE, "public dod_client_weapon_fire(id, weapon, Float:gametime)")
     assert "ksc_shots_enabled()" in forward

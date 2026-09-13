@@ -52,6 +52,8 @@ static void DODX_OnInitObjMessage(IVoidHookChain<IMessage *> *chain, IMessage *m
 static void DODX_OnClientConnected(IVoidHookChain<IGameClient *> *chain, IGameClient *client);
 static void DODX_OnSV_Spawn_f(IVoidHookChain<> *chain);
 static void DODX_OnSV_DropClient(IVoidHookChain<IGameClient *, bool, const char *> *chain, IGameClient *client, bool crash, const char *reason);
+static void DODX_OnEstablishTimeBase(IVoidHookChain<IGameClient *, struct usercmd_s *, int, int, int> *chain,
+                                     IGameClient *cl, struct usercmd_s *cmds, int dropped, int numbackup, int numcmds);
 static void DODX_OnChangelevel(IVoidHookChain<const char *, const char *> *chain, const char *s1, const char *s2);
 static void DODX_OnSV_ActivateServer(IVoidHookChain<int> *chain, int runPhysics);
 
@@ -1317,6 +1319,26 @@ static void KTPCaptureShotGeom(CPlayer *pPlayer, const float *v1, const float *v
 	if (pPlayer->index != g_ktpCmdOwner || sg.cmdSeq == 0)
 		return;
 
+	// Count every player-hitting trace this cmd, BEFORE first-wins can return.
+	// The displacement class this function cannot exclude is invisible from the
+	// captured sample alone -- the sample that displaced the bullet looks exactly
+	// like the bullet's own. A count > 1 is the only evidence that the cmd had
+	// more than one candidate, so it has to be taken on the traces that get
+	// rejected too, not just the one that wins.
+	if (sg.traceSeq != sg.cmdSeq)
+	{
+		sg.traceSeq = sg.cmdSeq;
+		sg.traceCount = 0;
+	}
+	// Clamped HERE, at the increment, not in the capture block below: the
+	// first-wins return sits between them, so every trace after the winning one
+	// would otherwise increment unbounded. The column is SMALLINT, and one
+	// out-of-range value fails the whole 200-row batch INSERT under strict mode,
+	// which discards the queue -- so an unclamped counter is a data-loss path for
+	// every server sharing that flush, not a cosmetic overflow.
+	if (sg.traceCount < 999)
+		sg.traceCount++;
+
 	// First capture wins the cmd: nothing after the bullet's PostThink trace can
 	// replace it. The cost is the pre-PostThink displacement class enumerated
 	// above; last-wins would only swap which unenumerable class is exposed.
@@ -1377,6 +1399,73 @@ static void KTPCaptureShotGeom(CPlayer *pPlayer, const float *v1, const float *v
 	sg.sightGapMs = sightGapMs;
 	sg.hitgroup = ptr->iHitgroup;
 	sg.startOffUnits = (int)(sqrtf(ktpshot::dot3(off, off)) + 0.5f);
+
+	// Target state, stamped in the same first-wins window as the geometry but
+	// into its own stash (see KTPShotGeom.h). Read straight off the edict the
+	// trace resolved against, before anything downstream can kill, respawn or
+	// team-switch it -- after the fact none of these are recoverable.
+	sg.tgtSeq = sg.cmdSeq;
+	sg.tgtEntIndex = tgtIdx;
+	sg.tgtHealth = (int)ptr->pHit->v.health;
+	sg.tgtDead = (ptr->pHit->v.deadflag != DEAD_NO) ? 1 : 0;
+	sg.tgtTeam = (int)ptr->pHit->v.team;
+	sg.tgtShooterTeam = (int)pPlayer->pEdict->v.team;
+
+	// The shooter's network state at this instant. Read here for the same reason
+	// everything else in this stash is: by the time a consumer runs, the value has
+	// moved, and the only ping any table currently keeps is a per-session average
+	// written at disconnect -- which cannot say what this shot saw. A missing
+	// engine function leaves both at -1 rather than a fabricated 0.
+	sg.tgtPing = -1;
+	sg.tgtLoss = -1;
+	if (g_engfuncs.pfnGetPlayerStats)
+	{
+		int ping = 0, loss = 0;
+		(*g_engfuncs.pfnGetPlayerStats)(pPlayer->pEdict, &ping, &loss);
+		sg.tgtPing = (ping < 0) ? 0 : ping;
+		sg.tgtLoss = (loss < 0) ? 0 : loss;
+	}
+
+	// Trace mechanics and the victim's capacity to take damage at all. A trace
+	// that started in solid, or a target that was non-solid or flagged
+	// DAMAGE_NO at that instant, is a hit that could never have produced damage
+	// -- and none of it is recoverable once the frame is over.
+	{
+		float frac = ptr->flFraction;
+		if (frac < 0.0f) frac = 0.0f;
+		if (frac > 1.0f) frac = 1.0f;
+		sg.traceFrac = (int)(frac * 10000.0f + 0.5f);
+
+		int flags = 0;
+		if (ptr->fStartSolid) flags |= 0x1;
+		if (ptr->fAllSolid)   flags |= 0x2;
+		if (ptr->pHit->v.solid == SOLID_NOT)        flags |= 0x4;
+		if (ptr->pHit->v.takedamage == DAMAGE_NO)   flags |= 0x8;
+		sg.traceFlags = flags;
+	}
+
+	// Same value the geometry stash ships, carried on this stash too: ~0 means
+	// the trace began at the shooter's eye, large means it began at a wall exit
+	// point, which is what separates a stuck-in-geometry trace from an ordinary
+	// penetration continuation.
+	sg.tgtStartOff = (int)(sqrtf(ktpshot::dot3(off, off)) + 0.5f);
+
+	// Clamp everything this stash ships to a width the wire budget can prove.
+	// The shot line's worst case is computed from each field's maximum decimal
+	// width, and a field whose bound is only "realistically small" makes that
+	// computation an assumption -- silent truncation is how this line fails, so
+	// the bound is enforced here instead of hoped for. A clamped counter reads
+	// as "many", which is all any consumer asks of it.
+	// Bounds match the DESTINATION COLUMN, not just the wire width. tgt_health,
+	// shot_ping and the counters are SMALLINT (+/-32767); clamping them to 99999
+	// kept the line short while still handing MySQL an out-of-range value, and a
+	// single one of those fails the entire batch.
+	if (sg.tgtHealth >  9999) sg.tgtHealth =  9999;
+	if (sg.tgtHealth < -9999) sg.tgtHealth = -9999;
+	if (sg.tgtPing > 9999) sg.tgtPing = 9999;
+	if (sg.tgtLoss >  999) sg.tgtLoss =  999;
+	// trace_start_off is MEDIUMINT, so 99999 is in range there.
+	if (sg.tgtStartOff > 99999) sg.tgtStartOff = 99999;
 }
 
 // KTP: pack recorder for the tier-2.7 aim-vs-transmission sensor (KTPPackVis.h).
@@ -1565,6 +1654,71 @@ static void KTPSampleAimVis(CPlayer *pPlayer, TraceResult *ptr)
 		v.windowMsMax = winMs;
 }
 
+// KTP: sample the shooter's command stream where the engine establishes the
+// time base for a packet of usercmds. Read-only; this hook changes nothing.
+//
+// lerp_msec is the client's own interpolation delay -- how far into the past it
+// renders. Lag compensation rewinds to where the server thinks the client saw
+// the world; if those two disagree, the shot resolves against a different world
+// than the shooter aimed at, which is what a registration complaint feels like.
+// Nothing else in this stack records it per shot: the only stored ping anywhere
+// is a per-session average written at disconnect.
+//
+// dropped matters for a second reason. Above MAX_DROPPED_CMDS the engine REPLAYS
+// lastcmd to fill the gap (sv_user.cpp:1798-1813) -- fabricated input nothing
+// counts today. A shot resolved against a replayed command is not a shot the
+// player took at that instant, and today it is indistinguishable from one.
+static void DODX_OnEstablishTimeBase(IVoidHookChain<IGameClient *, struct usercmd_s *, int, int, int> *chain,
+                                     IGameClient *cl, struct usercmd_s *cmds, int dropped, int numbackup, int numcmds)
+{
+	chain->callNext(cl, cmds, dropped, numbackup, numcmds);
+
+	if (!g_bServerActive || !gpGlobals || !cl || !cmds || numcmds <= 0)
+		return;
+
+	// GetId() is 0-based, player index is 1-based (same as DODX_OnClientConnected)
+	int idx = cl->GetId() + 1;
+	if (idx < 1 || idx > gpGlobals->maxClients)
+		return;
+
+	CPlayer *pPlayer = GET_PLAYER_POINTER_I(idx);
+	if (!pPlayer->ingame)
+		return;
+
+	KTPShotGeom &sg = pPlayer->ktpShot;
+	// cmds[0] is the newest command in the packet, which is the one a shot
+	// resolved in this window was taken with.
+	sg.netLerpMsec = (int)cmds[0].lerp_msec;
+	sg.netDropped = dropped;
+	sg.netBackup = numbackup;
+	sg.netCmds = numcmds;
+	// Stamped against the NEXT cmd ordinal: the PreThink hook body bumps cmdSeq
+	// after this runs, so the commands sampled here are the ones that cmd will
+	// execute. Pairing against the current value would attribute a packet's
+	// network state to the cmd before it.
+	// Clamped for the same reason every other diagnostic is: the shot line's
+	// budget is computed from each field's maximum decimal width, and an
+	// unbounded field turns that computation into a guess.
+	if (sg.netLerpMsec >  9999) sg.netLerpMsec =  9999;
+	if (sg.netLerpMsec <  -999) sg.netLerpMsec =  -999;
+	if (sg.netDropped > 999) sg.netDropped = 999;
+	if (sg.netBackup  > 999) sg.netBackup  = 999;
+	if (sg.netCmds    > 999) sg.netCmds    = 999;
+	// Marked PENDING rather than predicted. An earlier version stamped
+	// netSeq = cmdSeq + 1, on the theory that the next cmd is this packet's.
+	// That is false whenever dropped > 0: the engine replays lastcmd for each
+	// dropped command before reaching cmds[0], and every replay runs PreThink and
+	// bumps cmdSeq. The +1 therefore lands on a replayed command -- so a real shot
+	// reads netSeq != tgtSeq and blanks all four columns, precisely in the
+	// dropped-command case this hook exists to measure, while a shot in a replayed
+	// cmd gets cmds[0]'s interp attributed to it.
+	//
+	// Leaving it unclaimed and letting the next PreThink bind it to whatever
+	// cmdSeq actually becomes needs no arithmetic about the engine's replay
+	// behaviour -- which is the point, since that behaviour is what got this wrong.
+	sg.netPending = 1;
+}
+
 // KTP: TraceLine hook handler - replaces FN_TraceLine_Post
 static void DODX_OnTraceLine(IVoidHookChain<const float *, const float *, int, edict_t *, TraceResult *> *chain,
                               const float *v1, const float *v2, int fNoMonsters, edict_t *e, TraceResult *ptr)
@@ -1579,6 +1733,36 @@ static void DODX_OnTraceLine(IVoidHookChain<const float *, const float *, int, e
 	// KTP: Validate ptr before accessing
 	if (!ptr)
 		return;
+
+	// Count every trace this shooter owns, whatever it hit, before the
+	// player-hit filter below can discard it. A wall-hitting trace never reaches
+	// KTPCaptureShotGeom, so the player-hitting counter there cannot see the
+	// FIRST trace of a penetration chain -- only its continuation, which is
+	// exactly the case that has to be told apart from an eye-stuck-in-geometry
+	// trace. Cheap: one compare and an increment on a hook that already runs.
+	if (e && !e->free && (e->v.flags & (FL_CLIENT | FL_FAKECLIENT)))
+	{
+		int shooterIdx = ENTINDEX_SAFE(e);
+		if (shooterIdx >= 1 && shooterIdx <= gpGlobals->maxClients)
+		{
+			CPlayer *pShooter = GET_PLAYER_POINTER_I(shooterIdx);
+			if (pShooter->ingame && shooterIdx == g_ktpCmdOwner)
+			{
+				KTPShotGeom &asg = pShooter->ktpShot;
+				if (asg.cmdSeq != 0)
+				{
+					if (asg.allTraceSeq != asg.cmdSeq)
+					{
+						asg.allTraceSeq = asg.cmdSeq;
+						asg.allTraceCount = 0;
+					}
+					// Same SMALLINT bound as traceCount, for the same reason.
+					if (asg.allTraceCount < 999)
+						asg.allTraceCount++;
+				}
+			}
+		}
+	}
 
 	// Player aiming detection: when player traces and hits another player
 	// Records iHitgroup for headshot tracking
@@ -1914,6 +2098,17 @@ static void DODX_OnPlayerPreThink(IVoidHookChain<edict_t *, float> *chain, edict
 	// KTPShotGeom.h walks the ordering.
 	pPlayer->ktpShot.cmdSeq++;
 	g_ktpCmdOwner = index;
+
+	// Bind a pending SV_EstablishTimeBase sample to the cmd that actually runs
+	// next. The packet hook cannot know that ordinal: when commands were dropped
+	// the engine replays lastcmd first, and each replay passes through here. The
+	// first cmd after the sample claims it; later cmds in the same packet leave it
+	// bound where it is, so a replayed command never steals the reading.
+	if (pPlayer->ktpShot.netPending)
+	{
+		pPlayer->ktpShot.netSeq = pPlayer->ktpShot.cmdSeq;
+		pPlayer->ktpShot.netPending = 0;
+	}
 
 	// KTP: sample aim/movement BEFORE the isModuleActive() gate. Those pauses are
 	// round-freeze and dodstats_pause -- scoring concerns. A fire window that spans a
@@ -2428,6 +2623,9 @@ static bool DODX_SetupExtensionHooks()
 	// Safe for wallpen because it never changes TraceResult or supercedes the call.
 	if (g_pRehldsHookchains->PF_TraceLine())
 		g_pRehldsHookchains->PF_TraceLine()->registerHook(DODX_OnTraceLine, HC_PRIORITY_DEFAULT);
+
+	if (g_pRehldsHookchains->SV_EstablishTimeBase())
+		g_pRehldsHookchains->SV_EstablishTimeBase()->registerHook(DODX_OnEstablishTimeBase, HC_PRIORITY_DEFAULT);
 
 	// ED_Free is the bundled ReHLDS pre-free hook reached by normal FL_KILLME
 	// cleanup. serialnumber/origin are still trustworthy at this point.
@@ -3450,6 +3648,9 @@ static void DODX_CleanupExtensionHooks()
 		// Unregister TraceLine hook
 		if (g_pRehldsHookchains->PF_TraceLine())
 			g_pRehldsHookchains->PF_TraceLine()->unregisterHook(DODX_OnTraceLine);
+
+		if (g_pRehldsHookchains->SV_EstablishTimeBase())
+			g_pRehldsHookchains->SV_EstablishTimeBase()->unregisterHook(DODX_OnEstablishTimeBase);
 
 		if (g_pRehldsHookchains->ED_Free())
 			g_pRehldsHookchains->ED_Free()->unregisterHook(DODX_OnEdictFree);

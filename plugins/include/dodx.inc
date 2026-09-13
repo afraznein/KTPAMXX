@@ -108,9 +108,15 @@ forward dod_client_weaponswitch(id, wpnew, wpnold);
 
 /* Fired per weapon actuation, including pure-miss shots the client_damage
    hits-stream never sees. Coverage envelope:
-   - Firearm shots are detected via CurWeapon clip decrement: never fires for
-     bots, suppressed while stats are paused (dodx_set_stats_paused), no
-     dry-fire events, and MG42 uses a clip+2 heuristic.
+   - Firearm shots are detected via CurWeapon clip decrement: suppressed while
+     stats are paused (dodx_set_stats_paused), no dry-fire events, and MG42
+     uses a clip+2 heuristic. Only a decrement of exactly 1 (or 2 for MG42)
+     counts as a shot, so any other clip change is silently NOT one -- this is
+     a lossy denominator, not a complete count of actuations.
+   - Bots: this DOES fire for them whenever bot ranking is enabled. saveShot()
+     gates on ignoreBots(), which only skips bots when ranking is off, so the
+     previous "never fires for bots" wording here was wrong -- a 12-bot lane
+     run produced 595 shot markers dominated by STG44/BAR/MP40/Thompson.
    - Grenades/rockets also dispatch here via a separate TraceLine path that
      is NOT pause-gated; melee arrives via the damage path (pause-gated,
      hit-only). Filter by firearm weapon id for shots-only use.
@@ -1259,6 +1265,75 @@ native dodx_reset_aim_stats(id);
  * @return  1 with geometry, 0 when no geometry belongs to this shot (record NULL)
  */
 native dodx_get_shot_geom(id, weapon, geom[6]);
+
+/**
+ * Read the state the shot's TARGET was in at the instant the trace resolved.
+ * Measurements only: no threshold, no verdict.
+ *
+ * Independent of dodx_get_shot_geom's stash, so the two natives can have
+ * separate consumers without either starving the other -- both are destructive
+ * one-shot reads keyed to the same usercmd, but they consume separately. Calling
+ * one does not affect what the other returns.
+ *
+ * WHY: a trace that struck a real studio hitbox and still produced no damage row
+ * has exactly three explanations, and only the target's own state at trace time
+ * separates them -- the target was already dead (another shot resolved first in
+ * the same instant), it was a teammate (friendly-fire damage the game DLL zeroed
+ * before the damage hook ran), or it was neither, which is the only case meaning
+ * damage is genuinely going missing. Reconstructing this afterwards from
+ * separately-ingested tables cannot tell the three apart.
+ *
+ *   [0] ENTINDEX of the player the trace hit.
+ *   [1] target's health at trace time. <=0 while [2] is still 0 is a kill that
+ *       resolved in this same tick.
+ *   [2] 1 when the target's deadflag was set at trace time, else 0.
+ *   [3] target's team at trace time.
+ *   [4] the shooter's team at trace time, so [3] needs no roster join to read.
+ *   [5] the shooter's measured ping in ms at trace time, -1 if unavailable. The
+ *       only per-shot ping there is -- every stored ping elsewhere is a session
+ *       average written at disconnect.
+ *   [6] the shooter's measured loss at trace time, -1 if unavailable.
+ *   [7] how many player-hitting traces the shooter's cmd produced. Under
+ *       first-wins the captured sample is always that cmd's FIRST, so this is
+ *       not a property of the sample: anything > 1 means the cmd had another
+ *       candidate and this sample may be a game-DLL trace that displaced the
+ *       bullet's own. Treat a hit with [7] > 1 as unattributed rather than as
+ *       evidence a real bullet struck and did nothing. 0 = not attributable.
+ *   [8] the trace's flFraction x10000 -- how far along the ray it stopped.
+ *   [9] trace/target flags: bit0 the trace STARTED in solid (a GoldSrc failure
+ *       mode that silently eats hits), bit1 the whole trace was in solid, bit2
+ *       the target was SOLID_NOT, bit3 the target was DAMAGE_NO. Either of the
+ *       last two means the victim could not have taken damage at that instant,
+ *       which explains a hit with no damage without appealing to a lost row.
+ *  [10] distance from the shooter's view origin to where the trace STARTED,
+ *       world units. ~0 is an ordinary eye-origin trace; a large value is a
+ *       wall-penetration continuation, which starts at the wall exit point.
+ *       Read this WITH bit0 of [9]: startsolid on a continuation is expected
+ *       and benign (the bullet failed to exit the wall), while startsolid on an
+ *       eye-origin trace means the shooter's own view origin was inside
+ *       geometry -- a very different thing, and the one that eats real hits.
+ *  [11] every trace this shooter owned in the cmd, not just player-hitting
+ *       ones ([7]). A penetration chain's FIRST trace hits the wall and so is
+ *       invisible to [7]; this counts it, so a continuation can be recognised
+ *       by the cmd carrying more than one trace.
+ *  [12] the client's lerp_msec (ex_interp) for the packet this shot's command
+ *       arrived in -- how far into the past the client was rendering. Lag
+ *       compensation rewinds to where the server believes the client saw the
+ *       world; a disagreement here is the shape of a registration complaint.
+ *  [13] commands the engine never received for this client in that packet.
+ *       Above MAX_DROPPED_CMDS the engine REPLAYS lastcmd to fill the gap, so
+ *       a shot can resolve against fabricated input.
+ *  [14] command backup depth, [15] commands in the packet.
+ *       All four are -1 when no packet state belongs to this shot, and are
+ *       always -1 for bots, which have no packets at all.
+ *
+ * @param id        Firing player index (the forward's id argument)
+ * @param weapon    The forward's weapon argument; must match what the shooter held
+ *                  at trace time or the read returns 0
+ * @param target    Output, 16 cells as above
+ * @return  1 with target state, 0 when none belongs to this shot (record NULL)
+ */
+native dodx_get_shot_target(id, weapon, target[16]);
 
 /**
  * Read a player's aim-vs-transmission counters. Measurements only: no threshold,
