@@ -1253,10 +1253,10 @@ native dodx_reset_aim_stats(id);
  *       the same order as one packet gap.
  *   [4] hitgroup the trace struck (HIT_* / studio hitgroup).
  *   [5] the traced ray's start point, as distance from the shooter's view origin,
- *       world units. Near 0 for a normal fire trace. A wall-penetration
- *       continuation starts at the wall exit point instead of the eye, which
- *       shrinks [1] and inflates [0] for the same aim -- this cell is how those
- *       samples are told apart.
+ *       world units. 0 on every sample production has stored: DoD's wall-penetration
+ *       continuation traces never reach the capture, so a wall-bang yields no
+ *       geometry or eye-origin geometry. This cell does NOT tell penetration
+ *       shots apart; do not build a split on it.
  *
  * @param id        Firing player index (the forward's id argument)
  * @param weapon    The forward's weapon argument; must match what the shooter held

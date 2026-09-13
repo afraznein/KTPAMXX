@@ -1382,10 +1382,9 @@ static void KTPCaptureShotGeom(CPlayer *pPlayer, const float *v1, const float *v
 	sg.prevTime = now;
 	sg.prevDir[0] = toN[0]; sg.prevDir[1] = toN[1]; sg.prevDir[2] = toN[2];
 
-	// How far the ray's start sits from the shooter's view origin. A penetration
-	// continuation trace starts at the wall exit point, not the eye, which shrinks
-	// range and inflates the angle for the same aim -- shipping the offset lets
-	// the consumer separate those samples instead of this layer guessing.
+	// How far the ray's start sits from the shooter's view origin. Meant to flag a
+	// penetration continuation, but stored samples all read 0: DoD's continuation
+	// traces never reach this capture, so only eye-origin traces are measured here.
 	const edict_t *pe = pPlayer->pEdict;
 	float off[3] = { pe->v.origin[0] + pe->v.view_ofs[0] - v1[0],
 	                 pe->v.origin[1] + pe->v.view_ofs[1] - v1[1],
@@ -1466,10 +1465,8 @@ static void KTPCaptureShotGeom(CPlayer *pPlayer, const float *v1, const float *v
 		sg.traceFlags = flags;
 	}
 
-	// Same value the geometry stash ships, carried on this stash too: ~0 means
-	// the trace began at the shooter's eye, large means it began at a wall exit
-	// point, which is what separates a stuck-in-geometry trace from an ordinary
-	// penetration continuation.
+	// Same value the geometry stash ships, and 0 in practice for the same reason, so
+	// it cannot separate a stuck-in-geometry trace from a penetration continuation.
 	sg.tgtStartOff = (int)(sqrtf(ktpshot::dot3(off, off)) + 0.5f);
 
 	// Clamp everything this stash ships to a width the wire budget can prove.
