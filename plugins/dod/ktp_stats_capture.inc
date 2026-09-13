@@ -231,6 +231,11 @@ new g_kscSequence = 0
 // streams, not a stream of their own, and ktpObserveCaptureMarker excludes
 // both from per-type slot allocation.
 new g_kscTypeSequence[KSC_EVENT_COUNT]
+// The (match, half) the per-type sequence space currently belongs to. The
+// daemon keys its gap tracking by (server, match, half), so the producer's
+// sequence space has to have the SAME scope or the two disagree.
+new g_kscSeqMatchId[64]
+new g_kscSeqHalf = 0
 new const g_kscEventNames[KSC_EVENT_COUNT][] = {
 	"life", "damage", "position", "frag", "assist", "break",
 	"flag_state", "flag_position", "objective_attempt", "team_membership",
@@ -456,12 +461,28 @@ stock ksc_next_buffer_order() {
 stock ksc_reset_health() {
 	g_kscSequence = 0
 	g_kscBufferOrderNext = 0
+	// The health counters are per-activation accounting and reset every time.
+	// The SEQUENCE space must not: it is keyed to (match, half), because that is
+	// what the daemon keys gap tracking by, and because migrate_028 made
+	// producer_sequence part of a UNIQUE key. A context that closes and
+	// re-activates inside the same half -- which a DODX match-id mismatch can
+	// cause -- would restart sequences at 1, and the daemon's
+	// ON DUPLICATE KEY UPDATE would then swallow every genuinely new shot as a
+	// retried resend. Before the dedup guard that produced visible duplicates;
+	// after it, it would be silent loss, which is strictly worse.
+	new bool:new_stream = (g_kscProducerHalf != g_kscSeqHalf ||
+		!equal(g_kscProducerMatchId, g_kscSeqMatchId))
 	for (new i = 0; i < KSC_EVENT_COUNT; i++) {
 		g_kscAttempted[i] = 0
 		g_kscEnqueued[i] = 0
 		g_kscDroppedByType[i] = 0
 		g_kscEmitted[i] = 0
-		g_kscTypeSequence[i] = 0
+		if (new_stream)
+			g_kscTypeSequence[i] = 0
+	}
+	if (new_stream) {
+		copy(g_kscSeqMatchId, charsmax(g_kscSeqMatchId), g_kscProducerMatchId)
+		g_kscSeqHalf = g_kscProducerHalf
 	}
 }
 
@@ -2288,6 +2309,14 @@ public ksc_shot_flush_task() {
 // markers inside the match's log window, with the health row unreconciled. The
 // rows were not duplicates -- sequences 1..187, all distinct -- they were the
 // stragglers this drain now collects.
+//
+// This forced drain is not a new burst shape for the daemon's single-threaded
+// UDP intake, and deliberately isn't throttled. KSC_SHOT_FLUSH_SECS is 1.0, so
+// the ring only ever holds about one second of production; the boundary drain
+// emits the same volume the 1s task already emits every second in steady
+// state, just triggered early. The ring can only exceed that if it fills
+// outright, and that path increments g_kscShotDropped and says so above rather
+// than accumulating silently into a larger burst.
 stock ksc_shot_flush() {
 	for (new i = 0; i < g_kscShotBufferCount; i++) {
 		log_message("%s", g_kscShotBuffer[i])

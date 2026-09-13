@@ -42,6 +42,26 @@ population.
 ENTRIES * LINE_LEN * 4). `KSC_SHOT_BUF_MAX_ENTRIES` stays 512, which was sized
 against the documented ~120 shots/s burst.
 
+### Fixed - the per-type sequence space is scoped to (match, half), not to context activation
+
+`ksc_reset_health()` zeroed `g_kscTypeSequence[]` on every producer-context
+activation, and a context can re-activate inside a half -- any DODX match-id
+mismatch closes and re-opens it. Sequences then restarted at 1 partway through
+a half that already had a shot 1.
+
+That was survivable while duplicates were merely visible. It is not survivable
+alongside HLStatsX migration 028, which makes
+`(server_id, match_id, half, producer_sequence)` UNIQUE and turns the insert
+into `ON DUPLICATE KEY UPDATE id=id` so a retried batch is a no-op: a restarted
+sequence makes every genuinely new shot after the restart collide with a real
+earlier row and be swallowed as a retry. The dedup guard would have converted a
+visible duplicate into silent loss, which is strictly worse.
+
+The health counters still reset per activation -- that is per-activation
+accounting and should. The sequence space now resets only when the producer's
+`(matchid, half)` actually changes, which is the same scope the daemon keys its
+gap tracking by.
+
 ### Fixed - the shot ring is drained at capture-context close
 
 `ksc_shot_flush()` is split out of the 1s timer task so a closing context can
