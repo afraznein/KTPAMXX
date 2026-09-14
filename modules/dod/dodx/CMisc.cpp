@@ -143,6 +143,19 @@ void CPlayer::restartStats(bool all)
 		memset(&weapons,0,sizeof(weapons));
 		memset(static_cast<void *>(&round),0,sizeof(round));
 		memset(&weaponsRnd,0,sizeof(weaponsRnd));
+
+		// KTP: this is the match/half restart path (KTP reset-all native), the same
+		// boundary at which the engine's own ObjScore resets each player to 0. Leaving
+		// savedScore stale means the next ObjScore message computes its delta against
+		// the OLD nonzero value, so Client_ObjScore's updateScore() books a NEGATIVE
+		// score equal to whatever objective points were earned before the restart
+		// (typically warmup) -- observed 2026-09-13 as an objective-score undercount
+		// on ~14% of player-halves in S10 day-1 data. Reset the whole ObjScore
+		// tracking group here, matching what Init() does for a fresh connection.
+		savedScore = 0;
+		lastScore = 0;
+		lastScoreCP = -1;
+		sendScore = 0;
 	}
 
 	memset(&weaponsLife,0,sizeof(weaponsLife));   //DEC-Weapon (Round) stats

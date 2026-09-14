@@ -25,6 +25,25 @@ grenade slot resolves to -1 instead of 9/11, so the "could not resolve" return o
 `dodx_get_grenade_ammo_index` and `dodx_get_grenade_ammo` becomes reachable. That case logs once per
 map rather than per call. `scripts/test_grenade_slot_log.py` covers the source contract in CI.
 
+### Fixed - dodx 2.7.35: reset `savedScore` on match/half restart
+
+`CPlayer::restartStats(true)` (the KTP reset-all native, called at every match and half
+boundary) cleared weapon/round/life stats but never touched `savedScore`, the module's
+cached copy of the engine's last `ObjScore` value. The engine's own objective score also
+resets to 0 at this boundary, so the next `ObjScore` message computed its delta against
+the stale nonzero value: `lastScore = 0 - savedScore`, a negative number booked onto
+whatever weapon the player held, silently subtracting warmup (or prior-half) objective
+points from the new half's total.
+
+Found 2026-09-13 auditing S10 day-1 production data: fitting each capture flag's point
+value from `score` vs `ktp_flag_captures` counts across 312 player-halves showed 44
+(14%) scoring 1-2 points below their capture credit, and 30 of those 44 had capped
+during warmup. Caps themselves were never wrong -- only the derived objective-score
+total. See `dod-objective-score-semantics` analytics memory for the full fit.
+
+Reset `savedScore`, `lastScore`, `lastScoreCP` and `sendScore` alongside the existing
+`all`-branch resets, matching what `Init()` already does for a fresh connection.
+
 ### Docs - `dodx_get_shot_geom` out[5] does not identify penetration shots (comments only)
 
 The contract said out[5] (trace start offset) is near 0 for a normal shot and large on a
