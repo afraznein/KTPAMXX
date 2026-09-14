@@ -78,10 +78,10 @@ struct KTPShotGeom
 	int tgtAngVelMdps;  // target bearing rate across the shooter's view, milli-deg/s; -1 = no prior sighting
 	int sightGapMs;     // time the bearing rate is averaged over, ms; -1 when tgtAngVelMdps is -1
 	int hitgroup;       // free: ReHLDS already traces real studio hitboxes
-	// Trace start's distance from the shooter's view origin, world units. Near 0
-	// for a fire trace; a penetration continuation starts at the wall exit point,
-	// which shrinks range and inflates the angle -- shipped so the consumer can
-	// tell those samples apart instead of this layer guessing.
+	// Trace start's distance from the shooter's view origin, world units. Meant to
+	// mark a penetration continuation (which would start at the wall exit), but it
+	// is 0 on every sample the fleet has stored: no trace starting anywhere but the
+	// eye has ever reached the capture. It cannot split penetration shots out.
 	int startOffUnits;
 
 	// The target's own state at trace time, in a SEPARATE one-shot stash from the
@@ -170,16 +170,15 @@ struct KTPShotGeom
 	// by re-tracing from the wall, so a continuation trace legitimately starts
 	// inside solid and legitimately applies no damage when the bullet fails to
 	// exit -- benign, and indistinguishable from the shooter's own eye being
-	// stuck in geometry, which is not. Two things separate them: startOffUnits
-	// (below) is ~0 for an eye-origin trace and large for a continuation, and a
-	// continuation implies the cmd carried an earlier trace this counter can see.
+	// stuck in geometry, which is not. What separates them is that a continuation
+	// implies the cmd carried an earlier trace this counter can see. startOffUnits
+	// was meant as a second signal but reads 0 on every stored sample (see it above).
 	unsigned int allTraceSeq;
 	int allTraceCount;
 
 	// Distance from the shooter's view origin to where the captured trace
-	// STARTED. Already computed for the geometry stash; carried here too so the
-	// shot stream can tell an eye-origin trace from a penetration continuation
-	// without depending on the other stash's single consumer.
+	// STARTED; same value as startOffUnits, and 0 in practice for the same reason.
+	// Does not identify a penetration continuation.
 	int tgtStartOff;
 
 	// The shooter's own command stream, sampled where the engine establishes the

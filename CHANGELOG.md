@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Docs - `dodx_get_shot_geom` out[5] does not identify penetration shots (comments only)
+
+The contract said out[5] (trace start offset) is near 0 for a normal shot and large on a
+wall-penetration continuation. Production says otherwise: every geometry sample the AC table has
+stored reads 0, and the value is carried to that column without loss. DoD's continuation traces
+never reach the capture, so only eye-origin traces are measured. `dodx.inc`, `KTPShotGeom.h` and
+the capture site now say so, including `tgtStartOff` on the shot-detail stash. No code change, no
+rebuild needed.
+
 ### Added - stats_logging 1.20.5, the shooter's stance and movement at trace time
 
 `dodx_get_shot_target`'s output array grows 16 -> 21 cells: `shooterFlags`
