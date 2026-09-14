@@ -86,6 +86,15 @@ jobs:
         working-directory: KTPAMXX
         run: python3 scripts/test_native_param_contracts.py
 
+      # Selftest first, for the same reason as the two gates above.
+      - name: Prove the grenade slot log checks discriminate
+        working-directory: KTPAMXX
+        run: python3 scripts/test_grenade_slot_log.py --selftest
+
+      - name: Test the per-map grenade slot log
+        working-directory: KTPAMXX
+        run: python3 scripts/test_grenade_slot_log.py
+
       - name: Install 32-bit toolchain + compiler
         run: |
           sudo dpkg --add-architecture i386

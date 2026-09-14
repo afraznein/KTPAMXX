@@ -145,13 +145,19 @@ extern int g_ammoIndexByWeapon[DODMAX_WEAPONS];
 // Bumped by every clear, so a per-map log latch has something to compare against.
 extern int g_ammoRegistryEpoch;
 void DODX_ClearAmmoRegistry();
-// Observed slot, else DoD's fixed-precache-order default. -1 only for a type
-// that is not a grenade.
+// Observed slot, else DoD's fixed-precache-order default. -1 for a type that is
+// not a grenade, or for an unobserved slot when dodx.ini sets grenade_slot_strict.
 int DODX_GrenadeAmmoIndex(int grenadeType);
 // Second source: the slot the DLL itself credited when a grenade pickup landed.
 void DODX_ObserveGrenadeAmmoIndex(int grenadeType, int slot);
 // Logs once per map if an observed slot contradicts the fixed-order default.
 void DODX_CheckAmmoIndexDrift(int weaponId, int slot);
+
+// Where a grenade slot was filled from, for the once-per-map "[DODX] grenade slots" line.
+enum { DODX_SLOT_SRC_FALLBACK = 0, DODX_SLOT_SRC_WEAPONLIST, DODX_SLOT_SRC_PICKUP };
+void DODX_NoteGrenadeSlotSource(int weaponId, int source);
+// Captures this map's name for that line; call wherever a map activates.
+void DODX_NoteGrenadeSlotMap();
 
 // Weapons Structure
 struct weapon_t 
