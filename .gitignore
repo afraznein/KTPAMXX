@@ -110,6 +110,7 @@ scripts/*.py
 !scripts/test_reentry_guards.py
 
 !scripts/test_native_param_contracts.py
+!scripts/test_grenade_slot_log.py
 
 # Build output directories
 obj-linux/

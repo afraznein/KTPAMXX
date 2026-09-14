@@ -422,6 +422,7 @@ void Client_WeaponList(void* mValue)
       {
         g_ammoIndexByWeapon[wpnId] = iAmmoIndex;
         DODX_CheckAmmoIndexDrift(wpnId, iAmmoIndex);
+        DODX_NoteGrenadeSlotSource(wpnId, DODX_SLOT_SRC_WEAPONLIST);
       }
       // Consumed: a later id must not pair with this weapon's index.
       iAmmoIndex = -1;

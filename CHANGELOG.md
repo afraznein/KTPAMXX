@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - dodx logs the resolved grenade slots once per map
+
+`[DODX] grenade slots map=<map> pdata_offset=<n> w13=<slot>(<source>) w14=<slot>(<source>)`, written
+to the AMXX log alongside the existing slot-drift warnings. Each weapon reads `source=weaponlist`,
+`source=pickup` or `fallback`. It is written once per map: as soon as both grenade slots have been
+observed (normally on the first client's `WeaponList`), otherwise when the next map activates. A map
+still unresolved at server shutdown logs nothing.
+
+Why: for a real grenade the registry falls back to 9/11, so a map where `WeaponList` observed 9/11
+and a map where nothing was observed returned the same slot, and the drift tripwire was silent on
+both. Six days of fleet logs with zero drift warnings could not tell the two apart. This line can,
+and issue #15 closes once it has run on the pool maps.
+
+Also `grenade_slot_strict = 1` in `dodx.ini`, default off with behaviour unchanged: an unobserved
+grenade slot resolves to -1 instead of 9/11, so the "could not resolve" return of
+`dodx_get_grenade_ammo_index` and `dodx_get_grenade_ammo` becomes reachable. That case logs once per
+map rather than per call. `scripts/test_grenade_slot_log.py` covers the source contract in CI.
+
 ### Docs - `dodx_get_shot_geom` out[5] does not identify penetration shots (comments only)
 
 The contract said out[5] (trace start offset) is near 0 for a normal shot and large on a

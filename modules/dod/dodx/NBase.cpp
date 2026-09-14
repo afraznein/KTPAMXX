@@ -1425,7 +1425,20 @@ static int *DODX_GrenadeAmmoCell(CPlayer *pPlayer, int grenadeType, const char *
 	int slot = DODX_GrenadeAmmoIndex(grenadeType);
 	if (slot < 0)
 	{
-		MF_Log("%s: invalid grenade type %d", nativeName, grenadeType);
+		if (!DODX_IsGrenadeType(grenadeType))
+		{
+			MF_Log("%s: invalid grenade type %d", nativeName, grenadeType);
+			return NULL;
+		}
+
+		// Only reachable under grenade_slot_strict. Callers poll per player, so once a map.
+		static int s_unresolvedEpoch = -1;
+		if (s_unresolvedEpoch != g_ammoRegistryEpoch)
+		{
+			s_unresolvedEpoch = g_ammoRegistryEpoch;
+			MF_Log("%s: grenade type %d has no observed ammo slot on this map (grenade_slot_strict)",
+				nativeName, grenadeType);
+		}
 		return NULL;
 	}
 
@@ -1476,7 +1489,8 @@ static cell AMX_NATIVE_CALL dodx_get_grenade_ammo(AMX *amx, cell *params)
 }
 
 // dodx_get_grenade_ammo_index(grenade_type)
-// The ammo slot this map uses for that grenade, or -1 if it is not a grenade.
+// The ammo slot this map uses for that grenade, or -1 if it is not a grenade or,
+// under grenade_slot_strict, its slot has not been observed yet.
 // Callers that send their own AmmoX should take the slot from here rather than
 // repeating the constant.
 static cell AMX_NATIVE_CALL dodx_get_grenade_ammo_index(AMX *amx, cell *params)

@@ -80,6 +80,17 @@ the DLL's `WeaponList` and from what a `dodx_give_grenade` pickup credits, rathe
 and logs if either disagrees with DoD's fixed precache order. Setting ammo no longer needs a
 follow-up `dodx_send_ammox` — the DLL emits its own `AmmoX` on the right slot.
 
+**Confirming the resolved slots on a live map:** grep the AMXX log (`addons/ktpamx/logs/L*.log`) for
+`[DODX] grenade slots`. One line per map, e.g.
+`[DODX] grenade slots map=dod_anzio pdata_offset=5 w13=9(source=weaponlist) w14=11(source=weaponlist)`.
+`source=weaponlist` or `source=pickup` means the slot was observed on that map; `fallback` means nothing
+was observed and the fixed-order default (9/11) is in use. `pdata_offset` is the effective `m_rgAmmo`
+base adjust; the `wNN=` value is the slot inside that array. The line is written as soon as both slots
+are observed (normally the first client's `WeaponList`), otherwise when the next map activates, so a
+map still unresolved when the server shuts down logs nothing. The drift warnings stay silent either
+way, which is why this line and not their absence is the evidence. `grenade_slot_strict = 1` in
+`dodx.ini` (default off) makes an unobserved slot resolve to -1 instead of 9/11.
+
 | Native | Purpose |
 |--------|---------|
 | `dodx_set_grenade_ammo(id, type, count)` | Set grenade count (0-10) for player |

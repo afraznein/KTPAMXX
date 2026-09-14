@@ -164,12 +164,39 @@ static int DODX_DefaultGrenadeAmmoIndex(int weaponId)
 	return -1;
 }
 
+// dodx.ini grenade_slot_strict = 1: an unobserved slot resolves to -1 instead of
+// the default above, so "could not resolve" reaches the natives.
+static bool s_grenadeSlotStrict = false;
+
+// Where each grenade slot came from on this map (weapons 13, 14). The default
+// fills any gap, so without this an empty registry reads as a resolved one.
+static int s_grenadeSlotSource[2] = { DODX_SLOT_SRC_FALLBACK, DODX_SLOT_SRC_FALLBACK };
+static char s_grenadeSlotMap[64] = "";
+static int s_grenadeSlotLoggedEpoch = -1;
+
+static void DODX_LogGrenadeSlots();
+
 void DODX_ClearAmmoRegistry()
 {
+	// Before the wipe: a map where nothing was observed is only ever logged here.
+	if (s_grenadeSlotMap[0] && s_grenadeSlotLoggedEpoch != g_ammoRegistryEpoch)
+		DODX_LogGrenadeSlots();
+
 	for (int i = 0; i < DODMAX_WEAPONS; ++i)
 		g_ammoIndexByWeapon[i] = -1;
 
+	s_grenadeSlotSource[0] = s_grenadeSlotSource[1] = DODX_SLOT_SRC_FALLBACK;
+	s_grenadeSlotMap[0] = '\0';
+
 	++g_ammoRegistryEpoch;
+}
+
+void DODX_NoteGrenadeSlotMap()
+{
+	if (!gpGlobals || !gpGlobals->mapname)
+		return;
+
+	snprintf(s_grenadeSlotMap, sizeof(s_grenadeSlotMap), "%s", STRING(gpGlobals->mapname));
 }
 
 // DODW_MILLS_BOMB is DODX's own id for the British hand grenade — the DLL links
@@ -190,7 +217,48 @@ int DODX_GrenadeAmmoIndex(int grenadeType)
 		return -1;
 
 	int observed = g_ammoIndexByWeapon[weaponId];
-	return observed >= 0 ? observed : DODX_DefaultGrenadeAmmoIndex(weaponId);
+	if (observed >= 0)
+		return observed;
+
+	return s_grenadeSlotStrict ? -1 : DODX_DefaultGrenadeAmmoIndex(weaponId);
+}
+
+static const char *DODX_GrenadeSlotSourceName(int source)
+{
+	if (source == DODX_SLOT_SRC_WEAPONLIST)
+		return "source=weaponlist";
+	if (source == DODX_SLOT_SRC_PICKUP)
+		return "source=pickup";
+	return "fallback";
+}
+
+// The resolved slots, not the raw table, so a fallback map prints what the natives use.
+static void DODX_LogGrenadeSlots()
+{
+	s_grenadeSlotLoggedEpoch = g_ammoRegistryEpoch;
+	MF_Log("[DODX] grenade slots map=%s pdata_offset=%d w13=%d(%s) w14=%d(%s)",
+		s_grenadeSlotMap[0] ? s_grenadeSlotMap : "unknown",
+		PDOFFSET_AMMO_ARRAY - PDOFFSET_AMMO_BASE,
+		DODX_GrenadeAmmoIndex(13), DODX_GrenadeSlotSourceName(s_grenadeSlotSource[0]),
+		DODX_GrenadeAmmoIndex(14), DODX_GrenadeSlotSourceName(s_grenadeSlotSource[1]));
+}
+
+// WeaponList repeats for every client that joins, hence the epoch latch.
+void DODX_NoteGrenadeSlotSource(int weaponId, int source)
+{
+	if (weaponId != 13 && weaponId != 14)
+		return;
+
+	s_grenadeSlotSource[weaponId - 13] = source;
+
+	if (s_grenadeSlotLoggedEpoch == g_ammoRegistryEpoch)
+		return;
+	if (s_grenadeSlotSource[0] == DODX_SLOT_SRC_FALLBACK || s_grenadeSlotSource[1] == DODX_SLOT_SRC_FALLBACK)
+		return;
+
+	if (!s_grenadeSlotMap[0])
+		DODX_NoteGrenadeSlotMap();
+	DODX_LogGrenadeSlots();
 }
 
 // The tripwire the 9/11 constants never had: if the precache order ever stops
@@ -225,6 +293,7 @@ void DODX_ObserveGrenadeAmmoIndex(int grenadeType, int slot)
 	{
 		g_ammoIndexByWeapon[weaponId] = slot;
 		DODX_CheckAmmoIndexDrift(weaponId, slot);
+		DODX_NoteGrenadeSlotSource(weaponId, DODX_SLOT_SRC_PICKUP);
 		return;
 	}
 
@@ -551,6 +620,7 @@ void ServerActivate_Post( edict_t *pEdictList, int edictCount, int clientMax ){
 	// pEdictList is worldspawn (index 0)
 	g_pFirstEdict = pEdictList;
 	g_bServerActive = true;  // KTP: Mark server as active for message processing
+	DODX_NoteGrenadeSlotMap();
 
 	rankBots = (int)dodstats_rankbots->value ? true:false;
 
@@ -1213,6 +1283,14 @@ void OnPluginsLoaded()
 						{
 							MF_PrintSrvConsole("[DODX] Warning: Invalid score_deaths_offset %d (must be 4 or 5)\n", offset);
 						}
+						continue;
+					}
+
+					int strict;
+					if (sscanf(line, "grenade_slot_strict = %d", &strict) == 1 || sscanf(line, "grenade_slot_strict=%d", &strict) == 1)
+					{
+						s_grenadeSlotStrict = (strict != 0);
+						MF_PrintSrvConsole("[DODX] grenade_slot_strict %s via config file\n", s_grenadeSlotStrict ? "on" : "off");
 						continue;
 					}
 				}
@@ -2070,6 +2148,7 @@ static void DODX_OnPlayerPreThink(IVoidHookChain<edict_t *, float> *chain, edict
 			// is worse than none: it reads as resolved, so the natives write
 			// another ammo type's counter and report success.
 			DODX_ClearAmmoRegistry();
+			DODX_NoteGrenadeSlotMap();
 			for (int i = 1; i <= gpGlobals->maxClients; ++i)
 			{
 				GET_PLAYER_POINTER_I(i)->Init(i, g_pFirstEdict + i);
@@ -2364,6 +2443,7 @@ static void DODX_OnSV_ActivateServer(IVoidHookChain<int> *chain, int runPhysics)
 
 	// Ammo indices are assigned by this map's precache order, so last map's are wrong.
 	DODX_ClearAmmoRegistry();
+	DODX_NoteGrenadeSlotMap();
 	DODX_ClearGrenadeEntityTracker();
 
 	DODX_ReadBSPMapInfo();
@@ -2758,6 +2838,8 @@ static bool DODX_SetupExtensionHooks()
 	// Same first-map gap: DODX_OnSV_ActivateServer already ran, so without this
 	// the boot map after every restart runs with detect_* = 0 until a changelevel.
 	DODX_ReadBSPMapInfo();
+	// Same gap again: the boot map's grenade slot line would carry no map name.
+	DODX_NoteGrenadeSlotMap();
 
 	// Same gap for the CP owner sync: if the activate hook missed the boot map,
 	// nothing registers the frame callback until a changelevel. Idempotent.
