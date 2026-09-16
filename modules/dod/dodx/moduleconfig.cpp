@@ -2288,17 +2288,25 @@ static int DODX_OnRegUserMsg(IHookChain<int, const char *, int> *chain, const ch
 	int id = chain->callNext(pszName, iSize);
 
 	// KTP research probe, read-only, zero cost: registration happens once per
-	// usermessage name per map load, never per-frame. dod.so is closed
-	// source, so the only way to know whether "Damage" uses the standard
-	// vanilla HLSDK layout (WRITE_BYTE armor, WRITE_BYTE damage, WRITE_LONG
-	// bitsDamage, WRITE_COORD x3 -- 17 bytes) without guessing at a parser is
-	// to observe what it actually declares here. iSize == -1 means variable-
-	// length (tells us nothing); a fixed iSize is real evidence either way.
-	// This logs the fact and parses nothing -- see
+	// usermessage name per map load, never per-frame, so logging every one of
+	// them (not just a guessed name) is still negligible -- dod.so registers
+	// on the order of dozens of messages, once, not per-frame.
+	//
+	// Widened 2026-09-16 after the original narrower version (checking only
+	// for a message literally named "Damage") never fired in any Lane C run.
+	// That is itself a real finding: this stack's assumption that DoD uses
+	// the standard vanilla HLSDK "Damage" usermessage (WRITE_BYTE armor,
+	// WRITE_BYTE damage, WRITE_LONG bitsDamage, WRITE_COORD x3 -- 17 bytes)
+	// for its damage-direction HUD indicator was never actually verified
+	// against this specific game -- it does not appear to register a message
+	// by that exact name at all. Logging the FULL registered set (name +
+	// iSize) settles what it's actually called, if anything, instead of
+	// guessing at a second name. iSize == -1 means variable-length (tells us
+	// nothing about layout); a fixed iSize is real evidence either way. This
+	// logs the fact and parses nothing -- see
 	// handover/HITREG_SHOT_DIAGNOSTICS_PHASE1_CLOSEOUT_20260913.md for why
-	// this question exists before committing to building the parser.
-	if (strcmp(pszName, "Damage") == 0)
-		MF_Log("[DODX-research] Damage usermsg registered with iSize=%d", iSize);
+	// this question exists before committing to building any parser.
+	MF_Log("[DODX-research] usermsg registered: name=%s iSize=%d", pszName, iSize);
 
 	// Post-hook logic (same as RegUserMsg_Post)
 	for (int i = 0; g_user_msg[i].name; ++i)
