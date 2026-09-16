@@ -2865,6 +2865,13 @@ static int PF_RegUserMsg_RH(IRehldsHook_PF_RegUserMsg_I *chain, const char *pszN
 	if (g_bRunningWithMetamod)
 		return id;
 
+	// KTP: temporary research probe (infra-hitreg-diagnostics) -- does DoD
+	// register a "Damage" usermessage, and what size? This hookchain is
+	// confirmed live in extension mode (it's how SayText/ResetHUD/etc.
+	// resolve fleet-wide), unlike dodx's own dead RegUserMsg_Post/
+	// GET_USER_MSG_ID paths. Remove after the answer is captured.
+	LOG_MESSAGE(PLID, "KTP_USERMSG_PROBE name=\"%s\" size=%d id=%d", pszName, iSize, id);
+
 	// Capture the ID for messages we care about
 	for (int i = 0; g_user_msg[i].name; ++i)
 	{
