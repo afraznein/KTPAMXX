@@ -914,7 +914,11 @@ stock bool:ksc_origin_str(id, out[], len) {
 // `removed` is intentionally generic. ED_Free proves the entity is being
 // freed; it does not prove an explosion. The old dod_grenade_explosion forward
 // remains a legacy damage-attribution/practice hook and is never consumed here
-// as a detonation signal. Rockets, mortar entities, and every weapon outside
+// as a detonation signal -- it does not need to be: the TraceLine that fires
+// it (and `tracked`) is CGrenade::Detonate's own trace, so `tracked` already
+// carries the burst time and position. Production: tracked->removed is 0.00 s
+// on 27,827 of 27,830 S10 lifecycles (2026-09-16). The throw is what nothing
+// records. Rockets, mortar entities, and every weapon outside
 // 13/14/36 are rejected by both DODX and this defensive consumer gate.
 
 stock bool:ksc_grenade_weapon_valid(wpnid) {
