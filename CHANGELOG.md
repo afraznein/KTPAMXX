@@ -54,9 +54,16 @@ nothing else changes.
   had no caller before this; the class gate keeps any offset garbage off the
   wire for everyone else.
 
-Not taken: §3.3 detonations. `dod_grenade_explosion` fires on `ACT_NADE_PUT`
-(the throw), not the burst; the plugin's own comment on the grenade tracker
-already says so. A detonation signal needs module work first.
+Not taken: §3.3 detonations -- because they are already captured. The
+TraceLine that fires `dod_grenade_explosion` and starts the entity tracker is
+`CGrenade::Detonate`'s own downward trace: production shows `tracked` ->
+`removed` 0.00 s apart on 27,827 of 27,830 S10 lifecycles. `tracked` IS the
+burst (position = the trace end just under the grenade). An `exploded` kind
+would duplicate it. What does not exist is the throw -- cook time needs a
+throw marker, which is a separate, small stream.
+
+(Correction 2026-09-16: an earlier version of this entry said the forward
+fires on the throw. It does not.)
 
 ### Added - contract tests for stream declaration and per-type sequencing
 
