@@ -171,7 +171,7 @@
 // emitted in every per-half manifest so mixed fleet deployments are visible
 // without reverse-engineering them from which rows happened to arrive.
 #define KSC_SCHEMA_CONTRACT 24
-#define KSC_CAPABILITIES "frag_context,damage,position,assist,life,break,flag_state,flag_position,objective_attempt,team_membership,grenade_entity,shot,score,duel,player_state,position_state,map_revision,sequence,health"
+#define KSC_CAPABILITIES "frag_context,damage,position,assist,life,break,flag_state,flag_position,objective_attempt,team_membership,grenade_entity,shot,score,duel,player_state,grenade_throw,position_state,map_revision,sequence,health"
 
 enum {
 	KSC_EVENT_LIFE = 0,
@@ -195,6 +195,8 @@ enum {
 	KSC_EVENT_SCORE,
 	KSC_EVENT_DUEL,
 	KSC_EVENT_PLAYER_STATE,
+	// Grenade throw (the burst is already the `tracked` lifecycle row).
+	KSC_EVENT_GRENADE_THROW,
 	KSC_EVENT_COUNT
 }
 
@@ -256,7 +258,7 @@ new g_kscSeqHalf = 0
 new const g_kscEventNames[KSC_EVENT_COUNT][] = {
 	"life", "damage", "position", "frag", "assist", "break",
 	"flag_state", "flag_position", "objective_attempt", "team_membership",
-	"grenade_entity", "shot", "score", "duel", "player_state"
+	"grenade_entity", "shot", "score", "duel", "player_state", "grenade_throw"
 }
 
 // [victim][attacker] -- enemy damage dealt to victim since their last spawn.
@@ -361,6 +363,14 @@ new g_kscDuelBase[MAX_PLAYERS + 1][MAX_PLAYERS + 1][KSC_DUEL_CELLS]
 new bool:g_kscDuelBaseValid = false
 // Wave 2 (§3.7): last polled bipod-deploy state, so the 0.5s poll emits edges.
 new g_kscDeployed[MAX_PLAYERS + 1]
+// Grenade throw detection: last seen AmmoX amount per grenade ammo channel.
+// A one-step decrease with a grenade in hand is the throw. Nothing else in
+// the module fires at the throw -- dod_client_weapon_fire for grenades runs
+// from the Detonate TraceLine, i.e. at the burst, same as `tracked`.
+#define KSC_AMMO_GREN_HAND  9
+#define KSC_AMMO_GREN_STICK 11
+new g_kscGrenAmmo[MAX_PLAYERS + 1][2]
+new g_kscMsgAmmoX = 0
 
 // Wave 1 (§3.4): last known health per victim, so a hit can report applied
 // damage (health actually removed) next to raw damage. Seeded on spawn, kept
@@ -402,6 +412,9 @@ stock ksc_init() {
 	g_kscCvarShots = register_cvar("ktp_stats_shots", "1")
 	g_kscCvarShotDetail = register_cvar("ktp_stats_shot_detail", "0")
 	g_kscCvarTimelimit = get_cvar_pointer("mp_timelimit")
+	g_kscMsgAmmoX = get_user_msgid("AmmoX")
+	if (g_kscMsgAmmoX > 0)
+		register_message(g_kscMsgAmmoX, "ksc_msg_ammox")
 }
 
 // Shot-registration diagnostics are a separate, sampled tier from the shot
@@ -1107,6 +1120,8 @@ stock ksc_clear_player(id) {
 	g_kscLastEnemyAttacker[id] = 0
 	g_kscScoped[id] = 0
 	g_kscDeployed[id] = 0
+	g_kscGrenAmmo[id][0] = -1
+	g_kscGrenAmmo[id][1] = -1
 	ksc_duel_clear(id)
 	g_kscLifePhysicalAlive[id] = false
 	g_kscLifeOpen[id] = false
@@ -1383,6 +1398,10 @@ public client_damage(attacker, victim, damage, wpnindex, hitplace, TA) {
 public dod_client_spawn(id) {
 	ksc_clear_damage_row(id)
 	g_kscDeployed[id] = 0
+	// Spawn resets ammo through AmmoX (an increase, never a throw); forget the
+	// previous life's counts so a class change cannot read as a decrease.
+	g_kscGrenAmmo[id][0] = -1
+	g_kscGrenAmmo[id][1] = -1
 	ksc_life_start(id, "spawn")
 }
 
@@ -3056,5 +3075,86 @@ stock ksc_emit_duels(const matchid[], half) {
 			g_kscEmitted[KSC_EVENT_DUEL]++
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Grenade throw stream
+//
+// The lifecycle tracker's `tracked` row already IS the detonation (it fires
+// from CGrenade::Detonate's own TraceLine; tracked->removed is 0.00 s on
+// 27,827 of 27,830 S10 lifecycles). What nothing records is the throw, and
+// without it cook time and throw-spot geometry are unanswerable. The engine
+// tells the client the grenade left the hand through AmmoX: the grenade ammo
+// channel drops by one at release. That is the throw.
+
+stock bool:ksc_grenade_in_hand(id, &weapon_id, &channel) {
+	new clip, ammo
+	weapon_id = get_user_weapon(id, clip, ammo)
+	switch (weapon_id) {
+		case DODW_HANDGRENADE, DODW_HANDGRENADE_EX, DODW_MILLS_BOMB: channel = 0
+		case DODW_STICKGRENADE, DODW_STICKGRENADE_EX: channel = 1
+		default: return false
+	}
+	return true
+}
+
+stock ksc_grenade_throw_weapon_type(weapon_id, out[], len) {
+	switch (weapon_id) {
+		case DODW_HANDGRENADE: copy(out, len, "handgrenade")
+		case DODW_HANDGRENADE_EX: copy(out, len, "handgrenade_ex")
+		case DODW_STICKGRENADE: copy(out, len, "stickgrenade")
+		case DODW_STICKGRENADE_EX: copy(out, len, "stickgrenade_ex")
+		case DODW_MILLS_BOMB: copy(out, len, "mills_bomb")
+		default: copy(out, len, "-")
+	}
+}
+
+public ksc_msg_ammox(msg_id, msg_dest, id) {
+	if (id < 1 || id > MAX_PLAYERS)
+		return PLUGIN_CONTINUE
+	new ammo_id = get_msg_arg_int(1)
+	new channel
+	if (ammo_id == KSC_AMMO_GREN_HAND) channel = 0
+	else if (ammo_id == KSC_AMMO_GREN_STICK) channel = 1
+	else return PLUGIN_CONTINUE
+
+	new amount = get_msg_arg_int(2)
+	new previous = g_kscGrenAmmo[id][channel]
+	g_kscGrenAmmo[id][channel] = amount
+	if (previous < 0 || amount != previous - 1)
+		return PLUGIN_CONTINUE
+	if (!ksc_enabled() || !is_user_alive(id))
+		return PLUGIN_CONTINUE
+	new weapon_id, in_hand_channel
+	if (!ksc_grenade_in_hand(id, weapon_id, in_hand_channel) || in_hand_channel != channel)
+		return PLUGIN_CONTINUE
+	ksc_emit_grenade_throw(id, weapon_id)
+	return PLUGIN_CONTINUE
+}
+
+stock ksc_emit_grenade_throw(id, weapon_id) {
+	new matchid[64], half
+	if (!ksc_event_context(matchid, charsmax(matchid), half))
+		return
+
+	new position[40]
+	if (!ksc_origin_str(id, position, charsmax(position)))
+		copy(position, charsmax(position), "-")
+	new Float:ang[3], Float:yaw = -999.0, Float:pitch = -999.0
+	if (dodx_get_user_angles(id, ang) == 1) { yaw = ang[1]; pitch = ang[0]; }
+
+	new weapon_type[20], player[96], mapname[32], wire_matchid[64], wire_map[32]
+	new line[KSC_BUF_LINE_LEN]
+	ksc_grenade_throw_weapon_type(weapon_id, weapon_type, charsmax(weapon_type))
+	ksc_player_str(id, player, charsmax(player))
+	get_mapname(mapname, charsmax(mapname))
+	ksc_wire_sanitize(matchid, wire_matchid, charsmax(wire_matchid))
+	ksc_wire_sanitize(mapname, wire_map, charsmax(wire_map))
+	new sequence = ksc_next_type_sequence(KSC_EVENT_GRENADE_THROW)
+	formatex(line, charsmax(line),
+		"KTP_GRENADE_THROW (matchid ^"%s^") (half ^"%d^") (map ^"%s^") (player ^"%s^") (weapon_id ^"%d^") (weapon_type ^"%s^") (position ^"%s^") (yaw ^"%.1f^") (pitch ^"%.1f^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^")",
+		wire_matchid, half, wire_map, player, weapon_id, weapon_type, position,
+		yaw, pitch, get_gametime(), get_systime(), sequence)
+	ksc_buffer(line, KSC_EVENT_GRENADE_THROW)
 }
 
