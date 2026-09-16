@@ -1370,6 +1370,49 @@ def test_wave1_additive_fields() -> None:
         assert f'({f} ^"%' in pos, f
 
 
+def test_wave2_streams_wire_and_lifecycle() -> None:
+    # §3.2 score: fail-closed index space -- flag_index only when dodx says the
+    # DLL order is resolved, and never from a remap table.
+    score = function_body(CAPTURE, "public dod_score_event")
+    assert "dodx_cp_identity_resolved()" in score
+    assert "(resolved && cp_index >= 0 && cp_index < g_kscFlagCount) ? cp_index : -1" in score
+    for f in ("matchid", "half", "map", "player", "delta", "total", "flag_index",
+              "dll_index", "flag_name", "identity_resolved", "game_time", "event_epoch", "sequence"):
+        assert f'({f} ^"%' in score, f
+    assert "ksc_buffer(line, KSC_EVENT_SCORE)" in score
+
+    # §3.7 player_state: prone edges from the forward, deploy edges from the
+    # 0.5 s poll, MG/bipod classes only, and the poll runs even on flagless maps.
+    state = function_body(CAPTURE, "stock ksc_emit_player_state")
+    for f in ("kind", "matchid", "half", "map", "player", "class", "position", "yaw",
+              "game_time", "event_epoch", "sequence"):
+        assert f'({f} ^"%' in state, f
+    assert 'value ? "prone" : "unprone"' in function_body(CAPTURE, "public dod_client_prone")
+    poll = function_body(CAPTURE, "stock ksc_player_state_poll")
+    assert "ksc_deployable_class(dod_get_user_class(id))" in poll
+    assert "dodx_is_deployed(id)" in poll
+    zone = function_body(CAPTURE, "public ksc_zone_poll_task")
+    assert zone.index("ksc_player_state_poll()") < zone.index("if (g_kscFlagCount <= 0)")
+
+    # §3.5 duel: snapshot at activation, delta emit inside the half close before
+    # flush/health, base invalidated so an OT double-close cannot re-emit,
+    # and health accounting done by hand because it bypasses the ring.
+    activate = function_body(CAPTURE, "stock bool:ksc_activate_producer_context")
+    assert activate.index("ksc_emit_manifest(") < activate.index("ksc_duel_snapshot_all()")
+    close = function_body(CAPTURE, "stock ksc_close_producer_context")
+    assert close.index("ksc_emit_duels(") < close.index("g_kscDuelBaseValid = false") < close.index("ksc_flush()")
+    assert close.index("ksc_emit_duels(") < close.index("ksc_emit_health(")
+    duels = function_body(CAPTURE, "stock ksc_emit_duels")
+    assert "if (!g_kscDuelBaseValid)" in duels
+    for counter in ("g_kscAttempted[KSC_EVENT_DUEL]++", "g_kscEnqueued[KSC_EVENT_DUEL]++",
+                    "g_kscEmitted[KSC_EVENT_DUEL]++"):
+        assert counter in duels, counter
+    for f in ("matchid", "half", "map", "attacker", "victim", "kills", "deaths", "headshots",
+              "teamkills", "shots", "hits", "damage", "bodyhits", "event_epoch", "sequence"):
+        assert f'({f} ^"%' in duels, f
+    assert "ksc_duel_clear(id)" in function_body(CAPTURE, "stock ksc_clear_player")
+
+
 def _enclosing_function(source: str, index: int) -> str:
     """Name of the stock/public Pawn function whose body contains index."""
     match = None
