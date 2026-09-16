@@ -104,7 +104,7 @@
 // properties plus producer match/half/clocks. A synthetic maximum-width
 // contract line is 764 bytes; 768 preserves it including the NUL terminator.
 // A truncated line does not fail loudly -- it silently loses trailing clocks.
-#define KSC_BUF_LINE_LEN    832
+#define KSC_BUF_LINE_LEN    1024
 #define KSC_BUF_FLUSH_SECS  5.0
 
 // Life boundaries are control-plane facts. Keep them out of the high-volume
@@ -339,6 +339,20 @@ new g_kscAttemptAllies[KSC_MAX_FLAGS]
 new g_kscAttemptAxis[KSC_MAX_FLAGS]
 new g_kscAttemptMatchId[KSC_MAX_FLAGS][64]
 new g_kscAttemptHalf[KSC_MAX_FLAGS]
+new g_kscAttemptPeak[KSC_MAX_FLAGS]  // highest cap progress % seen this attempt
+
+// Wave 1 (ENGINE_STATS_EXPANSION_PLAN §3.6a): per-life shot counters, reset
+// on every life start, emitted on every life boundary (meaningful on "end").
+new g_kscLifeShots[MAX_PLAYERS + 1]
+new g_kscLifeShotsHitscan[MAX_PLAYERS + 1]
+new Float:g_kscLifeSpawnTime[MAX_PLAYERS + 1]
+new Float:g_kscLifeFirstShot[MAX_PLAYERS + 1]  // -1.0 until the first shot
+
+// Wave 1 (§3.4): last known health per victim, so a hit can report applied
+// damage (health actually removed) next to raw damage. Seeded on spawn, kept
+// current after every hit. DoD has no regen, so it only drifts on non-hit
+// damage (falls, world) -- re-seeded on every life start.
+new g_kscHealth[MAX_PLAYERS + 1]
 
 // Owner identity must survive a disconnect between the tracked and removed
 // forwards. Edict indices are reused, so index+serial is the cache key.
@@ -1141,11 +1155,17 @@ stock bool:ksc_emit_life_boundary(id, const matchid[], const kind[], const reaso
 	new Float:game_time = get_gametime()
 	new sequence = ksc_next_type_sequence(KSC_EVENT_LIFE)
 
+	// Wave 1 (§3.6a): per-life shot counters. Same three fields on every
+	// boundary; they carry meaning on "end" and are 0/0/-1 on "start".
+	new Float:first_shot_delay = (g_kscLifeFirstShot[id] < 0.0) ? -1.0
+		: g_kscLifeFirstShot[id] - g_kscLifeSpawnTime[id]
+
 	new line[KSC_LIFE_BUF_LINE_LEN]
 	formatex(line, charsmax(line),
-		"^"%s^" triggered ^"life_boundary^" (matchid ^"%s^") (half ^"%d^") (event_epoch ^"%d^") (game_time ^"%.2f^") (kind ^"%s^") (reason ^"%s^") (team ^"%d^") (class ^"%d^") (slot ^"%d^") (sequence ^"%d^")",
+		"^"%s^" triggered ^"life_boundary^" (matchid ^"%s^") (half ^"%d^") (event_epoch ^"%d^") (game_time ^"%.2f^") (kind ^"%s^") (reason ^"%s^") (team ^"%d^") (class ^"%d^") (slot ^"%d^") (shots ^"%d^") (shots_hitscan ^"%d^") (first_shot_delay ^"%.2f^") (sequence ^"%d^")",
 		player_str, producer_matchid, producer_half, event_epoch, game_time,
-		kind, reason, team, class_id, id, sequence)
+		kind, reason, team, class_id, id,
+		g_kscLifeShots[id], g_kscLifeShotsHitscan[id], first_shot_delay, sequence)
 	return ksc_life_buffer(line)
 }
 
@@ -1158,6 +1178,11 @@ stock ksc_life_start(id, const reason[]) {
 	// truthful boundary that lets the derivation layer right-censor the old
 	// life. Only the synthetic context baseline is duplicate-suppressed below.
 	g_kscLifePhysicalAlive[id] = true
+	g_kscLifeShots[id] = 0
+	g_kscLifeShotsHitscan[id] = 0
+	g_kscLifeSpawnTime[id] = get_gametime()
+	g_kscLifeFirstShot[id] = -1.0
+	g_kscHealth[id] = get_user_health(id)
 
 	new matchid[64]
 	dodx_get_match_id(matchid, charsmax(matchid))
@@ -1583,6 +1608,21 @@ stock ksc_objective_clear(f) {
 	g_kscAttemptAxis[f] = 0
 	g_kscAttemptMatchId[f][0] = 0
 	g_kscAttemptHalf[f] = 0
+	g_kscAttemptPeak[f] = 0
+}
+
+// Cap progress for flag f as an integer percent of timetocap elapsed.
+// progress = -1 when the point has no capture area (every CA_ read is 0 there).
+stock ksc_cap_progress(f, &Float:timetocap, &progress) {
+	timetocap = Float:dodx_area_get_data(f, CA_timetocap)
+	if (timetocap <= 0.0) {
+		progress = -1
+		return
+	}
+	new Float:remaining = Float:dodx_area_get_data(f, CA_time_remaining)
+	if (remaining < 0.0) remaining = 0.0
+	if (remaining > timetocap) remaining = timetocap
+	progress = floatround(100.0 * (1.0 - remaining / timetocap))
 }
 
 stock bool:ksc_emit_objective_attempt(const kind[], f, attempt_id,
@@ -1603,11 +1643,18 @@ stock bool:ksc_emit_objective_attempt(const kind[], f, attempt_id,
 	event_sequence = ksc_next_type_sequence(KSC_EVENT_OBJECTIVE_ATTEMPT)
 	new wire_attempt_id = attempt_id ? attempt_id : event_sequence
 
+	// Wave 1 (§3.1/§3.9): how far the cap got, and where the half clock was.
+	// progress -1 = no capture area on this point (control points without an
+	// area read 0 for every CA_ key), never 0, so "no area" and "0%" stay apart.
+	new Float:timetocap, progress
+	ksc_cap_progress(f, timetocap, progress)
+
 	formatex(line, charsmax(line),
-		"KTP_OBJECTIVE_ATTEMPT (kind ^"%s^") (matchid ^"%s^") (half ^"%d^") (map ^"%s^") (attempt_id ^"%d^") (flag_index ^"%d^") (flag_name ^"%s^") (capturing_team ^"%d^") (owner_before ^"%d^") (allies_in_zone ^"%d^") (axis_in_zone ^"%d^") (stop_reason ^"%s^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^")",
+		"KTP_OBJECTIVE_ATTEMPT (kind ^"%s^") (matchid ^"%s^") (half ^"%d^") (map ^"%s^") (attempt_id ^"%d^") (flag_index ^"%d^") (flag_name ^"%s^") (capturing_team ^"%d^") (owner_before ^"%d^") (allies_in_zone ^"%d^") (axis_in_zone ^"%d^") (stop_reason ^"%s^") (progress ^"%d^") (peak_progress ^"%d^") (timetocap ^"%.1f^") (round_time_left ^"%.1f^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^")",
 		wire_kind, wire_matchid, half, wire_map, wire_attempt_id, f,
 		wire_flag_name, capturing_team, owner_before,
 		allies_in_zone, axis_in_zone, wire_stop_reason,
+		progress, g_kscAttemptPeak[f], timetocap, dodx_get_round_time(),
 		get_gametime(), get_systime(), event_sequence)
 
 	return ksc_buffer(line, KSC_EVENT_OBJECTIVE_ATTEMPT)
@@ -1682,6 +1729,11 @@ stock ksc_objective_observe(f, owner, is_capping, capturing_team, allies, axis) 
 
 	g_kscAttemptAllies[f] = allies
 	g_kscAttemptAxis[f] = axis
+	if (is_capping) {
+		new Float:ttc, pct
+		ksc_cap_progress(f, ttc, pct)
+		if (pct > g_kscAttemptPeak[f]) g_kscAttemptPeak[f] = pct
+	}
 
 	// Completion is intentionally narrow: only an ownership change to the team
 	// latched by the start event qualifies.
@@ -1735,8 +1787,8 @@ stock ksc_emit_flag_state(f, owner, is_initial) {
 	new sequence = ksc_next_type_sequence(KSC_EVENT_FLAG_STATE)
 	g_kscAttempted[KSC_EVENT_FLAG_STATE]++
 	g_kscEnqueued[KSC_EVENT_FLAG_STATE]++
-	log_message("KTP_FLAG_STATE (map ^"%s^") (flag_index ^"%d^") (flag_name ^"%s^") (owner ^"%d^") (initial ^"%d^") (game_time ^"%.2f^") (matchid ^"%s^") (half ^"%d^") (sequence ^"%d^") (event_epoch ^"%d^")",
-		mapname, f, g_kscFlagName[f], owner, is_initial, get_gametime(),
+	log_message("KTP_FLAG_STATE (map ^"%s^") (flag_index ^"%d^") (flag_name ^"%s^") (owner ^"%d^") (initial ^"%d^") (game_time ^"%.2f^") (round_time_left ^"%.1f^") (matchid ^"%s^") (half ^"%d^") (sequence ^"%d^") (event_epoch ^"%d^")",
+		mapname, f, g_kscFlagName[f], owner, is_initial, get_gametime(), dodx_get_round_time(),
 		matchid, half, sequence, get_systime())
 	g_kscEmitted[KSC_EVENT_FLAG_STATE]++
 }
@@ -2222,8 +2274,14 @@ stock ksc_emit_flag_position(f) {
 		g_kscEnqueued[KSC_EVENT_FLAG_POSITION]++
 	}
 
-	log_message("KTP_FLAG_POSITION (map ^"%s^") (flag_index ^"%d^") (flag_name ^"%s^") (x ^"%d^") (y ^"%d^") (matchid ^"%s^") (half ^"%d^") (sequence ^"%d^") (event_epoch ^"%d^")",
-		mapname, f, g_kscFlagName[f], x, y, matchid, half, sequence, get_systime())
+	// Wave 1 (§3.8): what the map authored for this flag, read from the module
+	// rather than inferred from play. identity_resolved says whether dodx has
+	// this array in the DLL's index space -- the per-server module detector.
+	log_message("KTP_FLAG_POSITION (map ^"%s^") (flag_index ^"%d^") (flag_name ^"%s^") (x ^"%d^") (y ^"%d^") (default_owner ^"%d^") (points_for_cap ^"%d^") (team_points ^"%d^") (timetocap ^"%.1f^") (identity_resolved ^"%d^") (matchid ^"%s^") (half ^"%d^") (sequence ^"%d^") (event_epoch ^"%d^")",
+		mapname, f, g_kscFlagName[f], x, y,
+		dodx_objective_get_data(f, CP_default_owner), dodx_objective_get_data(f, CP_points_for_cap),
+		dodx_objective_get_data(f, CP_team_points), Float:dodx_area_get_data(f, CA_timetocap),
+		dodx_cp_identity_resolved(), matchid, half, sequence, get_systime())
 	if (tracked)
 		g_kscEmitted[KSC_EVENT_FLAG_POSITION]++
 }
@@ -2367,11 +2425,15 @@ stock bool:ksc_is_hitscan_firearm(weapon) {
 // running alongside it; this handler adds no detection of its own, only
 // reads state off the forward's own dispatch.
 public dod_client_weapon_fire(id, weapon, Float:gametime) {
-	if (!ksc_shots_enabled())
-		return
 	if (weapon <= 0 || id < 1 || id > MAX_PLAYERS)
 		return
 	if (!is_user_connected(id) || !is_user_alive(id))
+		return
+	// Wave 1 (§3.6a): life counters run whether or not the shot stream is on.
+	g_kscLifeShots[id]++
+	if (ksc_is_hitscan_firearm(weapon)) g_kscLifeShotsHitscan[id]++
+	if (g_kscLifeFirstShot[id] < 0.0) g_kscLifeFirstShot[id] = gametime
+	if (!ksc_shots_enabled())
 		return
 	if (get_user_team(id) == 0)
 		return
@@ -2543,6 +2605,15 @@ stock ksc_emit_damage(attacker, victim, damage, wpnindex, hitplace) {
 	xmod_get_wpnlogname(wpnindex, weapon, charsmax(weapon))
 
 	new damage_capped = (damage > KSC_DAMAGE_CAP) ? KSC_DAMAGE_CAP : damage
+	// Wave 1 (§3.4): health actually removed. client_damage fires after the
+	// hit lands, so get_user_health is post-hit; "before" is the tracked value.
+	new health_before = g_kscHealth[victim]
+	new health_after = get_user_health(victim)
+	if (health_after < 0) health_after = 0
+	new applied = health_before - health_after
+	if (applied < 0) applied = 0
+	if (applied > damage) applied = damage
+	g_kscHealth[victim] = health_after
 	new Float:gt = get_gametime()
 	new event_epoch = get_systime()
 	new producer_matchid[64], producer_half
@@ -2555,9 +2626,10 @@ stock ksc_emit_damage(attacker, victim, damage, wpnindex, hitplace) {
 
 	new line[KSC_BUF_LINE_LEN]
 	formatex(line, charsmax(line),
-		"^"%s^" triggered ^"damage^" against ^"%s^" with ^"%s^" (damage ^"%d^") (damage_capped ^"%d^") (hitplace ^"%d^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^")",
+		"^"%s^" triggered ^"damage^" against ^"%s^" with ^"%s^" (damage ^"%d^") (damage_capped ^"%d^") (hitplace ^"%d^") (health_before ^"%d^") (health_after ^"%d^") (damage_applied ^"%d^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^")",
 		attacker_str, victim_str, weapon,
-		damage, damage_capped, hitplace, producer_matchid, producer_half, gt, event_epoch, sequence)
+		damage, damage_capped, hitplace, health_before, health_after, applied,
+		producer_matchid, producer_half, gt, event_epoch, sequence)
 
 	ksc_buffer_event(line, KSC_EVENT_DAMAGE, tracked)
 }
@@ -2633,6 +2705,12 @@ stock ksc_emit_frag_context(killer, victim, wpnindex, hitplace) {
 	new k_prone = dod_get_pronestate(killer)
 	new v_prone = dod_get_pronestate(victim)
 	new headshot = (hitplace == HIT_HEAD) ? 1 : 0
+	// Wave 1 (§3.10): facing at the kill. -999 = unreadable, never 0 (0 is a
+	// real heading). angles[0] = pitch, angles[1] = yaw (v_angle order).
+	new Float:k_ang[3], Float:v_ang[3]
+	new Float:k_yaw = -999.0, Float:k_pitch = -999.0, Float:v_yaw = -999.0, Float:v_pitch = -999.0
+	if (dodx_get_user_angles(killer, k_ang) == 1) { k_yaw = k_ang[1]; k_pitch = k_ang[0]; }
+	if (dodx_get_user_angles(victim, v_ang) == 1) { v_yaw = v_ang[1]; v_pitch = v_ang[0]; }
 
 	new k_pos[40], v_pos[40]
 	new bool:have_k_pos = ksc_origin_str(killer, k_pos, charsmax(k_pos))
@@ -2655,21 +2733,21 @@ stock ksc_emit_frag_context(killer, victim, wpnindex, hitplace) {
 	new line[KSC_BUF_LINE_LEN]
 	if (have_k_pos && have_v_pos)
 		formatex(line, charsmax(line),
-			"^"%s^" triggered ^"frag_context^" against ^"%s^" with ^"%s^" (headshot ^"%d^") (k_prone ^"%d^") (v_prone ^"%d^") (k_scope ^"%d^") (v_scope ^"%d^") (k_clip ^"%d^") (k_ammo ^"%d^") (v_clip ^"%d^") (v_ammo ^"%d^") (k_position ^"%s^") (v_position ^"%s^") (is_last_flag_defense ^"%d^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^")",
+			"^"%s^" triggered ^"frag_context^" against ^"%s^" with ^"%s^" (headshot ^"%d^") (k_prone ^"%d^") (v_prone ^"%d^") (k_scope ^"%d^") (v_scope ^"%d^") (k_clip ^"%d^") (k_ammo ^"%d^") (v_clip ^"%d^") (v_ammo ^"%d^") (k_position ^"%s^") (v_position ^"%s^") (is_last_flag_defense ^"%d^") (k_yaw ^"%.1f^") (k_pitch ^"%.1f^") (v_yaw ^"%.1f^") (v_pitch ^"%.1f^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^")",
 			killer_str, victim_str, weapon,
 			headshot, k_prone, v_prone,
 			g_kscScoped[killer], g_kscScoped[victim],
 			k_clip, k_ammo, v_clip, v_ammo,
-			k_pos, v_pos, is_last_flag_defense,
+			k_pos, v_pos, is_last_flag_defense, k_yaw, k_pitch, v_yaw, v_pitch,
 			producer_matchid, producer_half, game_time, event_epoch, sequence)
 	else
 		formatex(line, charsmax(line),
-			"^"%s^" triggered ^"frag_context^" against ^"%s^" with ^"%s^" (headshot ^"%d^") (k_prone ^"%d^") (v_prone ^"%d^") (k_scope ^"%d^") (v_scope ^"%d^") (k_clip ^"%d^") (k_ammo ^"%d^") (v_clip ^"%d^") (v_ammo ^"%d^") (is_last_flag_defense ^"%d^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^")",
+			"^"%s^" triggered ^"frag_context^" against ^"%s^" with ^"%s^" (headshot ^"%d^") (k_prone ^"%d^") (v_prone ^"%d^") (k_scope ^"%d^") (v_scope ^"%d^") (k_clip ^"%d^") (k_ammo ^"%d^") (v_clip ^"%d^") (v_ammo ^"%d^") (is_last_flag_defense ^"%d^") (k_yaw ^"%.1f^") (k_pitch ^"%.1f^") (v_yaw ^"%.1f^") (v_pitch ^"%.1f^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^")",
 			killer_str, victim_str, weapon,
 			headshot, k_prone, v_prone,
 			g_kscScoped[killer], g_kscScoped[victim],
 			k_clip, k_ammo, v_clip, v_ammo,
-			is_last_flag_defense,
+			is_last_flag_defense, k_yaw, k_pitch, v_yaw, v_pitch,
 			producer_matchid, producer_half, game_time, event_epoch, sequence)
 
 	ksc_buffer_event(line, KSC_EVENT_FRAG, tracked)
