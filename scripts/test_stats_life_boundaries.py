@@ -1332,6 +1332,44 @@ def test_shot_context_stream() -> None:
     assert 'set_task(KSC_SHOT_FLUSH_SECS, "ksc_shot_flush_task", KSC_TASK_SHOT_FLUSH' in cfg
 
 
+def test_wave1_additive_fields() -> None:
+    # ENGINE_STATS_EXPANSION_PLAN_20260909.md wave 1: additive fields on
+    # existing streams, no new stream, no schema bump (precedent: migrations
+    # 029-031 widened the shot row at schema 24).
+    attempt = function_body(CAPTURE, "stock bool:ksc_emit_objective_attempt")
+    for f in ("progress", "peak_progress", "timetocap", "round_time_left"):
+        assert f'({f} ^"%' in attempt, f
+    helper = function_body(CAPTURE, "stock ksc_cap_progress")
+    assert "progress = -1" in helper  # no capture area != 0 %
+    assert "CA_timetocap" in helper and "CA_time_remaining" in helper
+    observe = function_body(CAPTURE, "stock ksc_objective_observe")
+    assert "g_kscAttemptPeak[f]" in observe
+
+    damage = function_body(CAPTURE, "stock ksc_emit_damage")
+    for f in ("health_before", "health_after", "damage_applied"):
+        assert f'({f} ^"%' in damage, f
+    assert "if (applied > damage) applied = damage" in damage
+
+    life = function_body(CAPTURE, "stock bool:ksc_emit_life_boundary")
+    for f in ("shots", "shots_hitscan", "first_shot_delay"):
+        assert f'({f} ^"%' in life, f
+    start = function_body(CAPTURE, "stock ksc_life_start")
+    assert "g_kscLifeShots[id] = 0" in start and "g_kscHealth[id] = get_user_health(id)" in start
+    fire = function_body(CAPTURE, "public dod_client_weapon_fire")
+    # counters increment BEFORE the shot-stream cvar gate: they are life stats
+    before(fire, "g_kscLifeShots[id]++", "if (!ksc_shots_enabled())")
+
+    frag = function_body(CAPTURE, "stock ksc_emit_frag_context")
+    for f in ("k_yaw", "k_pitch", "v_yaw", "v_pitch"):
+        assert frag.count(f'({f} ^"%') == 2, f  # both position variants
+    assert re.search(r"#define\s+KSC_BUF_LINE_LEN\s+1024", CAPTURE)
+
+    assert '(round_time_left ^"%' in function_body(CAPTURE, "stock ksc_emit_flag_state")
+    pos = CAPTURE[CAPTURE.index('"KTP_FLAG_POSITION (map'):][:900]
+    for f in ("default_owner", "points_for_cap", "team_points", "timetocap", "identity_resolved"):
+        assert f'({f} ^"%' in pos, f
+
+
 def main() -> None:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:

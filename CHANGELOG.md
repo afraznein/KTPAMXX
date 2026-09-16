@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - expansion wave 1: additive fields on existing streams
+
+`ktp_stats_capture.inc`, `stats_logging.sma` 1.20.5 -> 1.21.0. No new stream,
+no schema bump: same precedent as migrations 029-031, which widened the shot
+row at schema 24. Pairs with KTPHLStatsX migration 032.
+Design: `ENGINE_STATS_EXPANSION_PLAN_20260909.md` §3.1/3.4/3.6a/3.8/3.9/3.10.
+
+- **Objective attempts** carry `progress` (% of `CA_timetocap` elapsed; `-1`
+  when the point has no capture area, never `0`), `peak_progress` (highest
+  reading during the attempt, tracked on the 0.5 s poll), `timetocap`, and
+  `round_time_left`. "Broken at 73 %" is now a column, not an inference.
+- **Damage** carries `health_before`, `health_after`, `damage_applied`
+  (health actually removed, clamped to `damage`). Per-victim health is seeded
+  from `get_user_health` at life start and updated after every hit.
+- **Life boundaries** carry `shots`, `shots_hitscan`, `first_shot_delay`
+  (seconds from spawn to first shot, `-1` if none). Counted in
+  `dod_client_weapon_fire` before the shot-stream cvar gate: they are life
+  stats and do not depend on the shot stream being on.
+- **Frag context** carries `k_yaw`/`k_pitch`/`v_yaw`/`v_pitch` (`-999` when
+  unreadable). `KSC_BUF_LINE_LEN` 832 -> 1024 for the wider line.
+- **Flag state** carries `round_time_left`; **flag position** carries
+  `default_owner`, `points_for_cap`, `team_points`, `timetocap`,
+  `identity_resolved` -- the map's authored values from the module, which is
+  what the spawn-ownership table now reads from BSPs.
+
+Skipped from the plan, deliberately: burst counters on life rows, `CP_pointvalue`
+(reads 0 on every CP), `CP_can_touch`, `score_tick_in`, angles at attempt start,
+movetype at death, grenade-tracker occupancy (needs a module gauge). Add when
+a consumer asks.
+
+Verified: amxxpc 2.7.33.5799 exit 0 against main's include tree; 43/43
+contract tests (`test_wave1_additive_fields` added).
+
+
 ### Added - dodx logs the resolved grenade slots once per map
 
 `[DODX] grenade slots map=<map> pdata_offset=<n> w13=<slot>(<source>) w14=<slot>(<source>)`, written
