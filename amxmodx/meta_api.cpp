@@ -2870,7 +2870,14 @@ static int PF_RegUserMsg_RH(IRehldsHook_PF_RegUserMsg_I *chain, const char *pszN
 	// confirmed live in extension mode (it's how SayText/ResetHUD/etc.
 	// resolve fleet-wide), unlike dodx's own dead RegUserMsg_Post/
 	// GET_USER_MSG_ID paths. Remove after the answer is captured.
-	LOG_MESSAGE(PLID, "KTP_USERMSG_PROBE name=\"%s\" size=%d id=%d", pszName, iSize, id);
+	//
+	// print_srvconsole, not LOG_MESSAGE(PLID, ...): the game DLL registers
+	// its first usermessages this early in boot, before AMXX's own logging
+	// subsystem is ready -- LOG_MESSAGE here crashed the server (SIGSEGV,
+	// rc=-11) on every boot attempt in Lane C run 35155836978. Confirmed via
+	// the code at print_srvconsole's own call site a few lines below
+	// (extension-mode init uses it for exactly this reason).
+	print_srvconsole("KTP_USERMSG_PROBE name=\"%s\" size=%d id=%d\n", pszName, iSize, id);
 
 	// Capture the ID for messages we care about
 	for (int i = 0; g_user_msg[i].name; ++i)
