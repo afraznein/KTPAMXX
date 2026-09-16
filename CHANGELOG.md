@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - contract tests for stream declaration and per-type sequencing
+
+Two source-level tests in `scripts/test_stats_life_boundaries.py`, each pinning
+a contract that a shipped build once broke:
+
+- Every entry in `g_kscEventNames` (the streams whose health rows are emitted)
+  is declared in `KSC_CAPABILITIES`, and the names line up with the
+  `KSC_EVENT_*` enum by index. 1.19.3 emitted `shot` without declaring it and
+  every match report on that build failed. `frag` / `frag_context` is the one
+  daemon-side alias and is spelled out in the test.
+- No data stream takes its sequence from the shared `g_kscSequence`: the only
+  callers of `ksc_next_sequence()` are the manifest and health emitters, the
+  only readers of the counter are those plus its reset, and every stream has
+  a `ksc_next_type_sequence(KSC_EVENT_<own type>)` call. Position and shot each
+  independently fed the shared counter and broke per-type gap accounting.
+
+No producer change; `stats_logging` is unchanged.
+
 ### Added - expansion wave 1: additive fields on existing streams
 
 `ktp_stats_capture.inc`, `stats_logging.sma` 1.20.5 -> 1.21.0. No new stream,
