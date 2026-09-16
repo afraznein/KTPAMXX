@@ -1370,6 +1370,106 @@ def test_wave1_additive_fields() -> None:
         assert f'({f} ^"%' in pos, f
 
 
+def test_wave2_streams_wire_and_lifecycle() -> None:
+    # §3.2 score: fail-closed index space -- flag_index only when dodx says the
+    # DLL order is resolved, and never from a remap table.
+    score = function_body(CAPTURE, "public dod_score_event")
+    assert "dodx_cp_identity_resolved()" in score
+    assert "(resolved && cp_index >= 0 && cp_index < g_kscFlagCount) ? cp_index : -1" in score
+    for f in ("matchid", "half", "map", "player", "delta", "total", "flag_index",
+              "dll_index", "flag_name", "identity_resolved", "game_time", "event_epoch", "sequence"):
+        assert f'({f} ^"%' in score, f
+    assert "ksc_buffer(line, KSC_EVENT_SCORE)" in score
+
+    # §3.7 player_state: prone edges from the forward, deploy edges from the
+    # 0.5 s poll, MG/bipod classes only, and the poll runs even on flagless maps.
+    state = function_body(CAPTURE, "stock ksc_emit_player_state")
+    for f in ("kind", "matchid", "half", "map", "player", "class", "position", "yaw",
+              "game_time", "event_epoch", "sequence"):
+        assert f'({f} ^"%' in state, f
+    assert 'value ? "prone" : "unprone"' in function_body(CAPTURE, "public dod_client_prone")
+    poll = function_body(CAPTURE, "stock ksc_player_state_poll")
+    assert "ksc_deployable_class(dod_get_user_class(id))" in poll
+    assert "dodx_is_deployed(id)" in poll
+    zone = function_body(CAPTURE, "public ksc_zone_poll_task")
+    assert zone.index("ksc_player_state_poll()") < zone.index("if (g_kscFlagCount <= 0)")
+
+    # §3.5 duel: snapshot at activation, delta emit inside the half close before
+    # flush/health, base invalidated so an OT double-close cannot re-emit,
+    # and health accounting done by hand because it bypasses the ring.
+    activate = function_body(CAPTURE, "stock bool:ksc_activate_producer_context")
+    assert activate.index("ksc_emit_manifest(") < activate.index("ksc_duel_snapshot_all()")
+    close = function_body(CAPTURE, "stock ksc_close_producer_context")
+    assert close.index("ksc_emit_duels(") < close.index("g_kscDuelBaseValid = false") < close.index("ksc_flush()")
+    assert close.index("ksc_emit_duels(") < close.index("ksc_emit_health(")
+    duels = function_body(CAPTURE, "stock ksc_emit_duels")
+    assert "if (!g_kscDuelBaseValid)" in duels
+    for counter in ("g_kscAttempted[KSC_EVENT_DUEL]++", "g_kscEnqueued[KSC_EVENT_DUEL]++",
+                    "g_kscEmitted[KSC_EVENT_DUEL]++"):
+        assert counter in duels, counter
+    for f in ("matchid", "half", "map", "attacker", "victim", "kills", "deaths", "headshots",
+              "teamkills", "shots", "hits", "damage", "bodyhits", "event_epoch", "sequence"):
+        assert f'({f} ^"%' in duels, f
+    assert "ksc_duel_clear(id)" in function_body(CAPTURE, "stock ksc_clear_player")
+
+
+def _enclosing_function(source: str, index: int) -> str:
+    """Name of the stock/public Pawn function whose body contains index."""
+    match = None
+    for match in re.finditer(r"^(?:stock|public)\s+(?:\w+:)?(\w+)\s*\(", source[:index], re.M):
+        pass
+    assert match is not None, "reference outside any function"
+    return match.group(1)
+
+
+def _event_names() -> list:
+    names_src = re.search(r"g_kscEventNames\[KSC_EVENT_COUNT\]\[\] = \{(.*?)\}", CAPTURE, re.S)
+    assert names_src
+    return re.findall(r'"(\w+)"', names_src.group(1))
+
+
+def test_every_stream_is_declared_and_health_tracked() -> None:
+    # Contract (2026-09-10, declaration trap): a build must not emit a stream, or
+    # its health row, that KSC_CAPABILITIES does not declare. 1.19.3 emitted
+    # `shot` undeclared and silently broke every match report. The health loop
+    # walks g_kscEventNames by enum index, so the two lists must also line up.
+    enum = re.search(r"enum\s*\{\s*KSC_EVENT_LIFE = 0,(.*?)KSC_EVENT_COUNT", CAPTURE, re.S)
+    assert enum
+    ids = ["KSC_EVENT_LIFE"] + re.findall(r"^\s*(KSC_EVENT_\w+),", enum.group(1), re.M)
+    names = _event_names()
+    assert len(names) == len(ids), (names, ids)
+    for event_id, name in zip(ids, names):
+        assert event_id == f"KSC_EVENT_{name.upper()}", (event_id, name)
+    caps = re.search(r'#define\s+KSC_CAPABILITIES\s+"([^"]+)"', CAPTURE).group(1).split(",")
+    # The daemon's health-type set says `frag`; its capability list says
+    # `frag_context` (hlstats.pl ktpValidateCaptureManifestPayload vs the
+    # capture-health %allowed set). One alias, fixed on both sides.
+    capability_for = {"frag": "frag_context"}
+    undeclared = [n for n in names if capability_for.get(n, n) not in caps]
+    assert not undeclared, f"streams emitted but not declared in KSC_CAPABILITIES: {undeclared}"
+
+
+def test_data_streams_never_take_the_shared_sequence() -> None:
+    # Contract (2026-09-12, shared-counter interleave): every data stream takes
+    # its sequence from ksc_next_type_sequence(own type). The shared
+    # g_kscSequence is for manifest/health only -- two independently designed
+    # streams (position, shot) each fed it and broke per-type gap accounting.
+    shared_users = {_enclosing_function(CAPTURE, m.start())
+                    for m in re.finditer(r"(?<!stock )ksc_next_sequence\(\)", CAPTURE)}
+    assert shared_users == {"ksc_emit_manifest", "ksc_emit_health"}, shared_users
+    counter_users = set()
+    for m in re.finditer(r"\bg_kscSequence\b", CAPTURE):
+        line_start = CAPTURE.rfind("\n", 0, m.start()) + 1
+        prefix = CAPTURE[line_start:m.start()].lstrip()
+        if prefix.startswith("//") or prefix == "new ":  # comment or the declaration
+            continue
+        counter_users.add(_enclosing_function(CAPTURE, m.start()))
+    assert counter_users == {"ksc_next_sequence", "ksc_reset_health", "ksc_emit_health"}, counter_users
+    for name in _event_names():
+        assert f"ksc_next_type_sequence(KSC_EVENT_{name.upper()})" in CAPTURE, \
+            f"stream {name} has no per-type sequence call"
+
+
 def main() -> None:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:

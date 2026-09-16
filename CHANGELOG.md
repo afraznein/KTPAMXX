@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - expansion wave 2: score, duel and player_state streams (1.22.0)
+
+Three low-volume streams, each declared in `KSC_CAPABILITIES`, sequenced from
+its own per-type counter, and given its own capture-health row. Schema
+contract stays 24; a daemon without migration 033 drops the markers and
+nothing else changes.
+
+- `KTP_SCORE_EVENT` (§3.2) from `dod_score_event`: the engine's own score
+  attribution per player. `cp_index` is DLL index space; it becomes
+  `flag_index` only when `dodx_cp_identity_resolved()` says DLL order equals
+  dodx order, otherwise `flag_index` is -1 and `dll_index` keeps the raw value.
+  No remap table, ever.
+- `KTP_DUEL` (§3.5): the per-(attacker, victim) `get_user_vstats` matrix the
+  module already keeps, snapshotted when the producer context activates and
+  emitted as a delta at half close, before that half's health row. Direct
+  `log_message` (up to 132 lines at an idle moment; the shared ring is
+  smaller), with the health counters kept by hand. The base is invalidated
+  after emission so an overtime double-close cannot re-emit, and a slot's
+  base is cleared on disconnect because the module's counters restart with
+  the slot.
+- `KTP_PLAYER_STATE` (§3.7): `prone`/`unprone` from `dod_client_prone`;
+  `deploy`/`undeploy` edges from `dodx_is_deployed` on the existing 0.5 s poll,
+  bipod classes only (BAR, 30cal, FG42, MG34, MG42, Bren). `dodx_is_deployed`
+  had no caller before this; the class gate keeps any offset garbage off the
+  wire for everyone else.
+
+Not taken: §3.3 detonations -- because they are already captured. The
+TraceLine that fires `dod_grenade_explosion` and starts the entity tracker is
+`CGrenade::Detonate`'s own downward trace: production shows `tracked` ->
+`removed` 0.00 s apart on 27,827 of 27,830 S10 lifecycles. `tracked` IS the
+burst (position = the trace end just under the grenade). An `exploded` kind
+would duplicate it. What does not exist is the throw -- cook time needs a
+throw marker, which is a separate, small stream.
+
+(Correction 2026-09-16: an earlier version of this entry said the forward
+fires on the throw. It does not.)
+
+### Added - contract tests for stream declaration and per-type sequencing
+
+Two source-level tests in `scripts/test_stats_life_boundaries.py`, each pinning
+a contract that a shipped build once broke:
+
+- Every entry in `g_kscEventNames` (the streams whose health rows are emitted)
+  is declared in `KSC_CAPABILITIES`, and the names line up with the
+  `KSC_EVENT_*` enum by index. 1.19.3 emitted `shot` without declaring it and
+  every match report on that build failed. `frag` / `frag_context` is the one
+  daemon-side alias and is spelled out in the test.
+- No data stream takes its sequence from the shared `g_kscSequence`: the only
+  callers of `ksc_next_sequence()` are the manifest and health emitters, the
+  only readers of the counter are those plus its reset, and every stream has
+  a `ksc_next_type_sequence(KSC_EVENT_<own type>)` call. Position and shot each
+  independently fed the shared counter and broke per-type gap accounting.
+
+No producer change; `stats_logging` is unchanged.
+
 ### Added - expansion wave 1: additive fields on existing streams
 
 `ktp_stats_capture.inc`, `stats_logging.sma` 1.20.5 -> 1.21.0. No new stream,

@@ -171,7 +171,7 @@
 // emitted in every per-half manifest so mixed fleet deployments are visible
 // without reverse-engineering them from which rows happened to arrive.
 #define KSC_SCHEMA_CONTRACT 24
-#define KSC_CAPABILITIES "frag_context,damage,position,assist,life,break,flag_state,flag_position,objective_attempt,team_membership,grenade_entity,shot,position_state,map_revision,sequence,health"
+#define KSC_CAPABILITIES "frag_context,damage,position,assist,life,break,flag_state,flag_position,objective_attempt,team_membership,grenade_entity,shot,score,duel,player_state,position_state,map_revision,sequence,health"
 
 enum {
 	KSC_EVENT_LIFE = 0,
@@ -190,6 +190,11 @@ enum {
 	// Own buffer (KSC_SHOT_BUF_*), but health is tracked the same generic way
 	// as every other type -- appended last so no existing index shifts.
 	KSC_EVENT_SHOT,
+	// Expansion wave 2 (ENGINE_STATS_EXPANSION_PLAN_20260909.md §3.2, 3.5,
+	// 3.7): three low-volume streams, appended so no existing index shifts.
+	KSC_EVENT_SCORE,
+	KSC_EVENT_DUEL,
+	KSC_EVENT_PLAYER_STATE,
 	KSC_EVENT_COUNT
 }
 
@@ -251,7 +256,7 @@ new g_kscSeqHalf = 0
 new const g_kscEventNames[KSC_EVENT_COUNT][] = {
 	"life", "damage", "position", "frag", "assist", "break",
 	"flag_state", "flag_position", "objective_attempt", "team_membership",
-	"grenade_entity", "shot"
+	"grenade_entity", "shot", "score", "duel", "player_state"
 }
 
 // [victim][attacker] -- enemy damage dealt to victim since their last spawn.
@@ -347,6 +352,15 @@ new g_kscLifeShots[MAX_PLAYERS + 1]
 new g_kscLifeShotsHitscan[MAX_PLAYERS + 1]
 new Float:g_kscLifeSpawnTime[MAX_PLAYERS + 1]
 new Float:g_kscLifeFirstShot[MAX_PLAYERS + 1]  // -1.0 until the first shot
+
+// Wave 2 (§3.5): per-pair dodx vstats at half activation. The module's
+// counters are session-scoped, so a half's duel row is the delta from here.
+// [attacker][victim][DODX_MAX_STATS stats, then MAX_BODYHITS body hits]
+#define KSC_DUEL_CELLS (DODX_MAX_STATS + MAX_BODYHITS)
+new g_kscDuelBase[MAX_PLAYERS + 1][MAX_PLAYERS + 1][KSC_DUEL_CELLS]
+new bool:g_kscDuelBaseValid = false
+// Wave 2 (§3.7): last polled bipod-deploy state, so the 0.5s poll emits edges.
+new g_kscDeployed[MAX_PLAYERS + 1]
 
 // Wave 1 (§3.4): last known health per victim, so a hit can report applied
 // damage (health actually removed) next to raw damage. Seeded on spawn, kept
@@ -605,6 +619,13 @@ stock ksc_close_producer_context() {
 	ksc_objective_reset_all(true)
 	ksc_grenade_cache_clear_all()
 	ksc_break_reset_boundary()
+	// Duel deltas close with the half they were snapshotted for, before health
+	// counts them. Direct log_message: up to 132 lines at a moment the server
+	// is idle, and the shared ring holds fewer than that.
+	if (g_kscProducerContextConfirmed && g_kscProducerMatchId[0] &&
+			g_kscProducerHalf != 0)
+		ksc_emit_duels(g_kscProducerMatchId, g_kscProducerHalf)
+	g_kscDuelBaseValid = false
 	ksc_flush()
 	// The shot ring is on its own 1s timer and ksc_flush() does not touch it, so
 	// it has to be drained here too -- before health, or the counters health
@@ -689,6 +710,7 @@ stock bool:ksc_activate_producer_context() {
 	g_kscOwnershipMatchId[0] = 0
 	g_kscOwnershipBaselinePending = true
 	ksc_emit_manifest(g_kscProducerMatchId, g_kscProducerHalf)
+	ksc_duel_snapshot_all()
 	return true
 }
 
@@ -892,7 +914,11 @@ stock bool:ksc_origin_str(id, out[], len) {
 // `removed` is intentionally generic. ED_Free proves the entity is being
 // freed; it does not prove an explosion. The old dod_grenade_explosion forward
 // remains a legacy damage-attribution/practice hook and is never consumed here
-// as a detonation signal. Rockets, mortar entities, and every weapon outside
+// as a detonation signal -- it does not need to be: the TraceLine that fires
+// it (and `tracked`) is CGrenade::Detonate's own trace, so `tracked` already
+// carries the burst time and position. Production: tracked->removed is 0.00 s
+// on 27,827 of 27,830 S10 lifecycles (2026-09-16). The throw is what nothing
+// records. Rockets, mortar entities, and every weapon outside
 // 13/14/36 are rejected by both DODX and this defensive consumer gate.
 
 stock bool:ksc_grenade_weapon_valid(wpnid) {
@@ -1084,6 +1110,8 @@ stock ksc_clear_player(id) {
 
 	g_kscLastEnemyAttacker[id] = 0
 	g_kscScoped[id] = 0
+	g_kscDeployed[id] = 0
+	ksc_duel_clear(id)
 	g_kscLifePhysicalAlive[id] = false
 	g_kscLifeOpen[id] = false
 	ksc_break_purge_player(id)
@@ -1358,6 +1386,7 @@ public client_damage(attacker, victim, damage, wpnindex, hitplace, TA) {
 // row, so damage from a previous life can't carry over if a death was missed.
 public dod_client_spawn(id) {
 	ksc_clear_damage_row(id)
+	g_kscDeployed[id] = 0
 	ksc_life_start(id, "spawn")
 }
 
@@ -2054,6 +2083,8 @@ public ksc_zone_poll_task() {
 		g_kscBreakBaselineSuppressed = true
 		return
 	}
+	// Deploy edges do not depend on the map having flags.
+	ksc_player_state_poll()
 	if (g_kscFlagCount <= 0)
 		return
 
@@ -2859,3 +2890,175 @@ stock ksc_on_death(killer, victim, wpnindex, hitplace, TK) {
 
 	ksc_clear_damage_row(victim)
 }
+
+// ---------------------------------------------------------------------------
+// Expansion wave 2: three low-volume streams
+// (ENGINE_STATS_EXPANSION_PLAN_20260909.md §3.2 score, §3.5 duel, §3.7
+// player_state). Each takes its sequence from its own per-type counter and is
+// declared in KSC_CAPABILITIES; the daemon ignores all three until it carries
+// migration 033, and the old daemon against this build simply drops them.
+
+// §3.2 -- the engine's own score attribution. cp_index is DLL index space; it
+// is only a dodx flag index when dodx_cp_identity_resolved() says so. Fail
+// closed: flag_index -1 with the raw dll_index kept, never a remap.
+public dod_score_event(id, score_delta, total_score, cp_index) {
+	if (!ksc_enabled() || id < 1 || id > MAX_PLAYERS || !is_user_connected(id))
+		return
+	new matchid[64], half
+	if (!ksc_event_context(matchid, charsmax(matchid), half))
+		return
+
+	new resolved = dodx_cp_identity_resolved() ? 1 : 0
+	new flag_index = (resolved && cp_index >= 0 && cp_index < g_kscFlagCount) ? cp_index : -1
+	new flag_name[32]
+	if (flag_index >= 0)
+		ksc_wire_sanitize(g_kscFlagName[flag_index], flag_name, charsmax(flag_name))
+	else
+		copy(flag_name, charsmax(flag_name), "-")
+
+	new player[96], mapname[32], wire_matchid[64], wire_map[32], line[KSC_BUF_LINE_LEN]
+	ksc_player_str(id, player, charsmax(player))
+	get_mapname(mapname, charsmax(mapname))
+	ksc_wire_sanitize(matchid, wire_matchid, charsmax(wire_matchid))
+	ksc_wire_sanitize(mapname, wire_map, charsmax(wire_map))
+	new sequence = ksc_next_type_sequence(KSC_EVENT_SCORE)
+	formatex(line, charsmax(line),
+		"KTP_SCORE_EVENT (matchid ^"%s^") (half ^"%d^") (map ^"%s^") (player ^"%s^") (delta ^"%d^") (total ^"%d^") (flag_index ^"%d^") (dll_index ^"%d^") (flag_name ^"%s^") (identity_resolved ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^")",
+		wire_matchid, half, wire_map, player, score_delta, total_score,
+		flag_index, cp_index, flag_name, resolved, get_gametime(), get_systime(), sequence)
+	ksc_buffer(line, KSC_EVENT_SCORE)
+}
+
+// §3.7 -- prone and bipod-deploy edges with where the player was.
+stock bool:ksc_deployable_class(class_id) {
+	return class_id == DODC_BAR || class_id == DODC_30CAL || class_id == DODC_FG42
+		|| class_id == DODC_MG34 || class_id == DODC_MG42 || class_id == DODC_BREN
+}
+
+stock ksc_emit_player_state(id, const kind[]) {
+	new matchid[64], half
+	if (!ksc_event_context(matchid, charsmax(matchid), half))
+		return
+
+	new position[40]
+	if (!ksc_origin_str(id, position, charsmax(position)))
+		copy(position, charsmax(position), "-")
+	new Float:ang[3], Float:yaw = -999.0
+	if (dodx_get_user_angles(id, ang) == 1)
+		yaw = ang[1]
+
+	new player[96], mapname[32], wire_matchid[64], wire_map[32], line[KSC_BUF_LINE_LEN]
+	ksc_player_str(id, player, charsmax(player))
+	get_mapname(mapname, charsmax(mapname))
+	ksc_wire_sanitize(matchid, wire_matchid, charsmax(wire_matchid))
+	ksc_wire_sanitize(mapname, wire_map, charsmax(wire_map))
+	new sequence = ksc_next_type_sequence(KSC_EVENT_PLAYER_STATE)
+	formatex(line, charsmax(line),
+		"KTP_PLAYER_STATE (kind ^"%s^") (matchid ^"%s^") (half ^"%d^") (map ^"%s^") (player ^"%s^") (class ^"%d^") (position ^"%s^") (yaw ^"%.1f^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^")",
+		kind, wire_matchid, half, wire_map, player, dod_get_user_class(id),
+		position, yaw, get_gametime(), get_systime(), sequence)
+	ksc_buffer(line, KSC_EVENT_PLAYER_STATE)
+}
+
+public dod_client_prone(id, value) {
+	if (!ksc_enabled() || id < 1 || id > MAX_PLAYERS || !is_user_connected(id))
+		return
+	ksc_emit_player_state(id, value ? "prone" : "unprone")
+}
+
+// dodx_is_deployed's pdata offset is inherited from dodfun and had no caller
+// before this; if it reads garbage the symptom is deploy/undeploy chatter on
+// non-MG players, which the class gate keeps off the wire entirely.
+stock ksc_player_state_poll() {
+	for (new id = 1; id <= MAX_PLAYERS; id++) {
+		if (!is_user_connected(id) || !is_user_alive(id))
+			continue
+		if (!ksc_deployable_class(dod_get_user_class(id)))
+			continue
+		new deployed = dodx_is_deployed(id) ? 1 : 0
+		if (deployed == g_kscDeployed[id])
+			continue
+		g_kscDeployed[id] = deployed
+		ksc_emit_player_state(id, deployed ? "deploy" : "undeploy")
+	}
+}
+
+// §3.5 -- per-(attacker, victim) matrix the module already keeps, emitted as
+// per-half deltas at half close. Session-scoped on the module side, so a slot
+// that reconnects starts from zero and its base is cleared on disconnect.
+stock ksc_duel_read(attacker, victim, cells[KSC_DUEL_CELLS]) {
+	new stats[DODX_MAX_STATS], body[MAX_BODYHITS]
+	get_user_vstats(attacker, victim, stats, body)
+	for (new i = 0; i < DODX_MAX_STATS; i++)
+		cells[i] = stats[i]
+	for (new i = 0; i < MAX_BODYHITS; i++)
+		cells[DODX_MAX_STATS + i] = body[i]
+}
+
+stock ksc_duel_clear(id) {
+	for (new other = 0; other <= MAX_PLAYERS; other++) {
+		for (new c = 0; c < KSC_DUEL_CELLS; c++) {
+			g_kscDuelBase[id][other][c] = 0
+			g_kscDuelBase[other][id][c] = 0
+		}
+	}
+}
+
+stock ksc_duel_snapshot_all() {
+	for (new a = 1; a <= MAX_PLAYERS; a++) {
+		for (new v = 1; v <= MAX_PLAYERS; v++) {
+			if (a == v || !is_user_connected(a) || !is_user_connected(v)) {
+				for (new c = 0; c < KSC_DUEL_CELLS; c++)
+					g_kscDuelBase[a][v][c] = 0
+				continue
+			}
+			ksc_duel_read(a, v, g_kscDuelBase[a][v])
+		}
+	}
+	g_kscDuelBaseValid = true
+}
+
+stock ksc_emit_duels(const matchid[], half) {
+	if (!g_kscDuelBaseValid)
+		return
+	new mapname[32], wire_matchid[64], wire_map[32]
+	get_mapname(mapname, charsmax(mapname))
+	ksc_wire_sanitize(matchid, wire_matchid, charsmax(wire_matchid))
+	ksc_wire_sanitize(mapname, wire_map, charsmax(wire_map))
+	new event_epoch = get_systime()
+	new now[KSC_DUEL_CELLS], delta[KSC_DUEL_CELLS]
+	new attacker_str[96], victim_str[96], bodyhits[48]
+	for (new a = 1; a <= MAX_PLAYERS; a++) {
+		if (!is_user_connected(a))
+			continue
+		for (new v = 1; v <= MAX_PLAYERS; v++) {
+			if (a == v || !is_user_connected(v))
+				continue
+			ksc_duel_read(a, v, now)
+			new any = 0
+			for (new c = 0; c < KSC_DUEL_CELLS; c++) {
+				delta[c] = now[c] - g_kscDuelBase[a][v][c]
+				if (c != DODX_POINTS && c != DODX_RANK && delta[c] != 0)
+					any = 1
+			}
+			if (!any)
+				continue
+			ksc_player_str(a, attacker_str, charsmax(attacker_str))
+			ksc_player_str(v, victim_str, charsmax(victim_str))
+			formatex(bodyhits, charsmax(bodyhits), "%d %d %d %d %d %d %d %d",
+				delta[DODX_MAX_STATS], delta[DODX_MAX_STATS + 1], delta[DODX_MAX_STATS + 2],
+				delta[DODX_MAX_STATS + 3], delta[DODX_MAX_STATS + 4], delta[DODX_MAX_STATS + 5],
+				delta[DODX_MAX_STATS + 6], delta[DODX_MAX_STATS + 7])
+			new sequence = ksc_next_type_sequence(KSC_EVENT_DUEL)
+			g_kscAttempted[KSC_EVENT_DUEL]++
+			g_kscEnqueued[KSC_EVENT_DUEL]++
+			log_message("KTP_DUEL (matchid ^"%s^") (half ^"%d^") (map ^"%s^") (attacker ^"%s^") (victim ^"%s^") (kills ^"%d^") (deaths ^"%d^") (headshots ^"%d^") (teamkills ^"%d^") (shots ^"%d^") (hits ^"%d^") (damage ^"%d^") (bodyhits ^"%s^") (event_epoch ^"%d^") (sequence ^"%d^")",
+				wire_matchid, half, wire_map, attacker_str, victim_str,
+				delta[DODX_KILLS], delta[DODX_DEATHS], delta[DODX_HEADSHOTS], delta[DODX_TEAMKILLS],
+				delta[DODX_SHOTS], delta[DODX_HITS], delta[DODX_DAMAGE], bodyhits,
+				event_epoch, sequence)
+			g_kscEmitted[KSC_EVENT_DUEL]++
+		}
+	}
+}
+
