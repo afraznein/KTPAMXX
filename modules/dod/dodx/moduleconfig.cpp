@@ -595,6 +595,19 @@ const char* get_localinfo( const char* name , const char* def = 0 )
 
 int RegUserMsg_Post(const char *pszName, int iSize)
 {
+	// KTP research probe, read-only, zero cost: this is the function that
+	// actually runs (see DODX_OnRegUserMsg's header comment for why the
+	// hookchain-style version above it does not). Registration happens once
+	// per usermessage name per map load, never per-frame, so logging every
+	// one is negligible. Settles what DoD's damage-related usermessage(s),
+	// if any, are actually called and what iSize they declare -- this
+	// stack's "Damage" assumption was carried over from general HL1 modding
+	// knowledge and never checked against this specific game. iSize == -1
+	// means variable-length (no layout evidence); a fixed iSize is real
+	// evidence either way. Logs the fact, parses nothing. See
+	// handover/HITREG_SHOT_DIAGNOSTICS_PHASE1_CLOSEOUT_20260913.md.
+	MF_Log("[DODX-research] usermsg registered: name=%s iSize=%d", pszName, iSize);
+
 	for (int i = 0; g_user_msg[i].name; ++i )
 	{
 		if(!*g_user_msg[i].id && strcmp(g_user_msg[i].name, pszName) == 0)
@@ -2281,24 +2294,30 @@ static void DODX_OnPlayerPreThink(IVoidHookChain<edict_t *, float> *chain, edict
 	}
 }
 
-// KTP: RegUserMsg hook handler - replaces FN_RegUserMsg_Post
+// KTP: RegUserMsg hook handler - was meant to replace FN_RegUserMsg_Post for
+// extension mode, following the same pattern as DODX_OnClientConnected/
+// DODX_OnEstablishTimeBase (both registered via
+// g_pRehldsHookchains->X()->registerHook(...) near DODX_SetupExtensionHooks).
+//
+// THIS FUNCTION IS DEAD CODE. Confirmed empirically 2026-09-16: a research
+// probe logging unconditionally on every call here (see git history, commit
+// "Widen the RegUserMsg research probe...") produced zero output across
+// multiple Lane C runs, despite dozens of real usermessages registering
+// every single run (Health, TeamScore, etc. all work). Grepping this whole
+// file for "RegUserMsg" turns up only this function's own forward
+// declaration and body -- no `registerHook()` call exists anywhere. Nothing
+// calls it; `chain` is never a real hookchain here because this is never
+// invoked at all. `RegUserMsg_Post` below is what actually runs (dispatched
+// through AMXX's own extension-mode Metamod-meta-table simulation, not a
+// ReHLDS hookchain) and does the identical g_user_msg[] population job.
+// Fixing this (adding the missing registerHook, or deleting the dead
+// duplicate) is real, separate scope -- not attempted here since it's
+// unverified whether ReHLDS even exposes a RegUserMsg hookchain to register
+// against, and RegUserMsg_Post already does this job correctly on its own.
 static int DODX_OnRegUserMsg(IHookChain<int, const char *, int> *chain, const char *pszName, int iSize)
 {
 	// Call original first to get the message ID
 	int id = chain->callNext(pszName, iSize);
-
-	// KTP research probe, read-only, zero cost: registration happens once per
-	// usermessage name per map load, never per-frame. dod.so is closed
-	// source, so the only way to know whether "Damage" uses the standard
-	// vanilla HLSDK layout (WRITE_BYTE armor, WRITE_BYTE damage, WRITE_LONG
-	// bitsDamage, WRITE_COORD x3 -- 17 bytes) without guessing at a parser is
-	// to observe what it actually declares here. iSize == -1 means variable-
-	// length (tells us nothing); a fixed iSize is real evidence either way.
-	// This logs the fact and parses nothing -- see
-	// handover/HITREG_SHOT_DIAGNOSTICS_PHASE1_CLOSEOUT_20260913.md for why
-	// this question exists before committing to building the parser.
-	if (strcmp(pszName, "Damage") == 0)
-		MF_Log("[DODX-research] Damage usermsg registered with iSize=%d", iSize);
 
 	// Post-hook logic (same as RegUserMsg_Post)
 	for (int i = 0; g_user_msg[i].name; ++i)
