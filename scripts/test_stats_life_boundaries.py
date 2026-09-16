@@ -1370,6 +1370,63 @@ def test_wave1_additive_fields() -> None:
         assert f'({f} ^"%' in pos, f
 
 
+def _enclosing_function(source: str, index: int) -> str:
+    """Name of the stock/public Pawn function whose body contains index."""
+    match = None
+    for match in re.finditer(r"^(?:stock|public)\s+(?:\w+:)?(\w+)\s*\(", source[:index], re.M):
+        pass
+    assert match is not None, "reference outside any function"
+    return match.group(1)
+
+
+def _event_names() -> list:
+    names_src = re.search(r"g_kscEventNames\[KSC_EVENT_COUNT\]\[\] = \{(.*?)\}", CAPTURE, re.S)
+    assert names_src
+    return re.findall(r'"(\w+)"', names_src.group(1))
+
+
+def test_every_stream_is_declared_and_health_tracked() -> None:
+    # Contract (2026-09-10, declaration trap): a build must not emit a stream, or
+    # its health row, that KSC_CAPABILITIES does not declare. 1.19.3 emitted
+    # `shot` undeclared and silently broke every match report. The health loop
+    # walks g_kscEventNames by enum index, so the two lists must also line up.
+    enum = re.search(r"enum\s*\{\s*KSC_EVENT_LIFE = 0,(.*?)KSC_EVENT_COUNT", CAPTURE, re.S)
+    assert enum
+    ids = ["KSC_EVENT_LIFE"] + re.findall(r"^\s*(KSC_EVENT_\w+),", enum.group(1), re.M)
+    names = _event_names()
+    assert len(names) == len(ids), (names, ids)
+    for event_id, name in zip(ids, names):
+        assert event_id == f"KSC_EVENT_{name.upper()}", (event_id, name)
+    caps = re.search(r'#define\s+KSC_CAPABILITIES\s+"([^"]+)"', CAPTURE).group(1).split(",")
+    # The daemon's health-type set says `frag`; its capability list says
+    # `frag_context` (hlstats.pl ktpValidateCaptureManifestPayload vs the
+    # capture-health %allowed set). One alias, fixed on both sides.
+    capability_for = {"frag": "frag_context"}
+    undeclared = [n for n in names if capability_for.get(n, n) not in caps]
+    assert not undeclared, f"streams emitted but not declared in KSC_CAPABILITIES: {undeclared}"
+
+
+def test_data_streams_never_take_the_shared_sequence() -> None:
+    # Contract (2026-09-12, shared-counter interleave): every data stream takes
+    # its sequence from ksc_next_type_sequence(own type). The shared
+    # g_kscSequence is for manifest/health only -- two independently designed
+    # streams (position, shot) each fed it and broke per-type gap accounting.
+    shared_users = {_enclosing_function(CAPTURE, m.start())
+                    for m in re.finditer(r"(?<!stock )ksc_next_sequence\(\)", CAPTURE)}
+    assert shared_users == {"ksc_emit_manifest", "ksc_emit_health"}, shared_users
+    counter_users = set()
+    for m in re.finditer(r"\bg_kscSequence\b", CAPTURE):
+        line_start = CAPTURE.rfind("\n", 0, m.start()) + 1
+        prefix = CAPTURE[line_start:m.start()].lstrip()
+        if prefix.startswith("//") or prefix == "new ":  # comment or the declaration
+            continue
+        counter_users.add(_enclosing_function(CAPTURE, m.start()))
+    assert counter_users == {"ksc_next_sequence", "ksc_reset_health", "ksc_emit_health"}, counter_users
+    for name in _event_names():
+        assert f"ksc_next_type_sequence(KSC_EVENT_{name.upper()})" in CAPTURE, \
+            f"stream {name} has no per-type sequence call"
+
+
 def main() -> None:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:
