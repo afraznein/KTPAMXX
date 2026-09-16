@@ -2865,19 +2865,18 @@ static int PF_RegUserMsg_RH(IRehldsHook_PF_RegUserMsg_I *chain, const char *pszN
 	if (g_bRunningWithMetamod)
 		return id;
 
-	// KTP: temporary research probe (infra-hitreg-diagnostics) -- does DoD
-	// register a "Damage" usermessage, and what size? This hookchain is
-	// confirmed live in extension mode (it's how SayText/ResetHUD/etc.
-	// resolve fleet-wide), unlike dodx's own dead RegUserMsg_Post/
-	// GET_USER_MSG_ID paths. Remove after the answer is captured.
-	//
+	// KTP: this hookchain is the confirmed-live, extension-mode-safe place to
+	// observe every usermessage the game DLL registers -- unlike dodx's own
+	// RegUserMsg_Post/DODX_OnRegUserMsg/GET_USER_MSG_ID, which are all dead
+	// or unsafe there (see moduleconfig.cpp). Verified 2026-09-16 by logging
+	// every (name, iSize) pair through a real Lane C match (dod_anzio, real
+	// combat/damage): DoD 1.3 registers 69 usermessages total and none of
+	// them is named "Damage" -- that assumption in the DODX untapped-signals
+	// audit was carried over from CS/TFC, which do have one, and doesn't
+	// hold for DoD. If this hookchain needs logging again, use
 	// print_srvconsole, not LOG_MESSAGE(PLID, ...): the game DLL registers
-	// its first usermessages this early in boot, before AMXX's own logging
-	// subsystem is ready -- LOG_MESSAGE here crashed the server (SIGSEGV,
-	// rc=-11) on every boot attempt in Lane C run 35155836978. Confirmed via
-	// the code at print_srvconsole's own call site a few lines below
-	// (extension-mode init uses it for exactly this reason).
-	print_srvconsole("KTP_USERMSG_PROBE name=\"%s\" size=%d id=%d\n", pszName, iSize, id);
+	// its first usermessages before AMXX's own logging subsystem is ready --
+	// LOG_MESSAGE here crashed the server (SIGSEGV) on every boot attempt.
 
 	// Capture the ID for messages we care about
 	for (int i = 0; g_user_msg[i].name; ++i)
