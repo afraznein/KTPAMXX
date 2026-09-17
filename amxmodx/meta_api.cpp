@@ -2865,6 +2865,19 @@ static int PF_RegUserMsg_RH(IRehldsHook_PF_RegUserMsg_I *chain, const char *pszN
 	if (g_bRunningWithMetamod)
 		return id;
 
+	// KTP: this hookchain is the confirmed-live, extension-mode-safe place to
+	// observe every usermessage the game DLL registers -- unlike dodx's own
+	// RegUserMsg_Post/DODX_OnRegUserMsg/GET_USER_MSG_ID, which are all dead
+	// or unsafe there (see moduleconfig.cpp). Verified 2026-09-16 by logging
+	// every (name, iSize) pair through a real Lane C match (dod_anzio, real
+	// combat/damage): DoD 1.3 registers 69 usermessages total and none of
+	// them is named "Damage" -- that assumption in the DODX untapped-signals
+	// audit was carried over from CS/TFC, which do have one, and doesn't
+	// hold for DoD. If this hookchain needs logging again, use
+	// print_srvconsole, not LOG_MESSAGE(PLID, ...): the game DLL registers
+	// its first usermessages before AMXX's own logging subsystem is ready --
+	// LOG_MESSAGE here crashed the server (SIGSEGV) on every boot attempt.
+
 	// Capture the ID for messages we care about
 	for (int i = 0; g_user_msg[i].name; ++i)
 	{

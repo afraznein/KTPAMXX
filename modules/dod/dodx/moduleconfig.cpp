@@ -595,18 +595,21 @@ const char* get_localinfo( const char* name , const char* def = 0 )
 
 int RegUserMsg_Post(const char *pszName, int iSize)
 {
-	// KTP research probe, read-only, zero cost: this is the function that
-	// actually runs (see DODX_OnRegUserMsg's header comment for why the
-	// hookchain-style version above it does not). Registration happens once
-	// per usermessage name per map load, never per-frame, so logging every
-	// one is negligible. Settles what DoD's damage-related usermessage(s),
-	// if any, are actually called and what iSize they declare -- this
-	// stack's "Damage" assumption was carried over from general HL1 modding
-	// knowledge and never checked against this specific game. iSize == -1
-	// means variable-length (no layout evidence); a fixed iSize is real
-	// evidence either way. Logs the fact, parses nothing. See
+	// CORRECTION 2026-09-16: the claim below that this is what actually runs
+	// was wrong. The MF_Log call it described was live across two further
+	// Lane C runs -- including a full dod_anzio match with real combat and
+	// damage, dozens of genuine usermessage registrations -- and produced
+	// zero "[DODX-research]" output every time. This function, like
+	// DODX_OnRegUserMsg above it, does not run in extension mode; dodx's own
+	// Metamod-meta-table-style dispatch (FN_RegUserMsg_Post) apparently isn't
+	// relayed to game modules there either. The confirmed-live, safe
+	// observation point turned out to be amxmodx core's own
+	// PF_RegUserMsg_RH (amxmodx/meta_api.cpp), a dedicated ReHLDS hookchain
+	// amxmodx registers for itself -- and it already answered the "Damage"
+	// question this probe was chasing: DoD 1.3 registers 69 usermessages and
+	// none of them is "Damage". That assumption was carried over from CS/TFC
+	// (which do have one) and never checked against this specific game. See
 	// handover/HITREG_SHOT_DIAGNOSTICS_PHASE1_CLOSEOUT_20260913.md.
-	MF_Log("[DODX-research] usermsg registered: name=%s iSize=%d", pszName, iSize);
 
 	for (int i = 0; g_user_msg[i].name; ++i )
 	{
@@ -2307,13 +2310,16 @@ static void DODX_OnPlayerPreThink(IVoidHookChain<edict_t *, float> *chain, edict
 // file for "RegUserMsg" turns up only this function's own forward
 // declaration and body -- no `registerHook()` call exists anywhere. Nothing
 // calls it; `chain` is never a real hookchain here because this is never
-// invoked at all. `RegUserMsg_Post` below is what actually runs (dispatched
-// through AMXX's own extension-mode Metamod-meta-table simulation, not a
-// ReHLDS hookchain) and does the identical g_user_msg[] population job.
-// Fixing this (adding the missing registerHook, or deleting the dead
-// duplicate) is real, separate scope -- not attempted here since it's
-// unverified whether ReHLDS even exposes a RegUserMsg hookchain to register
-// against, and RegUserMsg_Post already does this job correctly on its own.
+// invoked at all. `RegUserMsg_Post` below was once believed to be what
+// actually runs instead -- CORRECTION 2026-09-16: it doesn't either, a
+// further probe there also produced zero output across real Lane C combat
+// (see its own comment). Neither dodx path fires in extension mode. The
+// confirmed-live, safe observation point is amxmodx core's own
+// PF_RegUserMsg_RH (amxmodx/meta_api.cpp) -- a dedicated ReHLDS hookchain
+// amxmodx registers for itself, unrelated to dodx's Metamod-meta-table
+// dispatch. Fixing this (adding the missing registerHook here, or deleting
+// both dead duplicates in favor of relaying from amxmodx core) is real,
+// separate scope -- not attempted here.
 static int DODX_OnRegUserMsg(IHookChain<int, const char *, int> *chain, const char *pszName, int iSize)
 {
 	// Call original first to get the message ID
