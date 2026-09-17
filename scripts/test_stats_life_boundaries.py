@@ -1428,7 +1428,7 @@ def test_grenade_throw_stream_from_ammox_edge() -> None:
     # grenade in hand. Neither dod_client_weapon_fire nor CurWeapon sees it.
     assert 'register_message(g_kscMsgAmmoX, "ksc_msg_ammox")' in function_body(CAPTURE, "stock ksc_init")
     handler = function_body(CAPTURE, "public ksc_msg_ammox")
-    assert "ksc_grenade_ammo_observe(id, channel, get_msg_arg_int(2))" in handler
+    assert "ksc_grenade_ammo_observe(id, channel, get_msg_arg_int(2), true)" in handler
     observe = function_body(CAPTURE, "stock ksc_grenade_ammo_observe")
     assert "if (previous < 0 || amount != previous - 1)" in observe
     assert "in_hand_channel != channel" in observe
