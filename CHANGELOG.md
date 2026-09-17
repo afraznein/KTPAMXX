@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - grenade throw stream (1.23.0)
+
+`KTP_GRENADE_THROW`: the throw, with the thrower's position and view angles,
+declared as `grenade_throw` in `KSC_CAPABILITIES` with its own per-type
+sequence and health row. The burst was never missing -- the lifecycle
+tracker's `tracked` row fires from `CGrenade::Detonate`'s own TraceLine, and
+production shows `tracked -> removed` 0.00 s apart on 27,827 of 27,830 S10
+lifecycles -- so this is the half that makes cook time and throw-spot
+geometry answerable.
+
+Nothing in the module fires at the throw: `dod_client_weapon_fire` for a
+grenade also runs from the Detonate trace, and `CurWeapon` never decrements a
+grenade clip. The throw is read off `AmmoX`: the grenade ammo channel (9
+hand/Mills, 11 stick) dropping by exactly one while a grenade of that family is
+in hand and the player is alive. Spawn and disconnect forget the last count
+so a class change or ammo reset cannot read as a throw. EX (thrown-back)
+grenades are recorded with their own weapon id and type.
+
+Daemon: KTPHLStatsX migration 034 / 0.3.21. A daemon without it drops the
+markers.
+
 ### Added - expansion wave 2: score, duel and player_state streams (1.22.0)
 
 Three low-volume streams, each declared in `KSC_CAPABILITIES`, sequenced from

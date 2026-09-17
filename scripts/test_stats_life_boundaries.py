@@ -1413,6 +1413,25 @@ def test_wave2_streams_wire_and_lifecycle() -> None:
     assert "ksc_duel_clear(id)" in function_body(CAPTURE, "stock ksc_clear_player")
 
 
+def test_grenade_throw_stream_from_ammox_edge() -> None:
+    # The burst is already the `tracked` lifecycle row (Detonate's TraceLine);
+    # the throw is an AmmoX one-step decrease on a grenade channel with a
+    # grenade in hand. Neither dod_client_weapon_fire nor CurWeapon sees it.
+    assert 'register_message(g_kscMsgAmmoX, "ksc_msg_ammox")' in function_body(CAPTURE, "stock ksc_init")
+    handler = function_body(CAPTURE, "public ksc_msg_ammox")
+    assert "if (previous < 0 || amount != previous - 1)" in handler
+    assert "in_hand_channel != channel" in handler
+    assert "is_user_alive(id)" in handler
+    # Spawn and disconnect forget the counts so a reset cannot read as a throw.
+    assert "g_kscGrenAmmo[id][0] = -1" in function_body(CAPTURE, "public dod_client_spawn")
+    assert "g_kscGrenAmmo[id][0] = -1" in function_body(CAPTURE, "stock ksc_clear_player")
+    emit = function_body(CAPTURE, "stock ksc_emit_grenade_throw")
+    for f in ("matchid", "half", "map", "player", "weapon_id", "weapon_type", "position",
+              "yaw", "pitch", "game_time", "event_epoch", "sequence"):
+        assert f'({f} ^"%' in emit, f
+    assert "ksc_buffer(line, KSC_EVENT_GRENADE_THROW)" in emit
+
+
 def _enclosing_function(source: str, index: int) -> str:
     """Name of the stock/public Pawn function whose body contains index."""
     match = None
