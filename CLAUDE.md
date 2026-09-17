@@ -191,10 +191,18 @@ shipping a dodx that raises it, read MINOR from the commit the **live** engine b
 
 ### `.amxx` plugins
 
-- **Not byte-reproducible.** The build bakes a per-minute `BUILD_TIME`, so rebuilding the same commit
-  gives a different md5 at the same size. Never rebuild an artifact whose md5 is pinned to a review,
-  and never try to recover a build base by rebuilding candidates and comparing hashes — the correct
-  base mismatches too.
+- **Byte-reproducible against the same `amxxpc` — and the compiler is pinned by no commit.** This
+  repo's `plugins/compile.sh` generates no `build_info.inc`, and no in-tree `.sma` includes
+  `ktp_version_reporter`, so `stats_logging.amxx` and `admin.amxx` bake no timestamp: five compiles of
+  1.23.1, two straddling a minute rollover and one from a different directory, gave one md5
+  (2026-09-17). ⚠️ **A different `amxxpc` still changes the bytes** — which is why a 09-07 rebuild
+  at an old pin mismatched, and `amxxpc` is a gitignored build output. So **still** never rebuild an
+  artifact whose md5 is pinned to a review, and never try to recover a build base by rebuilding
+  candidates and comparing hashes — the correct base mismatches whenever the compiler moved.
+  ⚠️ **The standalone plugin repos are the OPPOSITE case:** their own `compile.sh` writes a
+  per-minute `KTP_BUILD_TIME` into a generated `build_info.inc`, which
+  `plugins/include/ktp_version_reporter.inc` `#tryinclude`s. Measured on KTPMatchHandler `526da23`:
+  two builds a minute apart differ by 72,498 bytes and by one byte of size.
 - **Reading strings out of one takes two decodes.** The payload is compressed, and AMX stores
   unpacked strings as one 32-bit cell per character. `strings` or a byte search on the raw file — or
   on the inflated blob — returns a false zero. Inflate the payload, then search for the text encoded
