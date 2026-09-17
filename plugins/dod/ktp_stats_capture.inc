@@ -361,6 +361,11 @@ new Float:g_kscLifeFirstShot[MAX_PLAYERS + 1]  // -1.0 until the first shot
 #define KSC_DUEL_CELLS (DODX_MAX_STATS + MAX_BODYHITS)
 new g_kscDuelBase[MAX_PLAYERS + 1][MAX_PLAYERS + 1][KSC_DUEL_CELLS]
 new bool:g_kscDuelBaseValid = false
+// KTPMatchHandler flushes (dod_stats_flush per player) and then CLEARS the
+// module's per-player stats BEFORE KTP_MATCH_END / ktp_half_end, so a delta
+// taken at half close reads zero. Each attacker's rows are emitted from its
+// own flush instead; the close only covers whoever was not flushed.
+new bool:g_kscDuelFlushed[MAX_PLAYERS + 1]
 // Wave 2 (§3.7): last polled bipod-deploy state, so the 0.5s poll emits edges.
 new g_kscDeployed[MAX_PLAYERS + 1]
 // Grenade throw detection: last seen AmmoX amount per grenade ammo channel.
@@ -2102,8 +2107,10 @@ public ksc_zone_poll_task() {
 		g_kscBreakBaselineSuppressed = true
 		return
 	}
-	// Deploy edges do not depend on the map having flags.
+	// Deploy edges and the grenade-ammo fallback do not depend on the map
+	// having flags.
 	ksc_player_state_poll()
+	ksc_grenade_ammo_poll()
 	if (g_kscFlagCount <= 0)
 		return
 
@@ -3034,12 +3041,33 @@ stock ksc_duel_snapshot_all() {
 			ksc_duel_read(a, v, g_kscDuelBase[a][v])
 		}
 	}
+	for (new id = 0; id <= MAX_PLAYERS; id++)
+		g_kscDuelFlushed[id] = false
 	g_kscDuelBaseValid = true
 }
 
 stock ksc_emit_duels(const matchid[], half) {
 	if (!g_kscDuelBaseValid)
 		return
+	for (new a = 1; a <= MAX_PLAYERS; a++) {
+		if (!g_kscDuelFlushed[a] && is_user_connected(a))
+			ksc_emit_duels_for(a, matchid, half)
+	}
+}
+
+// dod_stats_flush(id) arrives once per player just before the module clears
+// its counters; this is the last moment the half's delta is readable.
+stock ksc_duel_flush(id) {
+	new matchid[64], half
+	if (!g_kscDuelBaseValid || id < 1 || id > MAX_PLAYERS || g_kscDuelFlushed[id])
+		return
+	if (!ksc_event_context(matchid, charsmax(matchid), half))
+		return
+	ksc_emit_duels_for(id, matchid, half)
+	g_kscDuelFlushed[id] = true
+}
+
+stock ksc_emit_duels_for(a, const matchid[], half) {
 	new mapname[32], wire_matchid[64], wire_map[32]
 	get_mapname(mapname, charsmax(mapname))
 	ksc_wire_sanitize(matchid, wire_matchid, charsmax(wire_matchid))
@@ -3047,37 +3075,33 @@ stock ksc_emit_duels(const matchid[], half) {
 	new event_epoch = get_systime()
 	new now[KSC_DUEL_CELLS], delta[KSC_DUEL_CELLS]
 	new attacker_str[96], victim_str[96], bodyhits[48]
-	for (new a = 1; a <= MAX_PLAYERS; a++) {
-		if (!is_user_connected(a))
+	for (new v = 1; v <= MAX_PLAYERS; v++) {
+		if (a == v || !is_user_connected(v))
 			continue
-		for (new v = 1; v <= MAX_PLAYERS; v++) {
-			if (a == v || !is_user_connected(v))
-				continue
-			ksc_duel_read(a, v, now)
-			new any = 0
-			for (new c = 0; c < KSC_DUEL_CELLS; c++) {
-				delta[c] = now[c] - g_kscDuelBase[a][v][c]
-				if (c != DODX_POINTS && c != DODX_RANK && delta[c] != 0)
-					any = 1
-			}
-			if (!any)
-				continue
-			ksc_player_str(a, attacker_str, charsmax(attacker_str))
-			ksc_player_str(v, victim_str, charsmax(victim_str))
-			formatex(bodyhits, charsmax(bodyhits), "%d %d %d %d %d %d %d %d",
-				delta[DODX_MAX_STATS], delta[DODX_MAX_STATS + 1], delta[DODX_MAX_STATS + 2],
-				delta[DODX_MAX_STATS + 3], delta[DODX_MAX_STATS + 4], delta[DODX_MAX_STATS + 5],
-				delta[DODX_MAX_STATS + 6], delta[DODX_MAX_STATS + 7])
-			new sequence = ksc_next_type_sequence(KSC_EVENT_DUEL)
-			g_kscAttempted[KSC_EVENT_DUEL]++
-			g_kscEnqueued[KSC_EVENT_DUEL]++
-			log_message("KTP_DUEL (matchid ^"%s^") (half ^"%d^") (map ^"%s^") (attacker ^"%s^") (victim ^"%s^") (kills ^"%d^") (deaths ^"%d^") (headshots ^"%d^") (teamkills ^"%d^") (shots ^"%d^") (hits ^"%d^") (damage ^"%d^") (bodyhits ^"%s^") (event_epoch ^"%d^") (sequence ^"%d^")",
-				wire_matchid, half, wire_map, attacker_str, victim_str,
-				delta[DODX_KILLS], delta[DODX_DEATHS], delta[DODX_HEADSHOTS], delta[DODX_TEAMKILLS],
-				delta[DODX_SHOTS], delta[DODX_HITS], delta[DODX_DAMAGE], bodyhits,
-				event_epoch, sequence)
-			g_kscEmitted[KSC_EVENT_DUEL]++
+		ksc_duel_read(a, v, now)
+		new any = 0
+		for (new c = 0; c < KSC_DUEL_CELLS; c++) {
+			delta[c] = now[c] - g_kscDuelBase[a][v][c]
+			if (c != DODX_POINTS && c != DODX_RANK && delta[c] != 0)
+				any = 1
 		}
+		if (!any)
+			continue
+		ksc_player_str(a, attacker_str, charsmax(attacker_str))
+		ksc_player_str(v, victim_str, charsmax(victim_str))
+		formatex(bodyhits, charsmax(bodyhits), "%d %d %d %d %d %d %d %d",
+			delta[DODX_MAX_STATS], delta[DODX_MAX_STATS + 1], delta[DODX_MAX_STATS + 2],
+			delta[DODX_MAX_STATS + 3], delta[DODX_MAX_STATS + 4], delta[DODX_MAX_STATS + 5],
+			delta[DODX_MAX_STATS + 6], delta[DODX_MAX_STATS + 7])
+		new sequence = ksc_next_type_sequence(KSC_EVENT_DUEL)
+		g_kscAttempted[KSC_EVENT_DUEL]++
+		g_kscEnqueued[KSC_EVENT_DUEL]++
+		log_message("KTP_DUEL (matchid ^"%s^") (half ^"%d^") (map ^"%s^") (attacker ^"%s^") (victim ^"%s^") (kills ^"%d^") (deaths ^"%d^") (headshots ^"%d^") (teamkills ^"%d^") (shots ^"%d^") (hits ^"%d^") (damage ^"%d^") (bodyhits ^"%s^") (event_epoch ^"%d^") (sequence ^"%d^")",
+			wire_matchid, half, wire_map, attacker_str, victim_str,
+			delta[DODX_KILLS], delta[DODX_DEATHS], delta[DODX_HEADSHOTS], delta[DODX_TEAMKILLS],
+			delta[DODX_SHOTS], delta[DODX_HITS], delta[DODX_DAMAGE], bodyhits,
+			event_epoch, sequence)
+		g_kscEmitted[KSC_EVENT_DUEL]++
 	}
 }
 
@@ -3122,18 +3146,52 @@ public ksc_msg_ammox(msg_id, msg_dest, id) {
 	else if (ammo_id == KSC_AMMO_GREN_STICK) channel = 1
 	else return PLUGIN_CONTINUE
 
-	new amount = get_msg_arg_int(2)
+	ksc_grenade_ammo_observe(id, channel, get_msg_arg_int(2), true)
+	return PLUGIN_CONTINUE
+}
+
+// One observer for both sources. AmmoX is frame-exact but the engine never
+// sends it to fake clients, so the 0.5 s poll below reads the same count off
+// the module for everyone; whichever source sees the one-step decrease first
+// emits, and the other then sees an unchanged count. Lane B run 35213729357
+// (all bots) produced 0 throws on AmmoX alone.
+// `exact` = the AmmoX path, same frame as the throw: the grenade is still in
+// hand and its exact weapon id is readable. The poll arrives up to 0.5 s
+// later, after a bot (or a fast human) has already switched back, so it
+// cannot require in-hand; a one-step decrease of grenade ammo on a live
+// player has no other cause (spawn refills are increases, and the count is
+// forgotten on spawn and disconnect). Weapon id then comes from the channel,
+// mills_bomb for the British classes.
+stock ksc_grenade_ammo_observe(id, channel, amount, bool:exact) {
 	new previous = g_kscGrenAmmo[id][channel]
 	g_kscGrenAmmo[id][channel] = amount
 	if (previous < 0 || amount != previous - 1)
-		return PLUGIN_CONTINUE
+		return
 	if (!ksc_enabled() || !is_user_alive(id))
-		return PLUGIN_CONTINUE
+		return
 	new weapon_id, in_hand_channel
-	if (!ksc_grenade_in_hand(id, weapon_id, in_hand_channel) || in_hand_channel != channel)
-		return PLUGIN_CONTINUE
+	if (exact) {
+		if (!ksc_grenade_in_hand(id, weapon_id, in_hand_channel) || in_hand_channel != channel)
+			return
+	} else if (channel == 1) {
+		weapon_id = DODW_STICKGRENADE
+	} else {
+		weapon_id = (dod_get_user_class(id) >= DODC_ENFIELD) ? DODW_MILLS_BOMB : DODW_HANDGRENADE
+	}
 	ksc_emit_grenade_throw(id, weapon_id)
-	return PLUGIN_CONTINUE
+}
+
+stock ksc_grenade_ammo_poll() {
+	for (new id = 1; id <= MAX_PLAYERS; id++) {
+		if (!is_user_connected(id) || !is_user_alive(id))
+			continue
+		new hand = dodx_get_grenade_ammo(id, DODW_HANDGRENADE)
+		if (hand >= 0)
+			ksc_grenade_ammo_observe(id, 0, hand, false)
+		new stick = dodx_get_grenade_ammo(id, DODW_STICKGRENADE)
+		if (stick >= 0)
+			ksc_grenade_ammo_observe(id, 1, stick, false)
+	}
 }
 
 stock ksc_emit_grenade_throw(id, weapon_id) {

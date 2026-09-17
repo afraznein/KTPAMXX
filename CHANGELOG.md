@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - 1.23.1: duel rows and grenade throws never emitted (first full Lane B)
+
+Lane B run 35213729357 -- the first full bot match on the merged 1.23.0 --
+carried `score` (33/33) and `player_state` (165/165) cleanly and produced zero
+`duel` and zero `grenade_throw` markers.
+
+- **Duel:** KTPMatchHandler flushes (`dod_stats_flush` per player) and then
+  CLEARS the module's per-player counters before `KTP_MATCH_END` and before
+  `ktp_half_end`, so the delta taken at half close read zero. Each attacker's
+  rows are now emitted from its own `dod_stats_flush`, once; the close only
+  covers players that were not flushed (a disconnect race), never both.
+- **Grenade throw:** the engine never sends `AmmoX` to fake clients, so an
+  all-bot lane cannot produce the edge. A 0.5 s poll of `dodx_get_grenade_ammo`
+  on the existing zone task now feeds the same observer; AmmoX keeps frame
+  precision for humans, the poll catches everyone else, and whichever source
+  sees the one-step decrease first wins -- the other sees an unchanged count.
+  Poll-sourced throws carry up to 0.5 s of timestamp slack and do not
+  require the grenade in hand (the switch-back has already happened);
+  weapon id comes from the ammo channel, mills_bomb for British classes.
+  Lane B cannot exercise this stream at all: new_bot bots carry zero
+  grenade ammo (244/244 poll observations across 12 bots read 0) and spawn
+  their grenades directly, so bursts appear with no throw. `grenade_throw`
+  is verified on the first human match, not in the lane.
+
 ### Added - grenade throw stream (1.23.0)
 
 `KTP_GRENADE_THROW`: the throw, with the thrower's position and view angles,
