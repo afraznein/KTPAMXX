@@ -3146,7 +3146,7 @@ public ksc_msg_ammox(msg_id, msg_dest, id) {
 	else if (ammo_id == KSC_AMMO_GREN_STICK) channel = 1
 	else return PLUGIN_CONTINUE
 
-	ksc_grenade_ammo_observe(id, channel, get_msg_arg_int(2))
+	ksc_grenade_ammo_observe(id, channel, get_msg_arg_int(2), true)
 	return PLUGIN_CONTINUE
 }
 
@@ -3155,7 +3155,14 @@ public ksc_msg_ammox(msg_id, msg_dest, id) {
 // the module for everyone; whichever source sees the one-step decrease first
 // emits, and the other then sees an unchanged count. Lane B run 35213729357
 // (all bots) produced 0 throws on AmmoX alone.
-stock ksc_grenade_ammo_observe(id, channel, amount) {
+// `exact` = the AmmoX path, same frame as the throw: the grenade is still in
+// hand and its exact weapon id is readable. The poll arrives up to 0.5 s
+// later, after a bot (or a fast human) has already switched back, so it
+// cannot require in-hand; a one-step decrease of grenade ammo on a live
+// player has no other cause (spawn refills are increases, and the count is
+// forgotten on spawn and disconnect). Weapon id then comes from the channel,
+// mills_bomb for the British classes.
+stock ksc_grenade_ammo_observe(id, channel, amount, bool:exact) {
 	new previous = g_kscGrenAmmo[id][channel]
 	g_kscGrenAmmo[id][channel] = amount
 	if (previous < 0 || amount != previous - 1)
@@ -3163,8 +3170,14 @@ stock ksc_grenade_ammo_observe(id, channel, amount) {
 	if (!ksc_enabled() || !is_user_alive(id))
 		return
 	new weapon_id, in_hand_channel
-	if (!ksc_grenade_in_hand(id, weapon_id, in_hand_channel) || in_hand_channel != channel)
-		return
+	if (exact) {
+		if (!ksc_grenade_in_hand(id, weapon_id, in_hand_channel) || in_hand_channel != channel)
+			return
+	} else if (channel == 1) {
+		weapon_id = DODW_STICKGRENADE
+	} else {
+		weapon_id = (dod_get_user_class(id) >= DODC_ENFIELD) ? DODW_MILLS_BOMB : DODW_HANDGRENADE
+	}
 	ksc_emit_grenade_throw(id, weapon_id)
 }
 
@@ -3174,10 +3187,10 @@ stock ksc_grenade_ammo_poll() {
 			continue
 		new hand = dodx_get_grenade_ammo(id, DODW_HANDGRENADE)
 		if (hand >= 0)
-			ksc_grenade_ammo_observe(id, 0, hand)
+			ksc_grenade_ammo_observe(id, 0, hand, false)
 		new stick = dodx_get_grenade_ammo(id, DODW_STICKGRENADE)
 		if (stick >= 0)
-			ksc_grenade_ammo_observe(id, 1, stick)
+			ksc_grenade_ammo_observe(id, 1, stick, false)
 	}
 }
 

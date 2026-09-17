@@ -1433,6 +1433,10 @@ def test_grenade_throw_stream_from_ammox_edge() -> None:
     assert "if (previous < 0 || amount != previous - 1)" in observe
     assert "in_hand_channel != channel" in observe
     assert "is_user_alive(id)" in observe
+    # In-hand is only checkable on the frame-exact AmmoX path; the poll runs
+    # after the weapon switch (run 35216407299: 0 throws with the check on).
+    assert "if (exact) {" in observe
+    assert "ksc_grenade_ammo_observe(id, channel, get_msg_arg_int(2), true)" in handler
     # The engine never sends AmmoX to fake clients (Lane B run 35213729357:
     # 0 throws from 27 bursts), so the 0.5 s poll feeds the same observer.
     poll = function_body(CAPTURE, "stock ksc_grenade_ammo_poll")

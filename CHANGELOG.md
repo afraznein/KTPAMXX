@@ -23,7 +23,9 @@ carried `score` (33/33) and `player_state` (165/165) cleanly and produced zero
   on the existing zone task now feeds the same observer; AmmoX keeps frame
   precision for humans, the poll catches everyone else, and whichever source
   sees the one-step decrease first wins -- the other sees an unchanged count.
-  Poll-sourced throws carry up to 0.5 s of timestamp slack.
+  Poll-sourced throws carry up to 0.5 s of timestamp slack and do not
+  require the grenade in hand (the switch-back has already happened);
+  weapon id comes from the ammo channel, mills_bomb for British classes.
 
 ### Added - grenade throw stream (1.23.0)
 
