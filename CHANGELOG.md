@@ -26,6 +26,10 @@ carried `score` (33/33) and `player_state` (165/165) cleanly and produced zero
   Poll-sourced throws carry up to 0.5 s of timestamp slack and do not
   require the grenade in hand (the switch-back has already happened);
   weapon id comes from the ammo channel, mills_bomb for British classes.
+  Lane B cannot exercise this stream at all: new_bot bots carry zero
+  grenade ammo (244/244 poll observations across 12 bots read 0) and spawn
+  their grenades directly, so bursts appear with no throw. `grenade_throw`
+  is verified on the first human match, not in the lane.
 
 ### Added - grenade throw stream (1.23.0)
 
