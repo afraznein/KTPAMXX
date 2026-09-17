@@ -15,7 +15,7 @@
 #include <amxmodx>
 #include <dodx>
 
-#define PLUGIN_VERSION "1.23.0"
+#define PLUGIN_VERSION "1.23.1"
 
 // KTP: extra per-match stat capture for HLStatsX (assists, cap breaks,
 // positions and frag context today; the per-hit damage ledger in a later
@@ -116,6 +116,9 @@ public dod_stats_flush(id) {
   // or stats are paused -- so a buffered life boundary cannot arrive at the
   // daemon after KTP_MATCH_END / the context clear and lose its attribution.
   ksc_flush()
+  // The module's per-player counters are cleared right after this forward
+  // completes for every player; the half's duel delta is only readable now.
+  ksc_duel_flush(id)
 
   if ( !is_user_connected(id) || !isDSMActive() )
     return PLUGIN_CONTINUE

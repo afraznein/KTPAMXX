@@ -1402,14 +1402,23 @@ def test_wave2_streams_wire_and_lifecycle() -> None:
     close = function_body(CAPTURE, "stock ksc_close_producer_context")
     assert close.index("ksc_emit_duels(") < close.index("g_kscDuelBaseValid = false") < close.index("ksc_flush()")
     assert close.index("ksc_emit_duels(") < close.index("ksc_emit_health(")
-    duels = function_body(CAPTURE, "stock ksc_emit_duels")
+    duels = function_body(CAPTURE, "stock ksc_emit_duels(")
     assert "if (!g_kscDuelBaseValid)" in duels
+    assert "!g_kscDuelFlushed[a]" in duels  # close covers only the unflushed
+    per_attacker = function_body(CAPTURE, "stock ksc_emit_duels_for")
     for counter in ("g_kscAttempted[KSC_EVENT_DUEL]++", "g_kscEnqueued[KSC_EVENT_DUEL]++",
                     "g_kscEmitted[KSC_EVENT_DUEL]++"):
-        assert counter in duels, counter
+        assert counter in per_attacker, counter
     for f in ("matchid", "half", "map", "attacker", "victim", "kills", "deaths", "headshots",
               "teamkills", "shots", "hits", "damage", "bodyhits", "event_epoch", "sequence"):
-        assert f'({f} ^"%' in duels, f
+        assert f'({f} ^"%' in per_attacker, f
+    # KTPMatchHandler flushes then CLEARS the module counters before
+    # KTP_MATCH_END (Lane B run 35213729357: duel attempted 0), so each
+    # attacker's delta is emitted from its own dod_stats_flush, once.
+    flush = function_body(STATS, "public dod_stats_flush")
+    assert flush.index("ksc_flush()") < flush.index("ksc_duel_flush(id)") < flush.index("is_user_bot(id)")
+    duel_flush = function_body(CAPTURE, "stock ksc_duel_flush")
+    assert "g_kscDuelFlushed[id]" in duel_flush and "g_kscDuelFlushed[id] = true" in duel_flush
     assert "ksc_duel_clear(id)" in function_body(CAPTURE, "stock ksc_clear_player")
 
 
@@ -1419,9 +1428,17 @@ def test_grenade_throw_stream_from_ammox_edge() -> None:
     # grenade in hand. Neither dod_client_weapon_fire nor CurWeapon sees it.
     assert 'register_message(g_kscMsgAmmoX, "ksc_msg_ammox")' in function_body(CAPTURE, "stock ksc_init")
     handler = function_body(CAPTURE, "public ksc_msg_ammox")
-    assert "if (previous < 0 || amount != previous - 1)" in handler
-    assert "in_hand_channel != channel" in handler
-    assert "is_user_alive(id)" in handler
+    assert "ksc_grenade_ammo_observe(id, channel, get_msg_arg_int(2))" in handler
+    observe = function_body(CAPTURE, "stock ksc_grenade_ammo_observe")
+    assert "if (previous < 0 || amount != previous - 1)" in observe
+    assert "in_hand_channel != channel" in observe
+    assert "is_user_alive(id)" in observe
+    # The engine never sends AmmoX to fake clients (Lane B run 35213729357:
+    # 0 throws from 27 bursts), so the 0.5 s poll feeds the same observer.
+    poll = function_body(CAPTURE, "stock ksc_grenade_ammo_poll")
+    assert "dodx_get_grenade_ammo(id, DODW_HANDGRENADE)" in poll
+    assert "dodx_get_grenade_ammo(id, DODW_STICKGRENADE)" in poll
+    assert "ksc_grenade_ammo_poll()" in function_body(CAPTURE, "public ksc_zone_poll_task")
     # Spawn and disconnect forget the counts so a reset cannot read as a throw.
     assert "g_kscGrenAmmo[id][0] = -1" in function_body(CAPTURE, "public dod_client_spawn")
     assert "g_kscGrenAmmo[id][0] = -1" in function_body(CAPTURE, "stock ksc_clear_player")
