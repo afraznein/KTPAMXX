@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - 1.24.1: three module-semantics misreads found on the first human half
+
+`1.3-6845-NY1`, 2026-09-18, the first 1.23.1 match with people in it. Every
+stream reconciled exactly (including 271/271 grenade throws); the values in
+three of them were wrong.
+
+- **Duel matrix was one life per player.** dodx clears `victims[]` in
+  `restartStats(false)` -- the per-LIFE reset -- so `get_user_vstats` is this
+  life only, not the session the plan assumed; the half-close read produced 12
+  rows with one death each. Each life is now folded into a per-half
+  accumulator when it ends (the plugin already owns that boundary) and the
+  flush adds the live life once; a life taken at death is never read again.
+  Also on the wire: dodx's `deaths` slot on the attacker's record means "this
+  victim died to me", so `kills` is now that value; the module never writes
+  its `kills` or per-victim `shots` slots, so those columns are 0 by
+  construction.
+- **Cap progress was always 0.** `CA_timetocap` is `m_nCapTime`, an int cell
+  (unlike `CA_time_remaining`, returned through `amx_ftoc`); a `Float:` cast
+  read the integer's bits as a float. `float()` now; attempt rows and the
+  flag-position metadata both get real seconds.
+- **`identity_resolved` was a pre-resolve snapshot.** The module resolves
+  control-point identity ~2 s after map load and re-fires
+  `controlpoints_init` only if that changes the order, so 888 of 1008 fleet
+  rows read 0. When unresolved at emit, the flag positions are re-upserted
+  once 6 s later.
+
 ### Added - capture gap repair: retention ring + `ktp_capture_resend` (1.24.0)
 
 Every data line now leaves through `ksc_log_retain`, which also keeps it in a

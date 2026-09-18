@@ -208,6 +208,8 @@ enum {
 #define KSC_TASK_ZONES          88011
 #define KSC_TASK_POSITIONS      88012
 #define KSC_TASK_FLAG_POSITIONS 88013
+#define KSC_TASK_FLAG_POSITIONS_RETRY 88014
+#define KSC_FLAG_POS_RETRY_SECS 6.0
 #define KSC_TASK_SHOT_FLUSH     88014
 
 new g_kscBuffer[KSC_BUF_MAX_ENTRIES][KSC_BUF_LINE_LEN]
@@ -359,7 +361,13 @@ new Float:g_kscLifeFirstShot[MAX_PLAYERS + 1]  // -1.0 until the first shot
 // counters are session-scoped, so a half's duel row is the delta from here.
 // [attacker][victim][DODX_MAX_STATS stats, then MAX_BODYHITS body hits]
 #define KSC_DUEL_CELLS (DODX_MAX_STATS + MAX_BODYHITS)
-new g_kscDuelBase[MAX_PLAYERS + 1][MAX_PLAYERS + 1][KSC_DUEL_CELLS]
+// dodx clears victims[] in restartStats(false) -- the PER-LIFE reset -- so
+// get_user_vstats is this life only, not the session the plan assumed. The
+// first human half (1.3-6845-NY1 h1, 2026-09-18) produced 12 rows, one death
+// each: the last life of whoever was alive at the flush. Each life is added
+// here when it ends; the flush adds the live life of anyone not yet taken.
+new g_kscDuelAcc[MAX_PLAYERS + 1][MAX_PLAYERS + 1][KSC_DUEL_CELLS]
+new bool:g_kscDuelLifeTaken[MAX_PLAYERS + 1]
 new bool:g_kscDuelBaseValid = false
 // KTPMatchHandler flushes (dod_stats_flush per player) and then CLEARS the
 // module's per-player stats BEFORE KTP_MATCH_END / ktp_half_end, so a delta
@@ -1232,6 +1240,7 @@ stock bool:ksc_emit_life_boundary(id, const matchid[], const kind[], const reaso
 stock ksc_life_start(id, const reason[]) {
 	if (id < 1 || id > MAX_PLAYERS)
 		return
+	g_kscDuelLifeTaken[id] = false
 
 	// Do not suppress an authoritative spawn merely because the prior start is
 	// still open. That shape means its end was missed; the next start is the
@@ -1308,6 +1317,7 @@ public dod_client_changeteam(id, team, oldteam) {
 stock ksc_life_end(id, const reason[]) {
 	if (id < 1 || id > MAX_PLAYERS)
 		return
+	ksc_duel_take_life(id)
 
 	new matchid[64]
 	dodx_get_match_id(matchid, charsmax(matchid))
@@ -1679,7 +1689,10 @@ stock ksc_objective_clear(f) {
 // Cap progress for flag f as an integer percent of timetocap elapsed.
 // progress = -1 when the point has no capture area (every CA_ read is 0 there).
 stock ksc_cap_progress(f, &Float:timetocap, &progress) {
-	timetocap = Float:dodx_area_get_data(f, CA_timetocap)
+	// CA_timetocap is m_nCapTime, an int cell (unlike CA_time_remaining, which
+	// the module returns through amx_ftoc). A Float: cast read the integer's
+	// bits as a float and every 1.23.1 attempt row carried 0.0 / progress 0.
+	timetocap = float(dodx_area_get_data(f, CA_timetocap))
 	if (timetocap <= 0.0) {
 		progress = -1
 		return
@@ -2306,6 +2319,24 @@ public ksc_flag_positions_task() {
 	// controlpoints_init's diagnostic proved the forward fired and nothing proved
 	// the emit did, so the halves sat in two log files and went uncompared.
 	log_amx("[KTP-STATS] flag positions emitted for %d flag(s)", g_kscFlagCount)
+
+	// The module resolves control-point identity ~2 s after map load and only
+	// re-fires controlpoints_init if that CHANGES the order, so the rows above
+	// carry identity_resolved=0 on most maps (888 of 1008 fleet rows on
+	// 2026-09-18). One idempotent re-upsert after the resolve fixes the
+	// snapshot; the daemon's ON DUPLICATE KEY UPDATE takes the later values.
+	if (!dodx_cp_identity_resolved()) {
+		remove_task(KSC_TASK_FLAG_POSITIONS_RETRY)
+		set_task(KSC_FLAG_POS_RETRY_SECS, "ksc_flag_positions_retry_task", KSC_TASK_FLAG_POSITIONS_RETRY)
+	}
+}
+
+public ksc_flag_positions_retry_task() {
+	if (g_kscFlagCount <= 0)
+		return
+	for (new f = 0; f < g_kscFlagCount; f++)
+		ksc_emit_flag_position(f)
+	log_amx("[KTP-STATS] flag positions re-emitted after identity resolve (resolved=%d)", dodx_cp_identity_resolved())
 }
 
 // Static per-map fact, fired once per map load (this fires on every map
@@ -2349,7 +2380,7 @@ stock ksc_emit_flag_position(f) {
 	log_message("KTP_FLAG_POSITION (map ^"%s^") (flag_index ^"%d^") (flag_name ^"%s^") (x ^"%d^") (y ^"%d^") (default_owner ^"%d^") (points_for_cap ^"%d^") (team_points ^"%d^") (timetocap ^"%.1f^") (identity_resolved ^"%d^") (matchid ^"%s^") (half ^"%d^") (sequence ^"%d^") (event_epoch ^"%d^")",
 		mapname, f, g_kscFlagName[f], x, y,
 		dodx_objective_get_data(f, CP_default_owner), dodx_objective_get_data(f, CP_points_for_cap),
-		dodx_objective_get_data(f, CP_team_points), Float:dodx_area_get_data(f, CA_timetocap),
+		dodx_objective_get_data(f, CP_team_points), float(dodx_area_get_data(f, CA_timetocap)),
 		dodx_cp_identity_resolved(), matchid, half, sequence, get_systime())
 	if (tracked)
 		g_kscEmitted[KSC_EVENT_FLAG_POSITION]++
@@ -3036,26 +3067,37 @@ stock ksc_duel_read(attacker, victim, cells[KSC_DUEL_CELLS]) {
 stock ksc_duel_clear(id) {
 	for (new other = 0; other <= MAX_PLAYERS; other++) {
 		for (new c = 0; c < KSC_DUEL_CELLS; c++) {
-			g_kscDuelBase[id][other][c] = 0
-			g_kscDuelBase[other][id][c] = 0
+			g_kscDuelAcc[id][other][c] = 0
+			g_kscDuelAcc[other][id][c] = 0
 		}
 	}
+	g_kscDuelLifeTaken[id] = false
 }
 
+// Half start: nothing accumulated yet; every live life is untaken.
 stock ksc_duel_snapshot_all() {
-	for (new a = 1; a <= MAX_PLAYERS; a++) {
-		for (new v = 1; v <= MAX_PLAYERS; v++) {
-			if (a == v || !is_user_connected(a) || !is_user_connected(v)) {
-				for (new c = 0; c < KSC_DUEL_CELLS; c++)
-					g_kscDuelBase[a][v][c] = 0
-				continue
-			}
-			ksc_duel_read(a, v, g_kscDuelBase[a][v])
-		}
-	}
-	for (new id = 0; id <= MAX_PLAYERS; id++)
+	for (new id = 0; id <= MAX_PLAYERS; id++) {
+		ksc_duel_clear(id)
 		g_kscDuelFlushed[id] = false
+	}
 	g_kscDuelBaseValid = true
+}
+
+// A life just ended: fold its per-victim record into the half's total. The
+// module keeps victims[] until the next spawn, so this is read at death and
+// the flush must not read the same life again (g_kscDuelLifeTaken).
+stock ksc_duel_take_life(a) {
+	if (!g_kscDuelBaseValid || g_kscDuelLifeTaken[a] || !is_user_connected(a))
+		return
+	new now[KSC_DUEL_CELLS]
+	for (new v = 1; v <= MAX_PLAYERS; v++) {
+		if (a == v || !is_user_connected(v))
+			continue
+		ksc_duel_read(a, v, now)
+		for (new c = 0; c < KSC_DUEL_CELLS; c++)
+			g_kscDuelAcc[a][v][c] += now[c]
+	}
+	g_kscDuelLifeTaken[a] = true
 }
 
 stock ksc_emit_duels(const matchid[], half) {
@@ -3085,15 +3127,16 @@ stock ksc_emit_duels_for(a, const matchid[], half) {
 	ksc_wire_sanitize(matchid, wire_matchid, charsmax(wire_matchid))
 	ksc_wire_sanitize(mapname, wire_map, charsmax(wire_map))
 	new event_epoch = get_systime()
-	new now[KSC_DUEL_CELLS], delta[KSC_DUEL_CELLS]
+	new delta[KSC_DUEL_CELLS]
 	new attacker_str[96], victim_str[96], bodyhits[48]
+	// The live life, if this player has one that was not already taken at death.
+	ksc_duel_take_life(a)
 	for (new v = 1; v <= MAX_PLAYERS; v++) {
 		if (a == v || !is_user_connected(v))
 			continue
-		ksc_duel_read(a, v, now)
 		new any = 0
 		for (new c = 0; c < KSC_DUEL_CELLS; c++) {
-			delta[c] = now[c] - g_kscDuelBase[a][v][c]
+			delta[c] = g_kscDuelAcc[a][v][c]
 			if (c != DODX_POINTS && c != DODX_RANK && delta[c] != 0)
 				any = 1
 		}
@@ -3112,7 +3155,10 @@ stock ksc_emit_duels_for(a, const matchid[], half) {
 		formatex(line, charsmax(line),
 			"KTP_DUEL (matchid ^"%s^") (half ^"%d^") (map ^"%s^") (attacker ^"%s^") (victim ^"%s^") (kills ^"%d^") (deaths ^"%d^") (headshots ^"%d^") (teamkills ^"%d^") (shots ^"%d^") (hits ^"%d^") (damage ^"%d^") (bodyhits ^"%s^") (event_epoch ^"%d^") (sequence ^"%d^")",
 			wire_matchid, half, wire_map, attacker_str, victim_str,
-			delta[DODX_KILLS], delta[DODX_DEATHS], delta[DODX_HEADSHOTS], delta[DODX_TEAMKILLS],
+			// dodx victims[] semantics: its `deaths` slot is "this victim died to
+			// me" -- the attacker's kills on the victim. Its kills and per-victim
+			// shots slots are never written (saveShot only counts victims[0]).
+			delta[DODX_DEATHS], delta[DODX_KILLS], delta[DODX_HEADSHOTS], delta[DODX_TEAMKILLS],
 			delta[DODX_SHOTS], delta[DODX_HITS], delta[DODX_DAMAGE], bodyhits,
 			event_epoch, sequence)
 		ksc_log_retain(line, KSC_EVENT_DUEL)
