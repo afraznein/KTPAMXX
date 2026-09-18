@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - 1.23.2: stats_logging was invisible to amx_ktp_versions
+
+The plugin called `register_plugin` but never `KTP_RegisterVersion`, so it did
+not appear in `amx_ktp_versions` -- measured after the 1.23.1 activation on
+2026-09-18, that command returned exactly 9 plugins on all 24 instances and
+`stats_logging` was not among them.
+
+The consequence was that `ktp-verify-deploy --check-runtime` reported GREEN 24/24
+for a wave whose only artifact it could not see. That GREEN was sound for the
+file-hash comparison and for the other nine plugins, and could not have failed
+for this one. The evidence the plugin was running had to come from `[KTP-STATS]`
+lines in the AMXX log instead.
+
+The version bump is the point of this entry, not a formality. #132 changed the
+source without it, so a build of main would have shipped a different artifact
+under the label 1.23.1 -- the label live on 24 instances and pinned to a review.
+Two builds sharing a version string is the drift this estate identifies by md5
+precisely because labels cannot be trusted.
+
+Adding the reporter bakes no build timestamp: this repo's `plugins/compile.sh`
+generates no `build_info.inc`, and `ktp_version_reporter` `#tryinclude`s it with
+an `"unknown"` fallback, so the plugin stays byte-reproducible.
+
 ### Fixed - 1.23.1: duel rows and grenade throws never emitted (first full Lane B)
 
 Lane B run 35213729357 -- the first full bot match on the merged 1.23.0 --
