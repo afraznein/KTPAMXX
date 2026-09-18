@@ -14,7 +14,9 @@
 
 #include <amxmodx>
 #include <dodx>
+#include <ktp_version_reporter>
 
+#define PLUGIN_NAME "Stats Logging"
 #define PLUGIN_VERSION "1.23.1"
 
 // KTP: extra per-match stat capture for HLStatsX (assists, cap breaks,
@@ -42,7 +44,10 @@ new g_pingCount[MAX_PLAYERS + 1]
 new g_matchId[64]
 
 public plugin_init() {
-  register_plugin("Stats Logging",PLUGIN_VERSION,"AMXX Dev Team")
+  register_plugin(PLUGIN_NAME,PLUGIN_VERSION,"AMXX Dev Team")
+  // Without this the plugin is invisible to amx_ktp_versions, so the runtime leg
+  // of ktp-verify-deploy reports GREEN without ever checking this plugin loaded.
+  KTP_RegisterVersion(PLUGIN_NAME, PLUGIN_VERSION)
 
   // KTP: Don't call "log on" - it causes log rotation
   // Logging should be enabled via sv_logfile 1 in server.cfg
