@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - 1.24.3: duel accumulation reads deltas, not lives
+
+1.24.1's per-life fold assumed the module clears `victims[]` every life.
+It does -- for humans: the reset is armed by ResetHUD (`usermsg.cpp:65`),
+which fake clients never receive, so a bot's record is session-scoped.
+Lane B 35393677016 (all bots) summed 305 kills from 53 frags by re-adding
+the running total at every death. Also, `get_user_vstats` returns 0 and
+writes nothing for a pair with no hits, which the reader ignored.
+
+Now each pair keeps the last value read; a sample adds only the movement
+since it, and a counter that went down means the module reset in between,
+so the new value is the movement. Half start takes the baseline from the
+module's current values, so a bot's warmup carry-over is not counted. Same
+read points as before (attacker's life end, flush); reading twice adds
+nothing. Correct for humans, bots, and a human who reconnects.
+
 ### Fixed - 1.24.2: 1.24.1's flag-position retry task shared the shot-flush task id
 
 `KSC_TASK_FLAG_POSITIONS_RETRY` was defined as 88014, which is
