@@ -1297,7 +1297,7 @@ def test_shot_context_stream() -> None:
     # The draining lives in ksc_shot_flush, not the task, so a capture boundary
     # can force it; the task is now just the 1s timer's entry point.
     flush = function_body(CAPTURE, "stock ksc_shot_flush()")
-    assert 'log_message("%s", g_kscShotBuffer[i])' in flush
+    assert 'ksc_log_retain(g_kscShotBuffer[i], KSC_EVENT_SHOT)' in flush
     assert "g_kscShotBufferCount = 0" in flush
     assert "g_kscShotDropped = 0" in flush
     assert "ksc_shot_flush()" in function_body(
@@ -1451,6 +1451,24 @@ def test_grenade_throw_stream_from_ammox_edge() -> None:
               "yaw", "pitch", "game_time", "event_epoch", "sequence"):
         assert f'({f} ^"%' in emit, f
     assert "ksc_buffer(line, KSC_EVENT_GRENADE_THROW)" in emit
+
+
+def test_gap_repair_retains_every_data_line_and_resends_on_rcon() -> None:
+    # Every data emit goes through ksc_log_retain, so the daemon can ask for
+    # any (stream, sequence) it saw a hole around. Direct log_message of a
+    # data line would be un-repairable.
+    for fn in ("stock ksc_flush()", "stock ksc_shot_flush()", "stock ksc_emit_duels_for"):
+        body = function_body(CAPTURE, fn)
+        assert 'log_message("%s"' not in body, fn
+        assert "ksc_log_retain(" in body, fn
+    retain = function_body(CAPTURE, "stock ksc_log_retain")
+    assert retain.index('log_message("%s", line)') < retain.index("g_kscRetainNext")
+    assert "if (sequence <= 0" in retain  # untracked sentinels are not retained
+    assert 'register_srvcmd("ktp_capture_resend", "ksc_cmd_resend")' in function_body(CAPTURE, "stock ksc_init")
+    resend = function_body(CAPTURE, "public ksc_cmd_resend")
+    assert 'log_message("%s (resent ^"1^")", g_kscRetain[i])' in resend
+    assert "g_kscRetainType[i] == event_type" in resend  # same sequence in another stream is not a match
+    assert "return PLUGIN_HANDLED" in resend
 
 
 def _enclosing_function(source: str, index: int) -> str:

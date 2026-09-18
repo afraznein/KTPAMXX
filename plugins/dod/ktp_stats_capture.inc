@@ -376,6 +376,16 @@ new g_kscDeployed[MAX_PLAYERS + 1]
 #define KSC_AMMO_GREN_STICK 11
 new g_kscGrenAmmo[MAX_PLAYERS + 1][2]
 new g_kscMsgAmmoX = 0
+// Gap repair: every emitted data line is retained here so the daemon can ask
+// for it again by (stream, sequence) when its per-type sequence shows a hole
+// -- the transport is one-way UDP and loses ~0.1% in transit. The daemon asks
+// within a few seconds; at a fleet-peak ~20 lines/s this ring holds ~13 s.
+#define KSC_RETAIN_MAX 256
+new g_kscRetain[KSC_RETAIN_MAX][KSC_BUF_LINE_LEN]
+new g_kscRetainType[KSC_RETAIN_MAX]
+new g_kscRetainSeq[KSC_RETAIN_MAX]
+new g_kscRetainNext = 0
+new g_kscResent = 0
 
 // Wave 1 (§3.4): last known health per victim, so a hit can report applied
 // damage (health actually removed) next to raw damage. Seeded on spawn, kept
@@ -420,6 +430,8 @@ stock ksc_init() {
 	g_kscMsgAmmoX = get_user_msgid("AmmoX")
 	if (g_kscMsgAmmoX > 0)
 		register_message(g_kscMsgAmmoX, "ksc_msg_ammox")
+	// rcon-only: the daemon's gap repair. "ktp_capture_resend <stream> <seq>[,<seq>...]"
+	register_srvcmd("ktp_capture_resend", "ksc_cmd_resend")
 }
 
 // Shot-registration diagnostics are a separate, sampled tier from the shot
@@ -809,11 +821,11 @@ stock ksc_flush() {
 	while (data_i < g_kscBufferCount || life_i < g_kscLifeBufferCount) {
 		if (life_i < g_kscLifeBufferCount &&
 			(data_i >= g_kscBufferCount || g_kscLifeBufferOrder[life_i] < g_kscBufferOrder[data_i])) {
-			log_message("%s", g_kscLifeBuffer[life_i])
+			ksc_log_retain(g_kscLifeBuffer[life_i], g_kscLifeBufferType[life_i])
 			g_kscEmitted[g_kscLifeBufferType[life_i]]++
 			life_i++
 		} else {
-			log_message("%s", g_kscBuffer[data_i])
+			ksc_log_retain(g_kscBuffer[data_i], g_kscBufferType[data_i])
 			if (g_kscBufferType[data_i] >= 0 && g_kscBufferType[data_i] < KSC_EVENT_COUNT)
 				g_kscEmitted[g_kscBufferType[data_i]]++
 			data_i++
@@ -2446,7 +2458,7 @@ public ksc_shot_flush_task() {
 // than accumulating silently into a larger burst.
 stock ksc_shot_flush() {
 	for (new i = 0; i < g_kscShotBufferCount; i++) {
-		log_message("%s", g_kscShotBuffer[i])
+		ksc_log_retain(g_kscShotBuffer[i], KSC_EVENT_SHOT)
 		g_kscEmitted[KSC_EVENT_SHOT]++
 	}
 	g_kscShotBufferCount = 0
@@ -3096,11 +3108,14 @@ stock ksc_emit_duels_for(a, const matchid[], half) {
 		new sequence = ksc_next_type_sequence(KSC_EVENT_DUEL)
 		g_kscAttempted[KSC_EVENT_DUEL]++
 		g_kscEnqueued[KSC_EVENT_DUEL]++
-		log_message("KTP_DUEL (matchid ^"%s^") (half ^"%d^") (map ^"%s^") (attacker ^"%s^") (victim ^"%s^") (kills ^"%d^") (deaths ^"%d^") (headshots ^"%d^") (teamkills ^"%d^") (shots ^"%d^") (hits ^"%d^") (damage ^"%d^") (bodyhits ^"%s^") (event_epoch ^"%d^") (sequence ^"%d^")",
+		new line[KSC_BUF_LINE_LEN]
+		formatex(line, charsmax(line),
+			"KTP_DUEL (matchid ^"%s^") (half ^"%d^") (map ^"%s^") (attacker ^"%s^") (victim ^"%s^") (kills ^"%d^") (deaths ^"%d^") (headshots ^"%d^") (teamkills ^"%d^") (shots ^"%d^") (hits ^"%d^") (damage ^"%d^") (bodyhits ^"%s^") (event_epoch ^"%d^") (sequence ^"%d^")",
 			wire_matchid, half, wire_map, attacker_str, victim_str,
 			delta[DODX_KILLS], delta[DODX_DEATHS], delta[DODX_HEADSHOTS], delta[DODX_TEAMKILLS],
 			delta[DODX_SHOTS], delta[DODX_HITS], delta[DODX_DAMAGE], bodyhits,
 			event_epoch, sequence)
+		ksc_log_retain(line, KSC_EVENT_DUEL)
 		g_kscEmitted[KSC_EVENT_DUEL]++
 	}
 }
@@ -3218,5 +3233,74 @@ stock ksc_emit_grenade_throw(id, weapon_id) {
 		wire_matchid, half, wire_map, player, weapon_id, weapon_type, position,
 		yaw, pitch, get_gametime(), get_systime(), sequence)
 	ksc_buffer(line, KSC_EVENT_GRENADE_THROW)
+}
+
+// ---------------------------------------------------------------------------
+// Gap repair
+//
+// Every data line goes out through ksc_log_retain, which also keeps it in a
+// ring keyed by (stream, producer sequence). The daemon tracks continuity per
+// stream; on a hole it sends `ktp_capture_resend <stream> <seq,...>` over its
+// rcon session and the line is logged again with (resent "1") appended. The
+// daemon admits a resent line only while that sequence is still missing, so
+// a late original followed by its resend never lands twice.
+
+stock ksc_line_sequence(const line[]) {
+	new at = strfind(line, "(sequence ^"")
+	if (at < 0)
+		return 0
+	return str_to_num(line[at + 11])
+}
+
+stock ksc_log_retain(const line[], event_type) {
+	log_message("%s", line)
+	new sequence = ksc_line_sequence(line)
+	if (sequence <= 0 || event_type < 0 || event_type >= KSC_EVENT_COUNT)
+		return
+	new slot = g_kscRetainNext
+	g_kscRetainNext = (g_kscRetainNext + 1) % KSC_RETAIN_MAX
+	copy(g_kscRetain[slot], KSC_BUF_LINE_LEN - 1, line)
+	g_kscRetainType[slot] = event_type
+	g_kscRetainSeq[slot] = sequence
+}
+
+public ksc_cmd_resend() {
+	new stream[24], seqs[256]
+	read_argv(1, stream, charsmax(stream))
+	read_argv(2, seqs, charsmax(seqs))
+	new event_type = -1
+	for (new t = 0; t < KSC_EVENT_COUNT; t++) {
+		if (equal(stream, g_kscEventNames[t])) { event_type = t; break; }
+	}
+	if (event_type < 0 || !seqs[0])
+		return PLUGIN_HANDLED
+
+	new found = 0, requested = 0, token[16], pos = 0
+	while (seqs[pos]) {
+		pos += strtok_seq(seqs[pos], token, charsmax(token))
+		new want = str_to_num(token)
+		if (want <= 0)
+			continue
+		requested++
+		for (new i = 0; i < KSC_RETAIN_MAX; i++) {
+			if (g_kscRetainSeq[i] == want && g_kscRetainType[i] == event_type) {
+				log_message("%s (resent ^"1^")", g_kscRetain[i])
+				found++
+				break
+			}
+		}
+	}
+	g_kscResent += found
+	if (found < requested)
+		log_amx("[KTP-STATS] resend %s: %d of %d sequence(s) no longer retained", stream, requested - found, requested)
+	return PLUGIN_HANDLED
+}
+
+// Copies the next comma-separated token; returns how far to advance.
+stock strtok_seq(const src[], out[], len) {
+	new i = 0
+	while (src[i] && src[i] != ',' && i < len) { out[i] = src[i]; i++; }
+	out[i] = 0
+	return src[i] == ',' ? i + 1 : i
 }
 

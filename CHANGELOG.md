@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - capture gap repair: retention ring + `ktp_capture_resend` (1.24.0)
+
+Every data line now leaves through `ksc_log_retain`, which also keeps it in a
+256-entry ring keyed by (stream, producer sequence). When the daemon sees a
+hole in a stream's sequence it sends `ktp_capture_resend <stream> <seq,...>`
+over rcon and the line is logged again with `(resent "1")` appended; the
+daemon admits it only while that sequence is still missing. Closes the
+~0.1% transit loss measured on the fleet. Untracked sentinels (sequence 0)
+are not retained. Cost: one strfind per emitted line and ~1 MB of plugin
+data; the command is rcon-only.
+
 ### Fixed - 1.23.2: stats_logging was invisible to amx_ktp_versions
 
 The plugin called `register_plugin` but never `KTP_RegisterVersion`, so it did
