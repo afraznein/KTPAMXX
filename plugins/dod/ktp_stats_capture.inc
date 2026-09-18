@@ -1157,6 +1157,8 @@ stock ksc_clear_player(id) {
 	g_kscDeployed[id] = 0
 	g_kscGrenAmmo[id][0] = -1
 	g_kscGrenAmmo[id][1] = -1
+	// Fold what the leaving player's record still holds before forgetting it.
+	ksc_duel_sample(id)
 	ksc_duel_clear(id)
 	g_kscLifePhysicalAlive[id] = false
 	g_kscLifeOpen[id] = false
@@ -1246,6 +1248,11 @@ stock bool:ksc_emit_life_boundary(id, const matchid[], const kind[], const reaso
 stock ksc_life_start(id, const reason[]) {
 	if (id < 1 || id > MAX_PLAYERS)
 		return
+	// A round restart respawns survivors with no life end in between, and the
+	// module clears victims[] 0.25 s after this spawn (ResetHUD -> clearStats).
+	// Sample now, before the clear: Lane B 35396419360 lost 11 of 64 kills --
+	// the last life of every round's survivors -- without this.
+	ksc_duel_sample(id)
 
 	// Do not suppress an authoritative spawn merely because the prior start is
 	// still open. That shape means its end was missed; the next start is the

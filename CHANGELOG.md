@@ -21,7 +21,10 @@ since it, and a counter that went down means the module reset in between,
 so the new value is the movement. Half start takes the baseline from the
 module's current values, so a bot's warmup carry-over is not counted. Same
 read points as before (attacker's life end, flush); reading twice adds
-nothing. Correct for humans, bots, and a human who reconnects.
+nothing. Correct for humans, bots, and a human who reconnects. The spawn is
+also a read point: a round restart respawns survivors with no life end,
+and the module clears their record 0.25 s later -- Lane B 35396419360 lost
+11 of 64 kills that way. A disconnect samples before it forgets.
 
 ### Fixed - 1.24.2: 1.24.1's flag-position retry task shared the shot-flush task id
 

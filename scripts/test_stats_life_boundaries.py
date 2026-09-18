@@ -1480,6 +1480,12 @@ def test_first_human_half_fixes() -> None:
     #     the last read, with a decrease meaning "reset between reads".
     #     Lane B 35393677016 summed 305 kills from 53 frags before this.
     assert "ksc_duel_sample(id)" in function_body(CAPTURE, "stock ksc_life_end")
+    # Round-restart survivors respawn with no life end; the module clears
+    # victims[] 0.25 s after spawn, so the spawn is the last read point.
+    start = function_body(CAPTURE, "stock ksc_life_start")
+    assert "ksc_duel_sample(id)" in start
+    clear = function_body(CAPTURE, "stock ksc_clear_player")
+    assert clear.index("ksc_duel_sample(id)") < clear.index("ksc_duel_clear(id)")
     sample = function_body(CAPTURE, "stock ksc_duel_sample")
     assert "if (now[c] < g_kscDuelLast[a][v][c]) { reset = true; break; }" in sample
     assert "reset ? now[c] : now[c] - g_kscDuelLast[a][v][c]" in sample
