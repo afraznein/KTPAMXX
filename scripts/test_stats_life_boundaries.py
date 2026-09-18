@@ -1471,6 +1471,29 @@ def test_gap_repair_retains_every_data_line_and_resends_on_rcon() -> None:
     assert "return PLUGIN_HANDLED" in resend
 
 
+def test_first_human_half_fixes() -> None:
+    # 1.3-6845-NY1 h1 (2026-09-18): duel rows were one life each, attempt
+    # progress/timetocap were 0.0, flag identity_resolved was a pre-resolve
+    # snapshot. All three were module-semantics misreads, fixed on this side.
+    # (a) dodx victims[] is per life -> accumulate at life end, add the live
+    #     life once at flush, never the same life twice.
+    assert "ksc_duel_take_life(id)" in function_body(CAPTURE, "stock ksc_life_end")
+    assert "g_kscDuelLifeTaken[id] = false" in function_body(CAPTURE, "stock ksc_life_start")
+    take = function_body(CAPTURE, "stock ksc_duel_take_life")
+    assert "g_kscDuelLifeTaken[a]" in take and "g_kscDuelAcc[a][v][c] += now[c]" in take
+    emit = function_body(CAPTURE, "stock ksc_emit_duels_for")
+    assert "ksc_duel_take_life(a)" in emit and "g_kscDuelBase" not in emit
+    # dodx's `deaths` slot is the attacker's kills on the victim; its kills slot is never written.
+    assert "delta[DODX_DEATHS], delta[DODX_KILLS], delta[DODX_HEADSHOTS]" in emit
+    # (b) CA_timetocap is an int cell; a Float: cast reads its bits.
+    assert "Float:dodx_area_get_data(f, CA_timetocap)" not in CAPTURE
+    assert CAPTURE.count("float(dodx_area_get_data(f, CA_timetocap))") == 2
+    # (c) one re-upsert after the module's identity resolve, only when unresolved.
+    task = function_body(CAPTURE, "public ksc_flag_positions_task")
+    assert "if (!dodx_cp_identity_resolved())" in task
+    assert 'set_task(KSC_FLAG_POS_RETRY_SECS, "ksc_flag_positions_retry_task"' in task
+
+
 def _enclosing_function(source: str, index: int) -> str:
     """Name of the stock/public Pawn function whose body contains index."""
     match = None
