@@ -1494,6 +1494,15 @@ def test_first_human_half_fixes() -> None:
     assert 'set_task(KSC_FLAG_POS_RETRY_SECS, "ksc_flag_positions_retry_task"' in task
 
 
+def test_task_ids_are_unique() -> None:
+    # 1.24.1 gave the flag-position retry task the shot-flush id (88014);
+    # remove_task on it killed the 1 s shot flush and Lane B run 35391598159
+    # drained a 553-shot ring at match close, 41 dropped.
+    ids = re.findall(r"^#define\s+(KSC_TASK_\w+)\s+(\d+)", CAPTURE, re.M)
+    values = [v for _, v in ids]
+    assert len(values) == len(set(values)), ids
+
+
 def _enclosing_function(source: str, index: int) -> str:
     """Name of the stock/public Pawn function whose body contains index."""
     match = None

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - 1.24.2: 1.24.1's flag-position retry task shared the shot-flush task id
+
+`KSC_TASK_FLAG_POSITIONS_RETRY` was defined as 88014, which is
+`KSC_TASK_SHOT_FLUSH`; the `remove_task` before arming the retry killed the
+1 s shot flush, and Lane B run 35391598159 drained a 553-shot ring at match
+close with 41 dropped. 1.24.1 was never staged. The retry id is 88015 and a
+contract test now rejects any duplicate `KSC_TASK_*` value.
+
 ### Fixed - 1.24.1: three module-semantics misreads found on the first human half
 
 `1.3-6845-NY1`, 2026-09-18, the first 1.23.1 match with people in it. Every
