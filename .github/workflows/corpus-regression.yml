@@ -31,15 +31,17 @@
 # reusable workflow's *code* runs, so a later rename on preprod cannot reach us
 # until we deliberately move the pin.
 #
-# `infrastructure_ref`/`daemon_ref` below stay the literal `preprod` — that is not
-# a leftover. They select which commit of KTPInfrastructure/KTPHLStatsX gets
-# CHECKED OUT once the pinned workflow code is running, which is deliberately left
-# live so the harness content (fixtures, schema, bot driver) keeps tracking
-# preprod. Only the orchestration YAML itself is frozen. support/check_lane_refs.py
-# no longer compares these against the `uses:` pin (which can now be a SHA that no
-# branch name equals) — it compares them against the fixed lineage name "preprod"
-# instead, which is what actually has to agree for the harness and the checked-out
-# repositories to be one release train.
+# `infrastructure_ref` and `daemon_ref` below are literals, not leftovers: they
+# select which commit of KTPInfrastructure/KTPHLStatsX gets CHECKED OUT once the
+# pinned workflow code is running, deliberately left live so the harness content
+# (fixtures, schema, bot driver) keeps tracking its branch. Only the orchestration
+# YAML itself is frozen.
+#
+# They no longer name the SAME branch. KTPInfrastructure retired `preprod` (ruled
+# 2026-09-19), so the harness rides `main` while the components still ride
+# `preprod`. support/check_lane_refs.py enforces that split by DECLARING it
+# (HARNESS_LINEAGE + REF_LINEAGE) rather than by relaxing the equality test — an
+# accidental straddle is the exact defect that file exists to catch.
 #
 # Freezing the orchestration code trades a silent-forever failure for a silent
 # staleness: nothing forces this pin forward as preprod's harness evolves. Re-pin
@@ -87,7 +89,10 @@ jobs:
     uses: afraznein/KTPInfrastructure/.github/workflows/lane-b-stats-e2e.yml@3b6ac496c86d59ef81dd23a9c76193be312449d8
     with:
       lane: corpus
-      infrastructure_ref: preprod
+      # main, not preprod: KTPInfrastructure retired its preprod branch (ruled
+      # 2026-09-19). The COMPONENT refs below still ride preprod, so the two
+      # trains are now declared separately in the lane-refs guard.
+      infrastructure_ref: main
       amxx_ref: ${{ github.event.pull_request.head.sha || github.sha }}
       daemon_ref: preprod
     secrets: inherit
