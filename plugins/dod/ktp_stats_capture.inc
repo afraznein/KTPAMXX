@@ -366,8 +366,14 @@ new Float:g_kscLifeFirstShot[MAX_PLAYERS + 1]  // -1.0 until the first shot
 // first human half (1.3-6845-NY1 h1, 2026-09-18) produced 12 rows, one death
 // each: the last life of whoever was alive at the flush. Each life is added
 // here when it ends; the flush adds the live life of anyone not yet taken.
+// ...and the reset is set from ResetHUD (usermsg.cpp:65), which fake clients
+// never receive: a bot's victims[] is session-scoped, a human's is per-life.
+// Lane B 35393677016 (all bots) summed 305 kills from 53 frags by re-adding
+// the running total at every death. So: keep the last read per pair and add
+// only the movement since it; a counter that went DOWN means the module reset
+// between reads and the new value is the movement.
 new g_kscDuelAcc[MAX_PLAYERS + 1][MAX_PLAYERS + 1][KSC_DUEL_CELLS]
-new bool:g_kscDuelLifeTaken[MAX_PLAYERS + 1]
+new g_kscDuelLast[MAX_PLAYERS + 1][MAX_PLAYERS + 1][KSC_DUEL_CELLS]
 new bool:g_kscDuelBaseValid = false
 // KTPMatchHandler flushes (dod_stats_flush per player) and then CLEARS the
 // module's per-player stats BEFORE KTP_MATCH_END / ktp_half_end, so a delta
@@ -1151,6 +1157,8 @@ stock ksc_clear_player(id) {
 	g_kscDeployed[id] = 0
 	g_kscGrenAmmo[id][0] = -1
 	g_kscGrenAmmo[id][1] = -1
+	// Fold what the leaving player's record still holds before forgetting it.
+	ksc_duel_sample(id)
 	ksc_duel_clear(id)
 	g_kscLifePhysicalAlive[id] = false
 	g_kscLifeOpen[id] = false
@@ -1240,7 +1248,11 @@ stock bool:ksc_emit_life_boundary(id, const matchid[], const kind[], const reaso
 stock ksc_life_start(id, const reason[]) {
 	if (id < 1 || id > MAX_PLAYERS)
 		return
-	g_kscDuelLifeTaken[id] = false
+	// A round restart respawns survivors with no life end in between, and the
+	// module clears victims[] 0.25 s after this spawn (ResetHUD -> clearStats).
+	// Sample now, before the clear: Lane B 35396419360 lost 11 of 64 kills --
+	// the last life of every round's survivors -- without this.
+	ksc_duel_sample(id)
 
 	// Do not suppress an authoritative spawn merely because the prior start is
 	// still open. That shape means its end was missed; the next start is the
@@ -1317,7 +1329,7 @@ public dod_client_changeteam(id, team, oldteam) {
 stock ksc_life_end(id, const reason[]) {
 	if (id < 1 || id > MAX_PLAYERS)
 		return
-	ksc_duel_take_life(id)
+	ksc_duel_sample(id)
 
 	new matchid[64]
 	dodx_get_match_id(matchid, charsmax(matchid))
@@ -3055,13 +3067,17 @@ stock ksc_player_state_poll() {
 // §3.5 -- per-(attacker, victim) matrix the module already keeps, emitted as
 // per-half deltas at half close. Session-scoped on the module side, so a slot
 // that reconnects starts from zero and its base is cleared on disconnect.
-stock ksc_duel_read(attacker, victim, cells[KSC_DUEL_CELLS]) {
+// get_user_vstats writes NOTHING and returns 0 when the pair has no hits;
+// the caller must not read the buffer then.
+stock bool:ksc_duel_read(attacker, victim, cells[KSC_DUEL_CELLS]) {
 	new stats[DODX_MAX_STATS], body[MAX_BODYHITS]
-	get_user_vstats(attacker, victim, stats, body)
+	if (!get_user_vstats(attacker, victim, stats, body))
+		return false
 	for (new i = 0; i < DODX_MAX_STATS; i++)
 		cells[i] = stats[i]
 	for (new i = 0; i < MAX_BODYHITS; i++)
 		cells[DODX_MAX_STATS + i] = body[i]
+	return true
 }
 
 stock ksc_duel_clear(id) {
@@ -3069,35 +3085,52 @@ stock ksc_duel_clear(id) {
 		for (new c = 0; c < KSC_DUEL_CELLS; c++) {
 			g_kscDuelAcc[id][other][c] = 0
 			g_kscDuelAcc[other][id][c] = 0
+			g_kscDuelLast[id][other][c] = 0
+			g_kscDuelLast[other][id][c] = 0
 		}
 	}
-	g_kscDuelLifeTaken[id] = false
 }
 
-// Half start: nothing accumulated yet; every live life is untaken.
+// Half start: nothing accumulated; the baseline is whatever the module holds
+// now, so anything a bot carried in from warmup is not counted.
 stock ksc_duel_snapshot_all() {
+	new now[KSC_DUEL_CELLS]
 	for (new id = 0; id <= MAX_PLAYERS; id++) {
 		ksc_duel_clear(id)
 		g_kscDuelFlushed[id] = false
 	}
+	for (new a = 1; a <= MAX_PLAYERS; a++) {
+		if (!is_user_connected(a))
+			continue
+		for (new v = 1; v <= MAX_PLAYERS; v++) {
+			if (a != v && is_user_connected(v) && ksc_duel_read(a, v, now)) {
+				for (new c = 0; c < KSC_DUEL_CELLS; c++)
+					g_kscDuelLast[a][v][c] = now[c]
+			}
+		}
+	}
 	g_kscDuelBaseValid = true
 }
 
-// A life just ended: fold its per-victim record into the half's total. The
-// module keeps victims[] until the next spawn, so this is read at death and
-// the flush must not read the same life again (g_kscDuelLifeTaken).
-stock ksc_duel_take_life(a) {
-	if (!g_kscDuelBaseValid || g_kscDuelLifeTaken[a] || !is_user_connected(a))
+// Fold the movement since the last read into the half's total. Idempotent:
+// reading twice adds nothing. Called at the attacker's life end (before the
+// module's per-life reset for humans) and at the flush.
+stock ksc_duel_sample(a) {
+	if (!g_kscDuelBaseValid || !is_user_connected(a))
 		return
 	new now[KSC_DUEL_CELLS]
 	for (new v = 1; v <= MAX_PLAYERS; v++) {
-		if (a == v || !is_user_connected(v))
+		if (a == v || !is_user_connected(v) || !ksc_duel_read(a, v, now))
 			continue
-		ksc_duel_read(a, v, now)
-		for (new c = 0; c < KSC_DUEL_CELLS; c++)
-			g_kscDuelAcc[a][v][c] += now[c]
+		new bool:reset = false
+		for (new c = 0; c < KSC_DUEL_CELLS; c++) {
+			if (now[c] < g_kscDuelLast[a][v][c]) { reset = true; break; }
+		}
+		for (new c = 0; c < KSC_DUEL_CELLS; c++) {
+			g_kscDuelAcc[a][v][c] += reset ? now[c] : now[c] - g_kscDuelLast[a][v][c]
+			g_kscDuelLast[a][v][c] = now[c]
+		}
 	}
-	g_kscDuelLifeTaken[a] = true
 }
 
 stock ksc_emit_duels(const matchid[], half) {
@@ -3129,8 +3162,7 @@ stock ksc_emit_duels_for(a, const matchid[], half) {
 	new event_epoch = get_systime()
 	new delta[KSC_DUEL_CELLS]
 	new attacker_str[96], victim_str[96], bodyhits[48]
-	// The live life, if this player has one that was not already taken at death.
-	ksc_duel_take_life(a)
+	ksc_duel_sample(a)
 	for (new v = 1; v <= MAX_PLAYERS; v++) {
 		if (a == v || !is_user_connected(v))
 			continue

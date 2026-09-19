@@ -1475,14 +1475,26 @@ def test_first_human_half_fixes() -> None:
     # 1.3-6845-NY1 h1 (2026-09-18): duel rows were one life each, attempt
     # progress/timetocap were 0.0, flag identity_resolved was a pre-resolve
     # snapshot. All three were module-semantics misreads, fixed on this side.
-    # (a) dodx victims[] is per life -> accumulate at life end, add the live
-    #     life once at flush, never the same life twice.
-    assert "ksc_duel_take_life(id)" in function_body(CAPTURE, "stock ksc_life_end")
-    assert "g_kscDuelLifeTaken[id] = false" in function_body(CAPTURE, "stock ksc_life_start")
-    take = function_body(CAPTURE, "stock ksc_duel_take_life")
-    assert "g_kscDuelLifeTaken[a]" in take and "g_kscDuelAcc[a][v][c] += now[c]" in take
+    # (a) dodx victims[] resets per life for humans (ResetHUD) and never for
+    #     bots (no user messages), so the only safe read is a delta against
+    #     the last read, with a decrease meaning "reset between reads".
+    #     Lane B 35393677016 summed 305 kills from 53 frags before this.
+    assert "ksc_duel_sample(id)" in function_body(CAPTURE, "stock ksc_life_end")
+    # Round-restart survivors respawn with no life end; the module clears
+    # victims[] 0.25 s after spawn, so the spawn is the last read point.
+    start = function_body(CAPTURE, "stock ksc_life_start")
+    assert "ksc_duel_sample(id)" in start
+    clear = function_body(CAPTURE, "stock ksc_clear_player")
+    assert clear.index("ksc_duel_sample(id)") < clear.index("ksc_duel_clear(id)")
+    sample = function_body(CAPTURE, "stock ksc_duel_sample")
+    assert "if (now[c] < g_kscDuelLast[a][v][c]) { reset = true; break; }" in sample
+    assert "reset ? now[c] : now[c] - g_kscDuelLast[a][v][c]" in sample
+    assert "!ksc_duel_read(a, v, now)" in sample  # native writes nothing on 0
+    read = function_body(CAPTURE, "stock bool:ksc_duel_read")
+    assert "if (!get_user_vstats(attacker, victim, stats, body))" in read
     emit = function_body(CAPTURE, "stock ksc_emit_duels_for")
-    assert "ksc_duel_take_life(a)" in emit and "g_kscDuelBase" not in emit
+    assert "ksc_duel_sample(a)" in emit and "g_kscDuelBase" not in emit
+    assert "g_kscDuelLifeTaken" not in CAPTURE
     # dodx's `deaths` slot is the attacker's kills on the victim; its kills slot is never written.
     assert "delta[DODX_DEATHS], delta[DODX_KILLS], delta[DODX_HEADSHOTS]" in emit
     # (b) CA_timetocap is an int cell; a Float: cast reads its bits.
