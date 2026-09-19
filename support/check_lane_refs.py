@@ -224,7 +224,7 @@ SHA_FIXTURE = "3b6ac496c86d59ef81dd23a9c76193be312449d8"
 
 
 def _fixture(uses_ref=SHA_FIXTURE, amxx="${{ github.event.pull_request.head.sha }}",
-             daemon="preprod", infra="preprod", lane="corpus", extra=""):
+             daemon="preprod", infra="main", lane="corpus", extra=""):
     return (
         "name: Corpus Regression\n"
         "on:\n"
@@ -260,7 +260,7 @@ def selftest():
         if not check_text(text):
             failures.append("{}: expected a failure, got a clean result".format(label))
 
-    expect_pass("all refs on the harness lineage", _fixture())
+    expect_pass("harness on main, components on preprod", _fixture())
 
     expect_fail(
         "daemon_ref follows the PR base ref (the real regression)",
@@ -269,8 +269,8 @@ def selftest():
         "daemon_ref literal from another lineage",
         _fixture(daemon="main"))
     expect_fail(
-        "infrastructure_ref drifts off the uses: pin",
-        _fixture(infra="main"))
+        "infrastructure_ref on the retired preprod branch",
+        _fixture(infra="preprod"))
     expect_fail(
         "amxx_ref pinned, so the lane cannot see the PR",
         _fixture(amxx="preprod"))
