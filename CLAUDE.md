@@ -20,6 +20,11 @@ This will:
 2. Output to `obj-linux/packages/`
 3. Auto-stage to `N:\Nein_\KTP Git Projects\KTP DoD Server\serverfiles\dod\addons\ktpamx\`
 
+⛔ **Build from a real clone, never a git worktree.** `support/Versioning` opens
+`<sourcePath>/.git/HEAD` as a path and a worktree's `.git` is a FILE, so the build dies at
+`NotADirectoryError` before anything compiles — and callers pipe this script, so the shell still
+reports exit 0. Judge it by `build_linux.sh`'s `[KTP-BUILD]` banners, never the exit code.
+
 ## Project Structure
 - `build_linux.sh` - Main WSL build script
 - `configure.py` - AMBuild configuration
