@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - 1.24.4: the manifest is re-logged every 10 s while a half is live
+
+The manifest is one UDP line sent once at activation. Lose that packet and
+the daemon never allocates the half's state: every authorized stream
+(`shot`, `objective_attempt`, `grenade_entity`, `position`,
+`team_membership`) is dropped for the whole half and the rest go
+unobserved -- `daemon_received = 0` on every health row while the health
+rows themselves arrive. Two of ~150 S10 halves so far (`1789589746-NY2`
+h1, `1.3-6848-NY1` h2), and together they are almost all of the fleet's
+remaining "lost" markers. Gap repair cannot help: with no state there is no
+gap to see.
+
+The exact emitted line (same sequence, same epoch) is kept and re-logged
+every other flush while the producer context is confirmed, never after
+close. The daemon's fingerprint + upsert make a byte-identical replay a
+no-op; once a late replay is accepted, gap repair (cap raised to 256 in
+KTPHLStatsX#119) pulls the interim markers back from the retention ring.
+Cost: one ~600 B line per 10 s per server.
+
 ### Fixed - 1.24.3: duel accumulation reads deltas, not lives
 
 1.24.1's per-life fold assumed the module clears `victims[]` every life.

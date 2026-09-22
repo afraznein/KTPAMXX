@@ -400,6 +400,16 @@ new g_kscRetainType[KSC_RETAIN_MAX]
 new g_kscRetainSeq[KSC_RETAIN_MAX]
 new g_kscRetainNext = 0
 new g_kscResent = 0
+// The manifest is one UDP line sent once at activation. Lose that one packet
+// and the daemon never allocates the half's state: every authorized stream
+// (shot, objective_attempt, grenade_entity, position, team_membership) is
+// dropped for the whole half and the rest go unobserved. Two of ~150 S10
+// halves so far (1789589746-NY2 h1, 1.3-6848-NY1 h2). The exact line is
+// kept and re-logged every other flush while the half is live; the daemon
+// treats an exact replay as idempotent (fingerprint + upsert).
+#define KSC_MANIFEST_REPEAT_TICKS 2
+new g_kscManifestLine[KSC_BUF_LINE_LEN]
+new g_kscManifestRepeatTick = 0
 
 // Wave 1 (§3.4): last known health per victim, so a hit can report applied
 // damage (health actually removed) next to raw damage. Seeded on spawn, kept
@@ -574,11 +584,26 @@ stock ksc_emit_manifest(const matchid[], half) {
 	new mapname[32]
 	get_mapname(mapname, charsmax(mapname))
 	new sequence = ksc_next_sequence()
-	log_message("KTP_CAPTURE_MANIFEST (matchid ^"%s^") (half ^"%d^") (map ^"%s^") (producer ^"stats_logging^") (producer_version ^"%s^") (schema ^"%d^") (capabilities ^"%s^") (position_interval ^"%.1f^") (buffer_entries ^"%d^") (life_buffer_entries ^"%d^") (map_revision_algorithm ^"sha256^") (map_revision ^"%s^") (sequence ^"%d^") (event_epoch ^"%d^")",
+	formatex(g_kscManifestLine, charsmax(g_kscManifestLine),
+		"KTP_CAPTURE_MANIFEST (matchid ^"%s^") (half ^"%d^") (map ^"%s^") (producer ^"stats_logging^") (producer_version ^"%s^") (schema ^"%d^") (capabilities ^"%s^") (position_interval ^"%.1f^") (buffer_entries ^"%d^") (life_buffer_entries ^"%d^") (map_revision_algorithm ^"sha256^") (map_revision ^"%s^") (sequence ^"%d^") (event_epoch ^"%d^")",
 		matchid, half, mapname, PLUGIN_VERSION, KSC_SCHEMA_CONTRACT,
 		KSC_CAPABILITIES, KSC_POSITION_BROADCAST_SECS,
 		KSC_BUF_MAX_ENTRIES, KSC_LIFE_BUF_MAX_ENTRIES, g_kscMapRevision,
 		sequence, get_systime())
+	log_message("%s", g_kscManifestLine)
+	g_kscManifestRepeatTick = 0
+}
+
+// Same bytes, same sequence, same epoch: the daemon's fingerprint says
+// "already accepted" and its upsert keeps one row. Only while confirmed --
+// a replay after close would re-authorize a finished half.
+stock ksc_manifest_repeat() {
+	if (!g_kscProducerContextConfirmed || !g_kscManifestLine[0])
+		return
+	if (++g_kscManifestRepeatTick < KSC_MANIFEST_REPEAT_TICKS)
+		return
+	g_kscManifestRepeatTick = 0
+	log_message("%s", g_kscManifestLine)
 }
 
 stock ksc_emit_health(const matchid[], half) {
@@ -682,6 +707,7 @@ stock ksc_close_producer_context() {
 	g_kscProducerMatchId[0] = 0
 	g_kscProducerHalf = 0
 	g_kscProducerContextConfirmed = false
+	g_kscManifestLine[0] = 0
 	g_kscAllowUntrackedEvents = false
 	g_kscLifeBaselinePending = true
 	ksc_clear_open_lives()
@@ -824,6 +850,7 @@ stock bool:ksc_life_buffer(const line[]) {
 
 public ksc_flush_task() {
 	ksc_flush()
+	ksc_manifest_repeat()
 }
 
 stock ksc_flush() {
