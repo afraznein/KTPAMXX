@@ -1515,6 +1515,19 @@ def test_task_ids_are_unique() -> None:
     assert len(values) == len(set(values)), ids
 
 
+def test_manifest_is_replayed_verbatim_while_live() -> None:
+    # One lost manifest packet orphaned two S10 halves (daemon_received 0 on
+    # every stream). The exact line is kept and re-logged every other flush,
+    # only while confirmed, and forgotten at close.
+    emit = function_body(CAPTURE, "stock ksc_emit_manifest")
+    assert "formatex(g_kscManifestLine" in emit and 'log_message("%s", g_kscManifestLine)' in emit
+    repeat = function_body(CAPTURE, "stock ksc_manifest_repeat")
+    assert "if (!g_kscProducerContextConfirmed || !g_kscManifestLine[0])" in repeat
+    assert 'log_message("%s", g_kscManifestLine)' in repeat
+    assert "ksc_manifest_repeat()" in function_body(CAPTURE, "public ksc_flush_task")
+    assert "g_kscManifestLine[0] = 0" in function_body(CAPTURE, "stock ksc_close_producer_context")
+
+
 def _enclosing_function(source: str, index: int) -> str:
     """Name of the stock/public Pawn function whose body contains index."""
     match = None
