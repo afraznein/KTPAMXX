@@ -111,7 +111,12 @@
 // damage/frag queue so a hit burst cannot consume their capacity. This queue
 // is drained first, reports its own drops, and has a truthful bool enqueue API.
 #define KSC_LIFE_BUF_MAX_ENTRIES 64
-#define KSC_LIFE_BUF_LINE_LEN    416
+// 448, not 416: the worst-case life_boundary line is 202 characters of
+// literal plus a 95-char player string, a 63-char match id and the numeric
+// fields -- 423 before round_live, 440 after. The old value truncated the
+// longest lines already, and silently -- a truncated
+// marker loses its trailing sequence and the daemon cannot place it.
+#define KSC_LIFE_BUF_LINE_LEN    448
 
 // dod_client_weapon_fire's own queue. Measured production rate: ~2,500 shots
 // per 12-player match (ktp_ac_weapon_fires, 2026-09-01..09), bursting to
@@ -226,6 +231,10 @@ new g_kscLifeBufferType[KSC_LIFE_BUF_MAX_ENTRIES]
 new g_kscLifeBufferOrder[KSC_LIFE_BUF_MAX_ENTRIES]
 new g_kscLifeBufferCount = 0
 new g_kscLifeDropped = 0
+// The shared buffer has counted its truncations since it was written; this
+// one never did, so the only symptom of an over-long life line was a marker
+// the daemon's regex quietly stopped matching.
+new g_kscLifeTruncated = 0
 // Independent ring: own capacity, own flush task (KSC_SHOT_FLUSH_SECS), never
 // merged into ksc_flush()'s order-interleave. A shot burst has no ordering
 // relationship to worry about with life/data markers -- each row is
@@ -840,6 +849,13 @@ stock bool:ksc_life_buffer(const line[]) {
 		return false
 	}
 
+	// Same bookkeeping ksc_buffer() does: copy() drops everything past the
+	// limit, and what it drops first is the trailing (sequence ...) the daemon
+	// places the marker by. Enqueue it anyway -- partial beats nothing -- but
+	// say so.
+	if (strlen(line) >= KSC_LIFE_BUF_LINE_LEN - 1)
+		g_kscLifeTruncated++
+
 	copy(g_kscLifeBuffer[g_kscLifeBufferCount], KSC_LIFE_BUF_LINE_LEN - 1, line)
 	g_kscLifeBufferType[g_kscLifeBufferCount] = KSC_EVENT_LIFE
 	g_kscLifeBufferOrder[g_kscLifeBufferCount] = ksc_next_buffer_order()
@@ -887,6 +903,10 @@ stock ksc_flush() {
 	if (g_kscLifeDropped > 0) {
 		log_amx("[KTP-STATS] dropped %d LIFE boundary line(s) -- dedicated buffer full", g_kscLifeDropped)
 		g_kscLifeDropped = 0
+	}
+	if (g_kscLifeTruncated > 0) {
+		log_amx("[KTP-STATS] truncated %d LIFE boundary line(s) -- exceeded KSC_LIFE_BUF_LINE_LEN (%d), raise it", g_kscLifeTruncated, KSC_LIFE_BUF_LINE_LEN)
+		g_kscLifeTruncated = 0
 	}
 }
 
@@ -1233,6 +1253,47 @@ stock ksc_observe_life_context(const matchid[]) {
 // record self-describing even if the daemon sees it after a context transition.
 // `event_epoch` is get_systime() (whole seconds) while `game_time` preserves
 // intra-map ordering at sub-second precision.
+// Is the round ACTUALLY running right now?
+//
+// The scoreboard zeroes at the round RESTART, not at the live command, and DoD
+// puts several seconds between the two. Everything killed or captured in that
+// gap is on our side of the line and on nobody's scoreboard -- measured across
+// production, 422 frag rows in 203 matches sit there, which is why a box score
+// reads quietly wrong by one rather than obviously broken.
+//
+// The DODX clock is the authority and needs no new hook: it projects from
+// m_flRestartRoundTime the moment a clan restart is scheduled, so it reads
+// ABOVE mp_timelimit for exactly the countdown and drops back under it when the
+// round actually starts. ksc_break_observe_round_clock() already leans on that
+// for cap-break suppression; this asks the same question without touching its
+// latch.
+//
+// Read at emit time rather than latched on the zone poll: the restart's own
+// spawn burst is the first event of the live round, and a latch refreshed every
+// 0.5 s can still be reporting the countdown when those spawns fire -- which
+// would put the boundary a poll late and leave the same class of hole.
+//
+// Returns -1 when the question is unanswerable (no clock, or mp_timelimit 0, a
+// legitimate setting with no half clock to compare against). That is the
+// column's documented NULL: unobservable, never a guess.
+stock ksc_round_live_now() {
+	new Float:current = dodx_get_round_time()
+	if (current < 0.0)
+		return -1
+
+	new Float:limit = -1.0
+	if (g_kscCvarTimelimit)
+		limit = get_pcvar_float(g_kscCvarTimelimit) * 60.0
+	if (limit <= 0.0)
+		return -1
+
+	// No tolerance, deliberately -- the same reasoning as the cap-break
+	// observer: the projection stays mathematically above the limit until the
+	// scheduled restart lands, and even a small epsilon calls the round live
+	// before the scoreboard has zeroed.
+	return (current > limit) ? 0 : 1
+}
+
 stock bool:ksc_emit_life_boundary(id, const matchid[], const kind[], const reason[]) {
 	if (!ksc_enabled() || !matchid[0])
 		return false
@@ -1263,11 +1324,21 @@ stock bool:ksc_emit_life_boundary(id, const matchid[], const kind[], const reaso
 	new Float:first_shot_delay = (g_kscLifeFirstShot[id] < 0.0) ? -1.0
 		: g_kscLifeFirstShot[id] - g_kscLifeSpawnTime[id]
 
+	// Empty, not 0, when the clock cannot answer: the daemon writes NULL for an
+	// empty value and an honest NULL is the difference between "not live" and
+	// "not knowable". 0 would read as a paused round that never happened.
+	new round_live[4]
+	new live_now = ksc_round_live_now()
+	if (live_now >= 0)
+		num_to_str(live_now, round_live, charsmax(round_live))
+	else
+		round_live[0] = 0
+
 	new line[KSC_LIFE_BUF_LINE_LEN]
 	formatex(line, charsmax(line),
-		"^"%s^" triggered ^"life_boundary^" (matchid ^"%s^") (half ^"%d^") (event_epoch ^"%d^") (game_time ^"%.2f^") (kind ^"%s^") (reason ^"%s^") (team ^"%d^") (class ^"%d^") (slot ^"%d^") (shots ^"%d^") (shots_hitscan ^"%d^") (first_shot_delay ^"%.2f^") (sequence ^"%d^")",
+		"^"%s^" triggered ^"life_boundary^" (matchid ^"%s^") (half ^"%d^") (event_epoch ^"%d^") (game_time ^"%.2f^") (kind ^"%s^") (reason ^"%s^") (team ^"%d^") (class ^"%d^") (slot ^"%d^") (round_live ^"%s^") (shots ^"%d^") (shots_hitscan ^"%d^") (first_shot_delay ^"%.2f^") (sequence ^"%d^")",
 		player_str, producer_matchid, producer_half, event_epoch, game_time,
-		kind, reason, team, class_id, id,
+		kind, reason, team, class_id, id, round_live,
 		g_kscLifeShots[id], g_kscLifeShotsHitscan[id], first_shot_delay, sequence)
 	return ksc_life_buffer(line)
 }

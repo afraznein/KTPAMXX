@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - 1.24.5: life boundaries say whether the round was actually running
+
+`ktp_life_events.round_live` has existed since the table did, documented as
+"reserved: NULL=unobservable in v1; future authoritative 1=live/0=paused". It
+is NULL in all 384,840 rows -- nothing ever wrote it. The daemon has always
+been ready for it: it reads `round_live` off the marker, validates `^[01]$`,
+and writes the column or NULL. Only the producer was silent.
+
+This matters because **the scoreboard zeroes at the round RESTART, not at the
+live command**, and DoD puts several seconds between them. Everything killed
+or captured in that gap belongs to nobody's scoreboard. On one reviewed match
+it was four deaths, two kills and two flag captures -- including a "35 kills
+on the screenshot vs 37 in the database" that had been filed as a suspected
+misread cell and was really two bayonet kills six seconds before the restart.
+Across production: 422 frag rows in 203 matches.
+
+`ksc_round_live_now()` needs no new hook. The DODX clock projects from
+`m_flRestartRoundTime` the moment a clan restart is scheduled, so it reads
+above `mp_timelimit` for exactly the countdown and drops back under it when
+the round starts -- the same signal `ksc_break_observe_round_clock()` already
+uses for cap-break suppression, asked without touching its latch. It is read
+at emit time rather than latched on the 0.5 s poll, because the restart's own
+spawn burst is the first event of the live round and a latch can still be
+reporting the countdown when those spawns fire.
+
+Returns -1, emitted as an empty value and stored as NULL, when the question
+is unanswerable: no clock, or `mp_timelimit 0` (a legitimate setting with no
+half clock to compare against). An honest NULL is the difference between "not
+live" and "not knowable"; a 0 would read as a paused round that never
+happened.
+
+No `KSC_SCHEMA_CONTRACT` bump and no daemon change: `getProperties()` parses
+marker properties by key, not by position, so an added key is accepted by the
+daemon already deployed, and the column is already on production.
+
+### Fixed - 1.24.5: the life buffer counts its truncations
+
+`KSC_LIFE_BUF_LINE_LEN` rises 416 -> 448. The worst-case `life_boundary` line
+was already 423 characters before this change (202 of literal, a 95-char
+player string, a 63-char match id, the numerics) and is 440 after. `copy()`
+drops the overflow silently, and what it drops first is the trailing
+`(sequence ...)` the daemon places the marker by. The shared buffer has
+counted truncations since it was written; this one never did, so the only
+symptom was a marker the daemon's regex quietly stopped matching. It now
+counts and logs them the same way.
+
+Compiled against the pinned `amxxpc` (2.7.33.5799): data size grows 8,652
+bytes, which is the 64 x 32 cells of buffer headroom plus the counter and its
+log literal, and nothing else.
+
 ### Fixed - 1.24.4: the manifest is re-logged every 10 s while a half is live
 
 The manifest is one UDP line sent once at activation. Lose that packet and
