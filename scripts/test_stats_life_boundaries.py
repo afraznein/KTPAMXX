@@ -70,15 +70,43 @@ def test_wire_contract() -> None:
         "team",
         "class",
         "slot",
+        "round_live",
     ):
         assert f'({field} ^"%' in emit, f"wire field missing: {field}"
 
     assert "get_systime()" in emit
     assert "get_gametime()" in emit
-    assert "round_live" not in emit
     assert 'get_cvar_num("dodstats_pause")' not in emit
     assert "if (!ksc_enabled() || !matchid[0])" in emit
     assert "dod_get_user_class(id)" in emit
+
+
+def test_round_live_is_read_per_event_and_nulls_when_unanswerable() -> None:
+    """The window the scoreboard actually uses opens at the RESTART.
+
+    This pinned `round_live` OUT of the wire while nothing could answer it.
+    What replaced that is not "the field exists" -- it is the two properties
+    that make the answer worth storing.
+    """
+    emit = function_body(CAPTURE, "stock bool:ksc_emit_life_boundary")
+    reader = function_body(CAPTURE, "stock ksc_round_live_now")
+
+    # Read per event, not latched on the zone poll: the restart's own spawn
+    # burst is the first event of the live round, and a latch refreshed every
+    # 0.5 s can still be reporting the countdown when those spawns fire.
+    assert "ksc_round_live_now()" in emit
+    assert "dodx_get_round_time()" in reader
+
+    # Unanswerable is NULL, never 0. An empty value is what the daemon stores
+    # as NULL; a 0 would read as a paused round that never happened.
+    assert "return -1" in reader, "no clock must be unobservable, not 'not live'"
+    assert "if (limit <= 0.0)" in reader, "mp_timelimit 0 has no half clock to judge against"
+    assert "round_live[0] = 0" in emit, "the unknown case must emit an EMPTY value"
+
+    # The comparison carries no tolerance, for the same reason the cap-break
+    # observer's does not: the projection stays above the limit until the
+    # restart lands, and an epsilon calls the round live before it has.
+    assert "(current > limit) ? 0 : 1" in reader
 
 
 def test_schema22_team_membership_wire_and_health_order() -> None:
@@ -105,12 +133,18 @@ def test_wire_line_fits_capture_buffer() -> None:
     # ksc_player_str itself caps at 95 characters and DODX caps match ids at
     # 63. Use maximum-width signed numeric values as well; truncating this line
     # would silently make the daemon regex stop matching trailing properties.
+    # EVERY field, through to the trailing sequence. Measuring only as far as
+    # (slot ...) compared 363 characters against the limit and passed while the
+    # real line was 476 and overrunning it -- and the first thing an overrun
+    # costs is the sequence the daemon places the marker by.
     line = (
         f'"{"P" * 95}" triggered "life_boundary" '
         f'(matchid "{"M" * 63}") (half "255") (event_epoch "-2147483648") '
         f'(game_time "-2147483648.00") '
         f'(kind "start") (reason "context_live") (team "-2147483648") '
-        f'(class "-2147483648") (slot "32")'
+        f'(class "-2147483648") (slot "32") (round_live "1") '
+        f'(shots "-2147483648") (shots_hitscan "-2147483648") '
+        f'(first_shot_delay "-2147483648.00") (sequence "-2147483648")'
     )
     capture_buffer = re.search(r"#define\s+KSC_LIFE_BUF_LINE_LEN\s+(\d+)", CAPTURE)
     assert capture_buffer, "missing KSC_LIFE_BUF_LINE_LEN"

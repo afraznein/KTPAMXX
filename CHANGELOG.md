@@ -44,18 +44,19 @@ daemon already deployed, and the column is already on production.
 
 ### Fixed - 1.24.5: the life buffer counts its truncations
 
-`KSC_LIFE_BUF_LINE_LEN` rises 416 -> 448. The worst-case `life_boundary` line
-was already 423 characters before this change (202 of literal, a 95-char
-player string, a 63-char match id, the numerics) and is 440 after. `copy()`
-drops the overflow silently, and what it drops first is the trailing
-`(sequence ...)` the daemon places the marker by. The shared buffer has
-counted truncations since it was written; this one never did, so the only
-symptom was a marker the daemon's regex quietly stopped matching. It now
-counts and logs them the same way.
+`KSC_LIFE_BUF_LINE_LEN` rises 416 -> 512. The worst-case `life_boundary`
+line -- a 95-char player string, a 63-char match id and every numeric field
+at full signed width -- is **493 characters with `round_live` and was already
+476 without it**. `copy()` drops the overflow silently, and what it drops
+first is the trailing `(sequence ...)` the daemon places the marker by.
 
-Compiled against the pinned `amxxpc` (2.7.33.5799): data size grows 8,652
-bytes, which is the 64 x 32 cells of buffer headroom plus the counter and its
-log literal, and nothing else.
+Two guards were missing, which is why nobody knew. The shared buffer has
+counted truncations since it was written; this one never did, so the only
+symptom was a marker the daemon's regex quietly stopped matching. And the
+contract test that exists to catch exactly this built its worst-case line
+only as far as `(slot ...)` -- 363 characters -- so it compared a third of
+the line against the limit and passed. It now builds the whole line, and the
+buffer counts and logs its truncations the way the shared one does.
 
 ### Fixed - 1.24.4: the manifest is re-logged every 10 s while a half is live
 

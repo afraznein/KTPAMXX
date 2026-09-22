@@ -111,12 +111,16 @@
 // damage/frag queue so a hit burst cannot consume their capacity. This queue
 // is drained first, reports its own drops, and has a truthful bool enqueue API.
 #define KSC_LIFE_BUF_MAX_ENTRIES 64
-// 448, not 416: the worst-case life_boundary line is 202 characters of
-// literal plus a 95-char player string, a 63-char match id and the numeric
-// fields -- 423 before round_live, 440 after. The old value truncated the
-// longest lines already, and silently -- a truncated
-// marker loses its trailing sequence and the daemon cannot place it.
-#define KSC_LIFE_BUF_LINE_LEN    448
+// 512, not 416. The worst-case life_boundary line -- a 95-char player string,
+// a 63-char match id and every numeric field at full signed width -- is 493
+// characters WITH round_live and was 476 without it. The old value truncated
+// those lines silently, and what copy() drops first is the trailing
+// (sequence ...) the daemon places the marker by.
+//
+// The contract test guarding this measured only as far as (slot ...), so it
+// compared 363 characters against the limit and passed while the real line
+// overran it. It now builds the whole line.
+#define KSC_LIFE_BUF_LINE_LEN    512
 
 // dod_client_weapon_fire's own queue. Measured production rate: ~2,500 shots
 // per 12-player match (ktp_ac_weapon_fires, 2026-09-01..09), bursting to
