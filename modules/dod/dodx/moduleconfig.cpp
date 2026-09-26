@@ -55,6 +55,8 @@ static void DODX_OnSV_DropClient(IVoidHookChain<IGameClient *, bool, const char 
 static void DODX_OnEstablishTimeBase(IVoidHookChain<IGameClient *, struct usercmd_s *, int, int, int> *chain,
                                      IGameClient *cl, struct usercmd_s *cmds, int dropped, int numbackup, int numcmds);
 static void DODX_OnChangelevel(IVoidHookChain<const char *, const char *> *chain, const char *s1, const char *s2);
+static void DODX_OnStartSound(IVoidHookChain<int, edict_t *, int, const char *, int, float, int, int> *chain,
+	int recipients, edict_t *entity, int channel, const char *sample, int volume, float attenuation, int fFlags, int pitch);
 static void DODX_OnSV_ActivateServer(IVoidHookChain<int> *chain, int runPhysics);
 
 // KTP: Forward declarations for extension mode setup/cleanup functions
@@ -1851,6 +1853,76 @@ static void DODX_OnEstablishTimeBase(IVoidHookChain<IGameClient *, struct usercm
 	sg.netPending = 1;
 }
 
+// KTP: count the movement code's own player sounds, per player.
+//
+// WHY THIS HOOK AND NOT A PAWN FORWARD. ReAPI exposes the same chain to plugins as
+// RH_SV_StartSound, but that dispatches a Pawn forward for EVERY sound the server
+// emits -- every shot, every voice line, every ambient. Registering the chain here
+// rejects all of those with one integer compare and never enters the VM.
+//
+// WHY recipients == 1 IS THE FILTER. It is not a guess from the sample name: the
+// engine's PM_SV_PlaySound is the only caller that passes 1 -- every other
+// SV_StartSound call site in the engine, and PF_EmitSound behind every plugin and
+// game-DLL sound, passes 0. So this test means "emitted from inside pmove, for the
+// player whose usercmd is running", structurally rather than by name. The same flag
+// is what makes the engine skip the emitter when it multicasts, so what is counted
+// here is exactly what the OTHER players were sent.
+//
+// Families are counted apart rather than filtered: which of them is a footstep is a
+// judgement, and keeping them separate costs one switch.
+static void DODX_OnStartSound(IVoidHookChain<int, edict_t *, int, const char *, int, float, int, int> *chain,
+	int recipients, edict_t *entity, int channel, const char *sample, int volume, float attenuation, int fFlags, int pitch)
+{
+	chain->callNext(recipients, entity, channel, sample, volume, attenuation, fFlags, pitch);
+
+	if (recipients != 1 || !sample || !entity || entity->free)
+		return;
+	if (!g_bServerActive || !g_pFirstEdict || !gpGlobals)
+		return;
+	if (strncmp(sample, "player/pl_", 10) != 0)
+		return;
+
+	int index = ENTINDEX_SAFE(entity);
+	if (index < 1 || index > gpGlobals->maxClients)
+		return;
+
+	CPlayer *pPlayer = GET_PLAYER_POINTER_I(index);
+	if (!pPlayer->ingame)
+		return;
+
+	// The SAME gate the time sampler applies, and it has to be the same one: this is
+	// the numerator and that is the denominator. A sound admitted under a looser gate
+	// lands in a window that recorded no time able to produce it.
+	const int team = entity->v.team;
+	if (!pPlayer->IsAlive() || (team != 1 && team != 2))
+		return;
+
+	KTPMoveStats &st = pPlayer->ktpMove;
+	st.pmoveSoundsTotal++;
+
+	switch (sample[10])
+	{
+	case 'd':  // dirt, duct
+	case 'g':  // grate
+	case 'm':  // metal
+	case 't':  // tile
+		st.stepsGround++;
+		break;
+	case 's':  // step, slosh, snow -- or swim, which is not one of them
+		if (sample[11] == 'w') st.soundsWater++;
+		else                   st.stepsGround++;
+		break;
+	case 'l':  // ladder
+		st.stepsLadder++;
+		break;
+	case 'w':  // wade
+		st.soundsWater++;
+		break;
+	default:
+		break;  // in the total only; nothing here decides what it was
+	}
+}
+
 // KTP: TraceLine hook handler - replaces FN_TraceLine_Post
 static void DODX_OnTraceLine(IVoidHookChain<const float *, const float *, int, edict_t *, TraceResult *> *chain,
                               const float *v1, const float *v2, int fNoMonsters, edict_t *e, TraceResult *ptr)
@@ -2130,6 +2202,43 @@ static void KTPSampleAim(CPlayer *pPlayer, edict_t *pEntity)
 	st.onGroundPrev = onGround;
 }
 
+// KTP: one usercmd's worth of crouch input and movement state. O(1), allocation-free
+// and free of trigonometry by construction; KTPMoveAccum.h carries the engine ordering
+// the button edge rests on and the reason nothing here is reduced to a ratio.
+static void KTPSampleMove(CPlayer *pPlayer, edict_t *pEntity)
+{
+	KTPMoveStats &st = pPlayer->ktpMove;
+
+	// Same gate as the aim sampler, duplicated rather than shared: the two sensors must
+	// be able to change without moving each other, and in DoD a spectator's usercmds
+	// would otherwise land in a census about players.
+	const int team = pEntity->v.team;
+	if (!pPlayer->IsAlive() || (team != 1 && team != 2))
+	{
+		st.ForgetSampleState();
+		return;
+	}
+
+	// Horizontal only: vertical speed is fall and jump, which say nothing about whether
+	// a player crossed the ground faster than his stance should allow.
+	const float vx = pEntity->v.velocity.x;
+	const float vy = pEntity->v.velocity.y;
+
+	// The rising edge. Valid HERE and nowhere later in the command: the engine has
+	// already written v.button from this usercmd, and does not write v.oldbuttons until
+	// after the pmove phase. KTPMoveAccum.h states the ordering in full.
+	const bool duckEdge =
+		(((int)pEntity->v.button & ~(int)pEntity->v.oldbuttons) & IN_DUCK) != 0;
+
+	st.Observe((double)gpGlobals->time,
+	           (pEntity->v.flags & FL_ONGROUND) != 0,
+	           (pEntity->v.flags & FL_DUCKING) != 0,
+	           vx * vx + vy * vy,
+	           duckEdge,
+	           (int)pEntity->v.fuser4,
+	           pEntity->v.flTimeStepSound);
+}
+
 // KTP: PlayerPreThink hook handler - replaces FN_PlayerPreThink_Post
 static void DODX_OnPlayerPreThink(IVoidHookChain<edict_t *, float> *chain, edict_t *pEntity, float time)
 {
@@ -2217,6 +2326,8 @@ static void DODX_OnPlayerPreThink(IVoidHookChain<edict_t *, float> *chain, edict
 		// Nor the leaver's visibility counters or pack history -- and coverage
 		// for this slot restarts now, so early samples read unknown, not clean.
 		pPlayer->ktpVis.reset();
+		// Same parity: Init() was skipped, so the move census would carry over too.
+		pPlayer->ktpMove.Reset();
 		KTPPackVisClearSlot(index, (double)gpGlobals->time);
 	}
 	else if (!pPlayer->ingame)
@@ -2248,6 +2359,10 @@ static void DODX_OnPlayerPreThink(IVoidHookChain<edict_t *, float> *chain, edict
 	// pause boundary would otherwise be silently truncated mid-burst and score as a
 	// short clean one, which is the direction that loses a detection.
 	KTPSampleAim(pPlayer, pEntity);
+	// Beside the aim sampler and for the same reason: a round freeze or dodstats_pause
+	// is a scoring concern, and a census truncated at one would lose the time while the
+	// sound hook kept counting -- the direction that invents a quiet player.
+	KTPSampleMove(pPlayer, pEntity);
 
 	// Stats tracking — skip if module is paused (round-freeze, dodstats_pause cvar)
 	if (!isModuleActive())
@@ -2782,6 +2897,11 @@ static bool DODX_SetupExtensionHooks()
 
 	if (g_pRehldsHookchains->SV_EstablishTimeBase())
 		g_pRehldsHookchains->SV_EstablishTimeBase()->registerHook(DODX_OnEstablishTimeBase, HC_PRIORITY_DEFAULT);
+
+	// KTP: the movement code's player sounds, for the footstep half of the move census.
+	// Post-style: reads after callNext and changes nothing the engine sends.
+	if (g_pRehldsHookchains->SV_StartSound())
+		g_pRehldsHookchains->SV_StartSound()->registerHook(DODX_OnStartSound, HC_PRIORITY_DEFAULT);
 
 	// ED_Free is the bundled ReHLDS pre-free hook reached by normal FL_KILLME
 	// cleanup. serialnumber/origin are still trustworthy at this point.
@@ -3809,6 +3929,9 @@ static void DODX_CleanupExtensionHooks()
 
 		if (g_pRehldsHookchains->SV_EstablishTimeBase())
 			g_pRehldsHookchains->SV_EstablishTimeBase()->unregisterHook(DODX_OnEstablishTimeBase);
+
+		if (g_pRehldsHookchains->SV_StartSound())
+			g_pRehldsHookchains->SV_StartSound()->unregisterHook(DODX_OnStartSound);
 
 		if (g_pRehldsHookchains->ED_Free())
 			g_pRehldsHookchains->ED_Free()->unregisterHook(DODX_OnEdictFree);

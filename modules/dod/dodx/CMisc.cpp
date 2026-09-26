@@ -31,6 +31,7 @@ void CPlayer::Disconnect()
 	// substitute would otherwise inherit the leaver's fire windows and be measured
 	// on someone else's aim.
 	ktpAim.Reset();
+	ktpMove.Reset();
 
 	// Zero the offset-validation death counter so a mid-map substitute
 	// joining this recycled slot doesn't inherit the leaver's tally (Init()
@@ -167,6 +168,7 @@ void CPlayer::restartStats(bool all)
 void CPlayer::Init( int pi, edict_t* pe )
 {
 	ktpAim.Reset();
+	ktpMove.Reset();
 	aiming = 0;
 	wpnModel = 0;
 	wpnscount = 0;

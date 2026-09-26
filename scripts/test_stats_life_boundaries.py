@@ -792,9 +792,17 @@ def test_plugin_version() -> None:
 
 
 def test_schema23_manifest_and_two_second_position_contract() -> None:
-    assert re.search(r"#define\s+KSC_SCHEMA_CONTRACT\s+24(?:\s|$)", CAPTURE)
+    # A FLOOR, not a frozen literal -- for the reason test_plugin_version states two
+    # functions up. What this test actually describes is the schema-23/24 contract, and
+    # every later schema is a superset of it (the daemon authorizes on >= 23 plus a
+    # per-capability bit, not on equality). Pinning == would break on every deliberate
+    # bump while catching nothing a regression below the floor does not.
+    contract = re.search(r"#define\s+KSC_SCHEMA_CONTRACT\s+(\d+)(?:\s|$)", CAPTURE)
+    assert contract, "KSC_SCHEMA_CONTRACT is missing or malformed"
+    assert int(contract.group(1)) >= 24, (
+        f"schema contract went backwards to {contract.group(1)}; the daemon gates on it")
     assert re.search(r"#define\s+KSC_POSITION_BROADCAST_SECS\s+2\.0(?:\s|$)", CAPTURE)
-    for capability in ("objective_attempt", "grenade_entity", "position_state", "map_revision"):
+    for capability in ("objective_attempt", "grenade_entity", "position_state", "map_revision", "move"):
         assert capability in re.search(
             r'#define\s+KSC_CAPABILITIES\s+"([^"]+)"', CAPTURE).group(1)
     for capability in ("objective_attempt", "grenade_entity"):

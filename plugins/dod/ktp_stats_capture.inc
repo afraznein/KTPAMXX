@@ -91,6 +91,15 @@
 // unchanged; verify the health/drop counters on Lane B before production.
 #define KSC_POSITION_BROADCAST_SECS 2.0
 
+// Move census cadence. One row per moving player per window, so this is two
+// orders of magnitude below the position stream -- the interval is set by what
+// makes a rate readable, not by volume. Thirty seconds matches the aim-geometry
+// flush, which keeps the two movement views describing the same spans.
+//
+// The window bounds the module's counters, which is what keeps every field on
+// the wire inside its rendered width -- so a longer interval is not free.
+#define KSC_MOVE_FLUSH_SECS 30.0
+
 // Bumped 48 -> 128 for the damage ledger: ~1,100-1,500 hits/match (measured
 // on a prior live audit) dwarfs the ~150-400 kills/match that sized this
 // buffer before. Client_damage can fire many times per second in a heavy
@@ -176,11 +185,44 @@
 // legal match's plausible concurrent grenade count.
 #define KSC_GRENADE_CACHE_MAX 64
 
+// Buckets this file reserves for one move-census histogram, and the characters its
+// rendered field needs. NOT the module's bucket count -- dodx_get_move_hist reports
+// that and bounds its own write by the size it is given.
+//
+// ⚠️ THIS IS A LINE-BUDGET CONSTANT, not free headroom. Every bucket costs a
+// full-width number plus a separator in EACH rendered histogram, so raising it by
+// one widens the worst-case marker by that times the number of histograms -- and
+// not far past this the line stops fitting KSC_BUF_LINE_LEN, where ksc_buffer
+// truncates it. Re-derive the worst case before touching this and raise the buffer
+// with it; KTPHLStatsX's selftest asserts the worst-case width against this number,
+// so it fails there rather than on the wire.
+//
+// A module that outgrows it truncates here and is then REJECTED by the daemon rather
+// than stored short: the bucket count travels on the wire, so a field carrying fewer
+// values than it claims fails the count check. Loud, which is the direction we want.
+#define KSC_MOVE_MAX_BUCKETS 8
+// Six digits plus a separator per bucket; the last needs no separator, so this is
+// one character of slack plus the terminator.
+#define KSC_MOVE_FIELD_LEN   (KSC_MOVE_MAX_BUCKETS * 7)
+
 // Increment when the producer/daemon storage contract changes. This is
 // emitted in every per-half manifest so mixed fleet deployments are visible
 // without reverse-engineering them from which rows happened to arrive.
+// ⚠️ NOT bumped for the move census, deliberately. A stream is gated by its
+// CAPABILITY bit, not by the schema ordinal -- the daemon authorizes on
+// schema >= 23 AND the per-event bit -- and the capability list is a MINIMUM on
+// the daemon side, so an extra name in it validates against a receiver that has
+// never heard of that stream.
+//
+// That turns the deploy hazard from fatal into local. A producer ahead of its
+// daemon has its whole MANIFEST refused when it announces an unknown schema,
+// which takes every other capture stream down with it for that half; announcing
+// an unknown capability instead loses only the stream the daemon cannot read.
+//
+// Bump this only for a change that really alters the storage contract, and
+// check what the next ordinal is already promised to before taking it.
 #define KSC_SCHEMA_CONTRACT 24
-#define KSC_CAPABILITIES "frag_context,damage,position,assist,life,break,flag_state,flag_position,objective_attempt,team_membership,grenade_entity,shot,score,duel,player_state,grenade_throw,position_state,map_revision,sequence,health"
+#define KSC_CAPABILITIES "frag_context,damage,position,assist,life,break,flag_state,flag_position,objective_attempt,team_membership,grenade_entity,shot,score,duel,player_state,grenade_throw,position_state,map_revision,sequence,health,move"
 
 enum {
 	KSC_EVENT_LIFE = 0,
@@ -206,6 +248,8 @@ enum {
 	KSC_EVENT_PLAYER_STATE,
 	// Grenade throw (the burst is already the `tracked` lifecycle row).
 	KSC_EVENT_GRENADE_THROW,
+	// Crouch-input and footstep-emission census, appended so no index shifts.
+	KSC_EVENT_MOVE,
 	KSC_EVENT_COUNT
 }
 
@@ -220,6 +264,9 @@ enum {
 #define KSC_TASK_FLAG_POSITIONS_RETRY 88015
 #define KSC_FLAG_POS_RETRY_SECS 6.0
 #define KSC_TASK_SHOT_FLUSH     88014
+// 88015 is the flag-position retry, which is why this is not it -- that pair
+// collided once already and the symptom was a silently cancelled flush.
+#define KSC_TASK_MOVE           88016
 
 new g_kscBuffer[KSC_BUF_MAX_ENTRIES][KSC_BUF_LINE_LEN]
 new g_kscBufferType[KSC_BUF_MAX_ENTRIES]
@@ -273,7 +320,8 @@ new g_kscSeqHalf = 0
 new const g_kscEventNames[KSC_EVENT_COUNT][] = {
 	"life", "damage", "position", "frag", "assist", "break",
 	"flag_state", "flag_position", "objective_attempt", "team_membership",
-	"grenade_entity", "shot", "score", "duel", "player_state", "grenade_throw"
+	"grenade_entity", "shot", "score", "duel", "player_state", "grenade_throw",
+	"move"
 }
 
 // [victim][attacker] -- enemy damage dealt to victim since their last spawn.
@@ -507,6 +555,7 @@ stock ksc_cfg() {
 	set_task(KSC_ZONE_POLL_SECS, "ksc_zone_poll_task", KSC_TASK_ZONES, .flags="b")
 	set_task(KSC_POSITION_BROADCAST_SECS, "ksc_position_broadcast_task", KSC_TASK_POSITIONS, .flags="b")
 	set_task(KSC_SHOT_FLUSH_SECS, "ksc_shot_flush_task", KSC_TASK_SHOT_FLUSH, .flags="b")
+	set_task(KSC_MOVE_FLUSH_SECS, "ksc_move_flush_task", KSC_TASK_MOVE, .flags="b")
 	ksc_capture_map_revision()
 
 	// The arm that actually survives a changelevel. controlpoints_init runs
@@ -2498,6 +2547,148 @@ stock ksc_emit_flag_position(f) {
 		dodx_cp_identity_resolved(), matchid, half, sequence, get_systime())
 	if (tracked)
 		g_kscEmitted[KSC_EVENT_FLAG_POSITION]++
+}
+
+// Gametime the current move-census window opened. Global rather than per-player
+// because the flush resets every player together; a player who joined or died
+// mid-window covers less of it, which is why the ms histograms and not this are the
+// denominator a consumer should divide by.
+new Float:g_kscMoveWindowStart = 0.0
+
+// Render one census histogram as a space-separated field. Same shape as KTP_DUEL's
+// bodyhits, which the daemon already splits on whitespace.
+stock ksc_move_hist_str(id, which, out[], len) {
+	new hist[KSC_MOVE_MAX_BUCKETS]
+	new n = dodx_get_move_hist(id, which, hist)
+	new pos = 0
+	out[0] = EOS
+	for (new i = 0; i < n; i++) {
+		pos += formatex(out[pos], len - pos, i ? " %d" : "%d", hist[i])
+	}
+	return n
+}
+
+// Periodic crouch-input and footstep-emission census -- raw facts only, the same
+// rule the position stream states next door. Whether a tap rate or a step ratio
+// means anything is a question for the query layer, and this file must not answer
+// it: KTPAMXX is public, so a cut-point written here is a published one.
+//
+// THE TWO HALVES SHIP IN ONE ROW ON PURPOSE. A step count without the tap census
+// beside it reads as an accusation against anyone who crouch-walks, which is
+// ordinary play. Splitting this into two markers would make that reading the easy
+// one, so it stays one line even though the line is wide.
+//
+// step_timer_fires is the control for the whole footstep half: it observes the
+// engine's own step timer rather than the emitted sound, so timer fires with no
+// steps means the SERVER stopped emitting footsteps, not that everyone went quiet.
+// Without it those two are indistinguishable and the second is the one that would
+// be believed.
+//
+// Line budget, since a silent truncation here is how the life buffer lost its
+// sequence field. The five histograms are the bulk, at seven characters per bucket
+// each, and the module clamps its counters so that width holds -- except
+// stam_tap_min, whose -1 no-tap sentinel a clamp would collide with, and which the
+// daemon bounds to its column instead. At KSC_MOVE_MAX_BUCKETS the worst case
+// (longest player string, full-width match id and map, every counter at its clamp)
+// fits KSC_BUF_LINE_LEN with room. Re-derive before adding a field or a bucket; see
+// KSC_MOVE_MAX_BUCKETS for what each bucket costs.
+public ksc_move_flush_task() {
+	if (!ksc_enabled())
+		return
+
+	// window_ms is 0 for "boundary unknown", not for "no time passed": a window in
+	// which nothing happened emits no row at all, so 0 can only mean the baseline was
+	// not trustworthy. Two cases reach it -- the first flush after load, and a gametime
+	// reset at map change, which extension mode does NOT follow with a plugin reload,
+	// so the previous map's anchor is still sitting there.
+	new Float:now = get_gametime()
+	new Float:elapsed = now - g_kscMoveWindowStart
+	new window_ms = 0
+	if (g_kscMoveWindowStart > 0.0 && elapsed >= 0.0 &&
+		elapsed <= KSC_MOVE_FLUSH_SECS * 10.0) {
+		window_ms = floatround(elapsed * 1000.0)
+	}
+	g_kscMoveWindowStart = now
+
+	new producer_matchid[64], producer_half
+	new bool:tracked = ksc_event_context(producer_matchid, charsmax(producer_matchid), producer_half)
+
+	new geom[2]
+	dodx_get_move_geom(geom)
+
+	new mapname[32]
+	get_mapname(mapname, charsmax(mapname))
+
+	for (new id = 1; id <= MAX_PLAYERS; id++) {
+		if (!is_user_connected(id))
+			continue
+
+		// Reset happens on every path below, including the ones that emit nothing.
+		// A window that is skipped but not cleared would carry its counters into the
+		// next one, and the widths this line's budget assumes come from the window
+		// bounding them -- so a missed reset is a malformed line later, not just a
+		// wrong number.
+		//
+		// No tracked match: warmup and pub noise, the same call the shot stream makes.
+		// Tested first because it cannot vary between players, and because a window
+		// that spans the start of a match must not carry warmup movement into it.
+		if (!tracked) {
+			dodx_reset_move_stats(id)
+			continue
+		}
+
+		new stats[8]
+		if (!dodx_get_move_stats(id, stats)) {
+			dodx_reset_move_stats(id)
+			continue
+		}
+
+		new taps_ground[KSC_MOVE_FIELD_LEN], taps_air[KSC_MOVE_FIELD_LEN]
+		new ground_standing[KSC_MOVE_FIELD_LEN], ground_ducked[KSC_MOVE_FIELD_LEN]
+		new air_ducked[KSC_MOVE_FIELD_LEN]
+		ksc_move_hist_str(id, 0, taps_ground, charsmax(taps_ground))
+		ksc_move_hist_str(id, 1, taps_air, charsmax(taps_air))
+		ksc_move_hist_str(id, 2, ground_standing, charsmax(ground_standing))
+		ksc_move_hist_str(id, 3, ground_ducked, charsmax(ground_ducked))
+		ksc_move_hist_str(id, 4, air_ducked, charsmax(air_ducked))
+
+		// Nothing observed is not worth a row: on a quiet server every connected
+		// player would otherwise produce one every window. A player who moved at all
+		// trips one of these, so the absence of a row means he did not.
+		if (stats[0] == 0 && stats[6] == 0 && stats[7] == 0 &&
+			!ksc_move_field_nonzero(ground_standing) &&
+			!ksc_move_field_nonzero(ground_ducked) &&
+			!ksc_move_field_nonzero(air_ducked)) {
+			dodx_reset_move_stats(id)
+			continue
+		}
+
+		new pstr[96]
+		ksc_player_str(id, pstr, charsmax(pstr))
+
+		new event_epoch = get_systime()
+		new sequence = ksc_next_type_sequence(KSC_EVENT_MOVE)
+
+		new line[KSC_BUF_LINE_LEN]
+		formatex(line, charsmax(line),
+			"^"%s^" triggered ^"move_census^" (window_ms ^"%d^") (buckets ^"%d^") (bucket_width ^"%d^") (taps ^"%d^") (taps_ground ^"%s^") (taps_air ^"%s^") (ground_ms_standing ^"%s^") (ground_ms_ducked ^"%s^") (air_ms_ducked ^"%s^") (stam_tap_sum ^"%d^") (stam_tap_min ^"%d^") (steps_ground ^"%d^") (steps_ladder ^"%d^") (sounds_water ^"%d^") (pmove_sounds ^"%d^") (step_timer_fires ^"%d^") (map ^"%s^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^")",
+			pstr, window_ms, geom[0], geom[1], stats[0],
+			taps_ground, taps_air, ground_standing, ground_ducked, air_ducked,
+			stats[1], stats[2], stats[3], stats[4], stats[5], stats[6], stats[7],
+			mapname, producer_matchid, producer_half, now, event_epoch, sequence)
+
+		ksc_buffer(line, KSC_EVENT_MOVE)
+		dodx_reset_move_stats(id)
+	}
+}
+
+// True if a rendered histogram field holds anything but zeros. Reads the field
+// rather than re-reading the module, so the skip decision is taken on exactly the
+// bytes that would have been sent.
+stock bool:ksc_move_field_nonzero(const field[]) {
+	for (new i = 0; field[i]; i++)
+		if (field[i] >= '1' && field[i] <= '9') return true
+	return false
 }
 
 // Periodic roster-position sample -- raw facts only, on purpose. Per the
