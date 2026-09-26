@@ -7,6 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - 1.25.0: crouch-input and footstep-emission census (measure-only)
+
+A second per-usercmd sensor beside the aim sampler, and a new dodx hook on the
+engine's own sound path. It counts crouch button presses, the time a player spends
+in each movement state, and the footsteps the server actually emitted for him.
+
+**It applies no threshold, computes no ratio and reaches no conclusion, and that is
+a contract rather than a phase.** There is no calibrated positive class for what
+this measures, so any cut-point chosen now would be a guess wearing the authority of
+a measurement -- and this repository is public, so it would be a published one. The
+producer ships distributions, not judgements: time is a histogram over horizontal
+speed rather than "time above a threshold", precisely because the threshold is the
+whole question.
+
+**Both halves ship in one marker and one native, deliberately.** A footstep count
+read without the crouch census beside it describes an ordinary crouch-walker exactly
+as well as it describes anything else; keeping them inseparable at the source is
+cheaper than remembering the rule downstream.
+
+`KTPMoveAccum.h` / `KTPSampleMove` rest on an engine ordering worth stating: inside
+one `SV_RunCmd` the engine assigns `v.button` from this command *before*
+`SV_PlayerRunPreThink`, and writes `v.oldbuttons` only *after* the pmove phase. At
+the sample point `v.button & ~v.oldbuttons` is therefore a true rising edge with no
+state of our own to keep. Velocity, flags and `fuser4` are pmove write-backs, so
+they describe the state the command acts on, not the one it produces -- a tap's
+recorded stamina is the stamina the tap was applied to.
+
+`step_timer_fires` is the control and is not decoration. It watches the engine's own
+`v.flTimeStepSound` reset -- an independent sensor for the same event as the counted
+sounds. Timer fires with no steps means the *server* stopped emitting footsteps
+(`mp_footsteps`, or a step path that no longer reaches the sound hook). Without it
+that is indistinguishable from every player moving silently, and the second is the
+reading that would be believed.
+
+### Added - 1.25.0: dodx registers the ReHLDS `SV_StartSound` chain
+
+ReAPI already exposes this chain to Pawn as `RH_SV_StartSound`, but that dispatches
+a forward for *every* sound the server emits -- every shot, every voice line, every
+ambient. dodx registers the same underlying chain and rejects all of them with one
+integer compare, never entering the VM.
+
+That compare is `recipients == 1`, and it is structural rather than a guess from the
+sample name: the engine's `PM_SV_PlaySound` is the only caller that passes 1 -- every
+other `SV_StartSound` site, and `PF_EmitSound` behind every plugin and game-DLL
+sound, passes 0. It also happens to be the flag that makes the engine skip the
+emitter when it multicasts (the client predicts its own footsteps), so what is
+counted is exactly what the *other* players were sent.
+
+### Added - 1.25.0: `move_census` producer stream, on a capability not a schema
+
+`ksc_move_flush_task` emits one marker per window for each player who moved, into
+the existing async ring.
+
+**`KSC_SCHEMA_CONTRACT` is deliberately NOT bumped.** A stream is gated by its
+capability bit, not by the schema ordinal -- the daemon authorizes on `schema >= 23`
+**and** the per-event bit -- and the daemon's capability list is a minimum rather
+than an exact set, so an extra name validates against a receiver that has never
+heard of the stream.
+
+That turns the deploy hazard from fatal into local. An unknown *schema* gets a
+producer's whole manifest refused, taking every other capture stream down with it
+for that half; an unknown *capability* loses only the stream the daemon cannot
+read. It also leaves the next ordinal free for the bump already ruled against it.
+Deploy the daemon first regardless.
+
+New natives: `dodx_get_move_stats`, `dodx_get_move_hist`, `dodx_get_move_geom`,
+`dodx_reset_move_stats`. `dodx_get_move_hist` bounds its write by the caller's own
+array and returns the cells written, so a module that outgrows a consumer's budget
+truncates visibly instead of overflowing it -- the hazard `AIM_KEEP_WINDOWS` handles
+by hand. `dodx_get_move_geom` exists so a stored row keeps its meaning: without the
+bucket geometry on the wire, changing it later would silently reinterpret every row
+already written.
+
 ### Added - 1.24.5: life boundaries say whether the round was actually running
 
 `ktp_life_events.round_live` has existed since the table did, documented as

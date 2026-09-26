@@ -105,6 +105,31 @@ jobs:
             linux-libc-dev:i386 lib32z1-dev nasm \
             ${{ matrix.cc }} ${{ matrix.extra_install }}
 
+      # The move-census accumulator is the only dodx logic that runs once per usercmd
+      # and is checkable without a server, because Observe() takes plain values rather
+      # than an edict. Built -m32 to match the shipped module.
+      #
+      # Negative control first, same convention as the --selftest gates above: a test
+      # that has only ever passed is indistinguishable from one that never asserted.
+      - name: Prove the move-accumulator test discriminates
+        working-directory: KTPAMXX
+        run: |
+          set -e
+          ${{ matrix.cxx }} -m32 -O2 -std=gnu++14 -DNEGATIVE_CONTROL \
+            -Imodules/dod/dodx -o /tmp/test_move_accum_neg scripts/test_move_accum.cpp
+          if /tmp/test_move_accum_neg; then
+            echo 'FAIL: the negative control PASSED, so this gate asserts nothing'
+            exit 1
+          fi
+          echo 'negative control failed as required'
+
+      - name: Test the move-census accumulator
+        working-directory: KTPAMXX
+        run: |
+          set -e
+          ${{ matrix.cxx }} -m32 -O2 -std=gnu++14 \
+            -Imodules/dod/dodx -o /tmp/test_move_accum scripts/test_move_accum.cpp
+          /tmp/test_move_accum
       - name: Install AMBuild
         run: |
           python3 -m pip install --upgrade pip setuptools wheel
