@@ -169,7 +169,7 @@
 // test_shot_wire_line_fits_shot_buffer, which derives the true worst case
 // from the live format string using each field's PROVABLE bound (an
 // explicit C++ clamp, not a blanket "every %d could be -2147483648"
-// assumption) -- 936B for this wire, comfortably under both this buffer and
+// assumption) -- 878B for this wire, comfortably under both this buffer and
 // the real binding constraint, which is NOT this buffer: log_message()'s
 // eventual path through ReHLDS's Log_Printf has a hardcoded 1024-byte
 // buffer with a ~25-byte timestamp prefix always prepended, so anything
@@ -177,6 +177,14 @@
 // regardless of what this constant says. Keep this under ~965 for exactly
 // that reason -- raising it further does not buy real headroom the way it
 // looks like it would.
+//
+// 936 -> 878 when schema 25 dropped shooter_punch_pitch/yaw. The constant is
+// deliberately NOT lowered to match: the ring is already sized and paid for,
+// and lowering it would only have to be undone. The 58B is headroom now, and
+// the zero-spread counterfactual fields (spread_x / spread_y / spread_class,
+// 57B at x10000) are the measured claim on it -- see
+// infra-shot-attribution. Anything else spending that headroom first should
+// say so, because at 936 there was not room for both.
 #define KSC_SHOT_BUF_LINE_LEN    960
 #define KSC_SHOT_FLUSH_SECS      1.0
 
@@ -221,7 +229,7 @@
 //
 // Bump this only for a change that really alters the storage contract, and
 // check what the next ordinal is already promised to before taking it.
-#define KSC_SCHEMA_CONTRACT 24
+#define KSC_SCHEMA_CONTRACT 25
 #define KSC_CAPABILITIES "frag_context,damage,position,assist,life,break,flag_state,flag_position,objective_attempt,team_membership,grenade_entity,shot,score,duel,player_state,grenade_throw,position_state,map_revision,sequence,health,move"
 
 enum {
@@ -2905,7 +2913,7 @@ public dod_client_weapon_fire(id, weapon, Float:gametime) {
 	new trace_frac = -1, trace_flags = -1
 	new trace_start_off = -1, cmd_all_traces = -1
 	new net_lerp = -1, net_dropped = -1, net_backup = -1, net_cmds = -1
-	new shooter_flags = -1, shooter_punch_pitch = -1, shooter_punch_yaw = -1
+	new shooter_flags = -1
 	new shooter_speed = -1, shooter_stamina = -1
 	new target[21]
 	if (ksc_shot_detail_enabled() && ksc_is_hitscan_firearm(weapon) &&
@@ -2942,15 +2950,13 @@ public dod_client_weapon_fire(id, weapon, Float:gametime) {
 		net_backup = target[14]
 		net_cmds = target[15]
 		shooter_flags = target[16]
-		shooter_punch_pitch = target[17]
-		shooter_punch_yaw = target[18]
 		shooter_speed = target[19]
 		shooter_stamina = target[20]
 	}
 
 	new line[KSC_SHOT_BUF_LINE_LEN]
 	formatex(line, charsmax(line),
-		"^"%s^" triggered ^"shot^" (weapon_id ^"%d^") (position ^"%s^") (yaw ^"%.2f^") (pitch ^"%.2f^") (prone ^"%d^") (map ^"%s^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^") (tgt_userid ^"%d^") (tgt_health ^"%d^") (tgt_dead ^"%d^") (tgt_team ^"%d^") (shooter_team ^"%d^") (shot_ping ^"%d^") (shot_loss ^"%d^") (cmd_traces ^"%d^") (trace_frac ^"%d^") (trace_flags ^"%d^") (trace_start_off ^"%d^") (cmd_all_traces ^"%d^") (net_lerp ^"%d^") (net_dropped ^"%d^") (net_backup ^"%d^") (net_cmds ^"%d^") (shooter_flags ^"%d^") (shooter_punch_pitch ^"%d^") (shooter_punch_yaw ^"%d^") (shooter_speed ^"%d^") (shooter_stamina ^"%d^")",
+		"^"%s^" triggered ^"shot^" (weapon_id ^"%d^") (position ^"%s^") (yaw ^"%.2f^") (pitch ^"%.2f^") (prone ^"%d^") (map ^"%s^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^") (tgt_userid ^"%d^") (tgt_health ^"%d^") (tgt_dead ^"%d^") (tgt_team ^"%d^") (shooter_team ^"%d^") (shot_ping ^"%d^") (shot_loss ^"%d^") (cmd_traces ^"%d^") (trace_frac ^"%d^") (trace_flags ^"%d^") (trace_start_off ^"%d^") (cmd_all_traces ^"%d^") (net_lerp ^"%d^") (net_dropped ^"%d^") (net_backup ^"%d^") (net_cmds ^"%d^") (shooter_flags ^"%d^") (shooter_speed ^"%d^") (shooter_stamina ^"%d^")",
 		pstr, weapon, pos,
 		has_angles ? angles[1] : -999.0, has_angles ? angles[0] : -999.0,
 		prone, mapname,
@@ -2959,7 +2965,7 @@ public dod_client_weapon_fire(id, weapon, Float:gametime) {
 		shot_ping, shot_loss, cmd_traces, trace_frac, trace_flags,
 		trace_start_off, cmd_all_traces,
 		net_lerp, net_dropped, net_backup, net_cmds,
-		shooter_flags, shooter_punch_pitch, shooter_punch_yaw, shooter_speed, shooter_stamina)
+		shooter_flags, shooter_speed, shooter_stamina)
 
 	ksc_shot_buffer(line)
 }
