@@ -128,6 +128,22 @@ Sampled once per usercmd from `SV_PlayerRunPreThink`. **Sensor, not detector** �
 | `dodx_get_aim_window(id, slot, window[4])` | One retained fire window: duration (ms), pitch slope (milli-deg/s), residual (micro-deg), samples. Retained by smallest residual, so slot order is not chronological |
 | `dodx_reset_aim_stats(id)` | Clear the counters. Separate from the read so a failed flush cannot silently discard what justified it |
 
+### Crouch input / footstep emission census (measure-only)
+Crouch presses and time-in-state sampled once per usercmd from `SV_PlayerRunPreThink`; footsteps counted on the ReHLDS `SV_StartSound` chain that dodx registers itself. **Sensor, not detector** — no threshold, no ratio, no conclusion, and there is no calibrated positive class for what it measures, so a cut-point added here would be a guess *and* a published one. Time ships as a histogram over speed rather than "time above a bound" for exactly that reason.
+
+⚠️ **Read both halves or neither.** `dodx_get_move_stats` returns the tap census and the footstep counts together on purpose: a footstep figure on its own describes an ordinary crouch-walker just as well as anything else. The producer keeps them in one marker and the daemon in one row for the same reason.
+
+⚠️ **`step_timer_fires` is the control, not decoration.** It reads the engine's own `v.flTimeStepSound` resetting — an independent sensor for the same event as the counted sounds. Timer fires with no steps means the *server* stopped emitting footsteps (`mp_footsteps`, or a step path that no longer reaches the hook); without it that is indistinguishable from every player moving silently. Check it before any per-player figure.
+
+| Native | Purpose |
+|--------|---------|
+| `dodx_get_move_stats(id, stats[8])` | Taps, stamina at tap (sum and min, min `-1` when no tap was seen), steps by family, total movement sounds, step-timer fires |
+| `dodx_get_move_hist(id, which, hist[], size = sizeof hist)` | One speed histogram: `0` taps on ground, `1` taps airborne, `2` ground ms standing, `3` ground ms ducked, `4` airborne ms ducked. Returns cells written, bounded by your array — never assume the bucket count |
+| `dodx_get_move_geom(geom[2])` | Bucket count and bucket width. Ship both with any stored row, or a later geometry change silently reinterprets everything already written |
+| `dodx_reset_move_stats(id)` | Clear the counters; in-flight sampling state is preserved. Separate from the read for the same reason as the aim counters |
+
+Ground and airborne are never folded together — a duck-jump is crouching at running speed by construction, so a combined row cannot be read.
+
 ### Test Dispatch Natives (extension-mode forward drivers)
 Synthetic dispatchers for AC/integration tests — fire a forward directly (no fakemeta).
 | Native | Purpose |

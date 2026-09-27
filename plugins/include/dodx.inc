@@ -1422,6 +1422,105 @@ native dodx_get_aim_vis_stats(id, stats[6]);
  */
 native dodx_reset_aim_vis_stats(id);
 
+// ==================================================================
+// KTP: crouch-input and footstep-emission census (measure-only)
+//
+// Sampled once per usercmd from SV_PlayerRunPreThink, plus the engine's own
+// movement-sound emissions. These report how often the crouch button went down,
+// how long the player spent in each movement state, and how many footsteps the
+// server actually sent to everyone else. They apply no threshold, compute no
+// ratio and reach no conclusion.
+//
+// READ BOTH HALVES OR NEITHER. dodx_get_move_stats returns the tap census and
+// the footstep counts together because a footstep figure quoted on its own
+// invites a conclusion the data does not carry: a player who crouch-walks
+// deliberately emits few steps, and that is ordinary play.
+//
+// Counters are cumulative between flushes and reset on connect and disconnect,
+// so a mid-map substitute never inherits the previous occupant's numbers.
+// ==================================================================
+
+/**
+ * Read a player's crouch-input and footstep-emission census.
+ *
+ * stats[0] taps              rising IN_DUCK edges this window
+ * stats[1] stam_tap_sum      sum of the stamina gauge at each tap
+ * stats[2] stam_tap_min      lowest stamina at any tap, -1 if no tap was seen
+ *                            (-1 and not 0: 0 is a real stamina reading)
+ * stats[3] steps_ground      surface footsteps the movement code emitted
+ * stats[4] steps_ladder      ladder steps
+ * stats[5] sounds_water      wade/swim -- not driven by the step timer
+ * stats[6] pmove_sounds      every player sound the movement code emitted
+ * stats[7] step_timer_fires  times the engine's step timer was seen to reset
+ *
+ * stats[7] is an INDEPENDENT observation of the same event as stats[3], taken
+ * from the engine rather than from the sound. Compare them: a server with
+ * footsteps disabled shows timer fires with no steps, and without that
+ * comparison it is indistinguishable from every player moving silently.
+ *
+ * Sum with the histograms, never on their own -- see the block comment above.
+ *
+ * @param id        Player index
+ * @param stats     Output, 8 cells as above; zeroed before any failure return
+ * @return  1 on success, 0 for a not-ingame player
+ */
+native dodx_get_move_stats(id, stats[8]);
+
+/**
+ * Read one of the census histograms over horizontal speed.
+ *
+ *   which = 0  duck taps while on the ground
+ *   which = 1  duck taps while airborne
+ *   which = 2  milliseconds on the ground, standing
+ *   which = 3  milliseconds on the ground, crouched
+ *   which = 4  milliseconds airborne, crouched
+ *
+ * Ground and airborne are never folded together: a duck-jump is crouching at
+ * running speed by construction, so a combined row cannot be read.
+ *
+ * Bucket 0 is the slowest and the last bucket is open-ended. Call
+ * dodx_get_move_geom for the count and the width rather than assuming either --
+ * the return value is how many cells were actually written, bounded by the
+ * size you passed, so a module with more buckets than you budgeted for truncates
+ * rather than overflowing you. A truncated histogram is then REJECTED downstream
+ * rather than stored short, because the bucket count travels with it.
+ *
+ * @param id        Player index
+ * @param which     Histogram selector, 0..4
+ * @param hist      Output; zeroed before any failure return
+ * @param size      Cells the native may write, defaulting to the array's own
+ *                  size. It bounds the write, so passing a number larger than
+ *                  the array is the caller's own overflow -- take the default.
+ * @return  cells written, 0 on failure or an unknown selector
+ */
+native dodx_get_move_hist(id, which, hist[], size = sizeof hist);
+
+/**
+ * The histogram geometry, so a stored row keeps its meaning.
+ *
+ * geom[0] bucket count, geom[1] bucket width in world units/sec. Ship both
+ * alongside the histograms: without them a later width change reinterprets
+ * every row already recorded and nothing flags it.
+ *
+ * @param geom      Output, 2 cells
+ * @return  1
+ */
+native dodx_get_move_geom(geom[2]);
+
+/**
+ * Clear a player's census after a successful flush. Separate from the read so a
+ * failed flush does not silently discard the window that justified it: read,
+ * ship, and only then reset.
+ *
+ * In-flight sampling state is PRESERVED -- a respawn invalidates it, not a
+ * flush, and clearing it here would drop the first step and the first button
+ * edge of every window.
+ *
+ * @param id        Player index
+ * @return  1 on success
+ */
+native dodx_reset_move_stats(id);
+
 /**
  * Test/diagnostic-only: log what dodx_get_score_tick_time() is currently
  * seeing — whether a dod_control_point_master exists, whether it is active,

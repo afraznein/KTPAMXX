@@ -19,6 +19,7 @@
 #include "KTPAimAccum.h"
 #include "KTPShotGeom.h"
 #include "KTPPackVis.h"
+#include "KTPMoveAccum.h"
 
 #define DODMAX_CUSTOMWPNS	5	// custom weapons
 #define DODMAX_WEAPONS		(42 + DODMAX_CUSTOMWPNS)
@@ -82,6 +83,11 @@ class CPlayer
 		// KTP: aim-vs-transmission counters, sampled beside the shot capture.
 		// Same lifecycle rule as ktpShot: resets live in moduleconfig.cpp.
 		KTPPackVis ktpVis;
+
+		// KTP: crouch-input and footstep-emission counters. Same lifecycle as
+		// ktpAim -- Reset() in Init()/Disconnect() -- because it is fed from the
+		// same per-usercmd sampler and a mid-map substitute must not inherit them.
+		KTPMoveStats ktpMove;
 
 		edict_t* pEdict;
 		int index;

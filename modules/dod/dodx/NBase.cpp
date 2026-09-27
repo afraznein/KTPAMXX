@@ -2565,6 +2565,121 @@ static cell AMX_NATIVE_CALL dodx_get_shot_target2(AMX *amx, cell *params)
 	return 1;
 }
 
+// KTP: read a player's crouch-input and footstep-emission census. Measurements only
+// -- no threshold is applied here and none should be added; the consumer decides what
+// the numbers mean.
+//
+// BOTH LEDGERS COME FROM ONE CALL on purpose. A footstep count read without the
+// crouch census beside it supports the one reading this instrument must not support:
+// a crouch-walker legitimately emits few steps, and that is not an offence. Making
+// them inseparable at the source is cheaper than remembering the rule.
+//
+// step_timer_fires is an INDEPENDENT observation of the same event as steps_ground,
+// taken off the engine's own step timer rather than off the sound. It is the control
+// that separates a player who made no noise from a server that emitted no footsteps
+// at all -- without it the second reads exactly like the first, fleet-wide.
+//
+// out[] = { taps, stam_tap_sum, stam_tap_min, steps_ground, steps_ladder,
+//           sounds_water, pmove_sounds, step_timer_fires }
+static cell AMX_NATIVE_CALL dodx_get_move_stats(AMX *amx, cell *params)
+{
+	// Zeroed BEFORE the player check, not after. CHECK_PLAYER returns outright for a
+	// not-ingame or freed slot, so a promise to zero on every failure return is only
+	// true if it is kept up here -- and a caller that mishandles the 0 must read zeros
+	// rather than whatever its own buffer held. Stale cells are the fabrication
+	// direction. params[2] is an AMX address, independent of the player index, so
+	// resolving it first is safe.
+	cell *out = MF_GetAmxAddr(amx, params[2]);
+	for (int i = 0; i < 8; ++i)
+		out[i] = 0;
+	out[2] = -1;  // stam_tap_min: -1 is "no tap observed", and 0 is a real stamina
+
+	int index = params[1];
+	CHECK_PLAYER(index);
+
+	const KTPMoveStats &st = GET_PLAYER_POINTER_I(index)->ktpMove;
+	out[0] = KTPMoveStats::Wire(st.tapsTotal);
+	out[1] = KTPMoveStats::Wire(st.stamAtTapSum);
+	out[2] = st.stamAtTapMin;
+	out[3] = KTPMoveStats::Wire(st.stepsGround);
+	out[4] = KTPMoveStats::Wire(st.stepsLadder);
+	out[5] = KTPMoveStats::Wire(st.soundsWater);
+	out[6] = KTPMoveStats::Wire(st.pmoveSoundsTotal);
+	out[7] = KTPMoveStats::Wire(st.stepTimerFires);
+
+	return 1;
+}
+
+// KTP: read one of the census histograms. `which` selects it:
+//   0 taps on ground   1 taps airborne
+//   2 ground ms standing   3 ground ms ducked   4 airborne ms ducked
+//
+// Returns the number of cells written, so the caller learns the module's bucket count
+// instead of assuming it. The caller's own array size bounds the write: the aim
+// natives left that to a constant mirrored by hand in the consumer, and a module that
+// outgrew the consumer's budget would have overflowed it silently.
+static cell AMX_NATIVE_CALL dodx_get_move_hist(AMX *amx, cell *params)
+{
+	// Zeroed before the player check, same reason as the native above.
+	int which = params[2];
+	int size  = params[4];
+	if (size < 0) size = 0;
+
+	cell *out = MF_GetAmxAddr(amx, params[3]);
+	for (int i = 0; i < size; ++i)
+		out[i] = 0;
+
+	int index = params[1];
+	CHECK_PLAYER(index);
+
+	const KTPMoveStats &st = GET_PLAYER_POINTER_I(index)->ktpMove;
+	const int *src;
+	switch (which)
+	{
+	case 0: src = st.tapsGround;        break;
+	case 1: src = st.tapsAir;           break;
+	case 2: src = st.groundMsStanding;  break;
+	case 3: src = st.groundMsDucked;    break;
+	case 4: src = st.airMsDucked;       break;
+	default: return 0;
+	}
+
+	int n = (size < KTPMove::SPEED_BUCKETS) ? size : KTPMove::SPEED_BUCKETS;
+	for (int i = 0; i < n; ++i)
+		out[i] = KTPMoveStats::Wire(src[i]);
+
+	return n;
+}
+
+// KTP: the histogram's own geometry, so what a stored row means travels with it.
+// Without this a later bucket-width change would silently reinterpret every row
+// already recorded, and nothing would flag it.
+//
+// out[] = { bucket_count, bucket_width_units }
+static cell AMX_NATIVE_CALL dodx_get_move_geom(AMX *amx, cell *params)
+{
+	cell *out = MF_GetAmxAddr(amx, params[1]);
+	out[0] = KTPMove::SPEED_BUCKETS;
+	out[1] = KTPMove::BUCKET_WIDTH_UNITS;
+	return 1;
+}
+
+// KTP: clear a player's census after a successful flush. Separate from the read for
+// the same reason as the aim counters: a failed ship must not discard its evidence.
+//
+// ResetCounters, not Reset: the in-flight sampling state is what a respawn
+// invalidates, not a flush, and wiping it here would drop the first step and the
+// first button edge of every window.
+static cell AMX_NATIVE_CALL dodx_reset_move_stats(AMX *amx, cell *params)
+{
+	int index = params[1];
+	CHECK_PLAYER(index);
+
+	GET_PLAYER_POINTER_I(index)->ktpMove.ResetCounters();
+	return 1;
+}
+
+
 // KTP: clear a player's counters after a successful flush. Separate from the read so
 // a failed POST does not silently discard the window that justified it.
 static cell AMX_NATIVE_CALL dodx_reset_aim_stats(AMX *amx, cell *params)
@@ -2759,6 +2874,12 @@ AMX_NATIVE_INFO base_Natives[] =
 	// KTP: aim-vs-transmission counters (blind audit tier 2.7)
 	{"dodx_get_aim_vis_stats",               dodx_get_aim_vis_stats},
 	{"dodx_reset_aim_vis_stats",             dodx_reset_aim_vis_stats},
+
+	// KTP: crouch-input and footstep-emission census (measure-only)
+	{"dodx_get_move_stats",                  dodx_get_move_stats},
+	{"dodx_get_move_hist",                   dodx_get_move_hist},
+	{"dodx_get_move_geom",                   dodx_get_move_geom},
+	{"dodx_reset_move_stats",                dodx_reset_move_stats},
 
 	///*******************
 	{ NULL, NULL }
