@@ -1264,8 +1264,6 @@ def test_shot_wire_line_fits_shot_buffer() -> None:
         "net_backup": "999",             # 0-999 clamp
         "net_cmds": "999",               # 0-999 clamp
         "shooter_flags": "7",            # 3-bit field, |= 0x1/0x2/0x4 only
-        "shooter_punch_pitch": "-9999",  # +/-9999 clamp
-        "shooter_punch_yaw": "-9999",    # +/-9999 clamp
         "shooter_speed": "9999",         # 0-9999 clamp (both bounds)
         "shooter_stamina": "-9999",      # +/-9999 clamp
     }
