@@ -2949,7 +2949,8 @@ public dod_client_weapon_fire(id, weapon, Float:gametime) {
 		net_dropped = target[13]
 		net_backup = target[14]
 		net_cmds = target[15]
-		shooter_flags = target[16]
+		// bit2 (IN_ATTACK2) is masked off: never set on a human shot, and nothing reads it.
+		shooter_flags = target[16] & 0x3
 		shooter_speed = target[19]
 		shooter_stamina = target[20]
 	}
@@ -3303,9 +3304,10 @@ public dod_score_event(id, score_delta, total_score, cp_index) {
 	ksc_wire_sanitize(mapname, wire_map, charsmax(wire_map))
 	new sequence = ksc_next_type_sequence(KSC_EVENT_SCORE)
 	formatex(line, charsmax(line),
-		"KTP_SCORE_EVENT (matchid ^"%s^") (half ^"%d^") (map ^"%s^") (player ^"%s^") (delta ^"%d^") (total ^"%d^") (flag_index ^"%d^") (dll_index ^"%d^") (flag_name ^"%s^") (identity_resolved ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^")",
+		"KTP_SCORE_EVENT (matchid ^"%s^") (half ^"%d^") (map ^"%s^") (player ^"%s^") (delta ^"%d^") (total ^"%d^") (flag_index ^"%d^") (dll_index ^"%d^") (flag_name ^"%s^") (identity_resolved ^"%d^") (round_time_left ^"%.1f^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^")",
 		wire_matchid, half, wire_map, player, score_delta, total_score,
-		flag_index, cp_index, flag_name, resolved, get_gametime(), get_systime(), sequence)
+		flag_index, cp_index, flag_name, resolved, dodx_get_round_time(),
+		get_gametime(), get_systime(), sequence)
 	ksc_buffer(line, KSC_EVENT_SCORE)
 }
 

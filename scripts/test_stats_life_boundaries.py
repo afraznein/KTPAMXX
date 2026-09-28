@@ -1244,7 +1244,7 @@ def test_shot_wire_line_fits_shot_buffer() -> None:
     # exceed the stated range by construction. Assuming every %d could be
     # -2147483648 is safe but wrong: it manufactures an alarming worst case
     # for fields that structurally cannot reach it (tgt_dead is a 0/1
-    # ternary; shooter_flags is built from |= 0x1/0x2/0x4 and tops out at 7),
+    # ternary; shooter_flags is masked to bits 0-1 and tops out at 3),
     # which is exactly the kind of unproven-but-plausible-sounding number
     # this whole approach exists to replace with a measurement. Anything NOT
     # in this table keeps the conservative full-int32 literal -- unproven
@@ -1263,7 +1263,7 @@ def test_shot_wire_line_fits_shot_buffer() -> None:
         "net_dropped": "999",            # 0-999 clamp
         "net_backup": "999",             # 0-999 clamp
         "net_cmds": "999",               # 0-999 clamp
-        "shooter_flags": "7",            # 3-bit field, |= 0x1/0x2/0x4 only
+        "shooter_flags": "3",            # target[16] & 0x3 at the capture site
         "shooter_speed": "9999",         # 0-9999 clamp (both bounds)
         "shooter_stamina": "-9999",      # +/-9999 clamp
     }
@@ -1410,6 +1410,16 @@ def test_wave1_additive_fields() -> None:
         assert f'({f} ^"%' in pos, f
 
 
+def test_schema25_shooter_flags_drops_attack2_bit() -> None:
+    # Schema 25: bit2 (IN_ATTACK2) leaves the wire; the module still sets it, so
+    # the mask is the only thing that keeps it off. -1 (no target state) stays -1.
+    fire = function_body(CAPTURE, "public dod_client_weapon_fire")
+    assert "shooter_flags = target[16] & 0x3" in fire
+    assert re.search(r"shooter_flags\s*=\s*target\[16\]\s*$", fire, re.M) is None
+    assert "new shooter_flags = -1" in fire
+    assert re.search(r"#define\s+KSC_SCHEMA_CONTRACT\s+25(?:\s|$)", CAPTURE)
+
+
 def test_wave2_streams_wire_and_lifecycle() -> None:
     # §3.2 score: fail-closed index space -- flag_index only when dodx says the
     # DLL order is resolved, and never from a remap table.
@@ -1417,9 +1427,14 @@ def test_wave2_streams_wire_and_lifecycle() -> None:
     assert "dodx_cp_identity_resolved()" in score
     assert "(resolved && cp_index >= 0 && cp_index < g_kscFlagCount) ? cp_index : -1" in score
     for f in ("matchid", "half", "map", "player", "delta", "total", "flag_index",
-              "dll_index", "flag_name", "identity_resolved", "game_time", "event_epoch", "sequence"):
+              "dll_index", "flag_name", "identity_resolved", "round_time_left",
+              "game_time", "event_epoch", "sequence"):
         assert f'({f} ^"%' in score, f
     assert "ksc_buffer(line, KSC_EVENT_SCORE)" in score
+    # Schema 25: the half clock on score rows, from the same source and in the
+    # same %.1f seconds as objective_attempt and flag_state.
+    assert '(round_time_left ^"%.1f^")' in score
+    assert "dodx_get_round_time()" in score
 
     # §3.7 player_state: prone edges from the forward, deploy edges from the
     # 0.5 s poll, MG/bipod classes only, and the poll runs even on flagless maps.

@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed - 1.26.1: schema 25 completed -- `round_time_left` on score rows, `shooter_flags` bit2 dropped
+
+Schema 25 is the bundle ruled 2026-09-23, and it ships as one producer. 1.26.0
+(#144) carried only the first item; no 1.26.0 build was ever deployed, so the
+ordinal is completed here instead of being bumped to 26. The label moves to
+1.26.1 because Lane B has already built and run #144's merge as `1.26.0`, and a
+manifest reading `schema 25 / 1.26.0` must keep meaning "score rows have no
+clock", or the version stops telling readers which rows can carry it.
+
+- `KTP_SCORE_EVENT` gains `(round_time_left "%.1f")` from `dodx_get_round_time()`,
+  placed before `game_time`. Same field name, source, units and sentinel as
+  `KTP_OBJECTIVE_ATTEMPT` and `KTP_FLAG_STATE` (seconds; -1.0 when the half has no
+  time limit). The daemon stores it in `ktp_score_events.round_time_left`
+  (KTPHLStatsX migration 039); a score row from a schema 21-25 producer that lacks
+  the field is stored NULL.
+- `shooter_flags` on the shot wire is `target[16] & 0x3`: bit0 FL_ONGROUND and bit1
+  FL_DUCKING stay, bit2 (IN_ATTACK2 held) goes. It was 0 on all 89,200 production
+  shot rows carrying the field (bits 0 and 1 set on 88,234 and 38,260), and nothing
+  in the daemon, analytics, AC or site reads it. The module still sets the bit, so
+  `dodx_get_shot_target2` keeps its documented 21-cell layout; the mask is
+  producer-side only and no dodx restage is needed.
+- `shooter_punch_pitch` / `shooter_punch_yaw` left the shot wire in 1.26.0 (#144):
+  0 on 33,176/33,176 human rows, because DoD recoil is not in `v.punchangle`.
+
+Deploy order: migration 039, then the daemon that accepts schema 25 and writes the
+column, then this plugin. A schema-25 manifest is refused by a daemon that only
+knows 21-24, which drops every gated stream for the half, not just the new field.
+
 ### Added - 1.25.0: crouch-input and footstep-emission census (measure-only)
 
 A second per-usercmd sensor beside the aim sampler, and a new dodx hook on the
