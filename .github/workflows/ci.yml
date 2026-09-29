@@ -104,6 +104,15 @@ jobs:
         working-directory: KTPAMXX
         run: python3 scripts/test_message_hooks_ext_mode.py
 
+      # Selftest first, for the same reason as the gates above.
+      - name: Prove the deferred score send checks discriminate
+        working-directory: KTPAMXX
+        run: python3 scripts/test_score_send_before_pause.py --selftest
+
+      - name: Test the deferred score send runs ahead of the stats pause
+        working-directory: KTPAMXX
+        run: python3 scripts/test_score_send_before_pause.py
+
       - name: Install 32-bit toolchain + compiler
         run: |
           sudo dpkg --add-architecture i386
