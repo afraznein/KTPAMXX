@@ -13,6 +13,14 @@
 Message Msg;
 RegisteredMessage msgHooks[256];
 int msgBlocks[256] = {BLOCK_NOT};
+
+struct NotDispatchedCall
+{
+	AMX *amx;
+	ke::AString call;
+};
+static ke::Vector<NotDispatchedCall> g_NotDispatchedLogged;
+
 int msgDest;
 int msgType;
 float *msgOrigin;
@@ -28,6 +36,7 @@ void ClearMessages()
 		msgHooks[i].Clear();
 		msgBlocks[i] = BLOCK_NOT;
 	}
+	g_NotDispatchedLogged.clear();
 }
 
 Message::Message()
@@ -508,10 +517,53 @@ static cell AMX_NATIVE_CALL write_string(AMX *amx, cell *params) /* 1 param */
 	return 1;
 }
 
+// KTP: msgHooks and msgBlocks are read only by the Metamod engine hooks (C_MessageBegin/End).
+// The extension-mode IMessageManager handler never consults them, so these natives refuse and log.
+// Logged once per plugin and exact call, so a runtime set_msg_block cannot flood the log.
+static void LogNotDispatched(AMX *amx, const char *call, const char *reason)
+{
+	for (size_t i = 0; i < g_NotDispatchedLogged.length(); i++)
+	{
+		const NotDispatchedCall &k = g_NotDispatchedLogged[i];
+		if (k.amx == amx && k.call.compare(call) == 0)
+			return;
+	}
+
+	NotDispatchedCall entry;
+	entry.amx = amx;
+	entry.call = call;
+	g_NotDispatchedLogged.append(ke::Move(entry));
+
+	CPluginMngr::CPlugin *plugin = g_plugins.findPluginFast(amx);
+	AMXXLOG_Log("[AMXX] %s in plugin \"%s\" was refused: %s", call,
+		plugin ? plugin->getName() : "unknown", reason);
+}
+
 static cell AMX_NATIVE_CALL register_message(AMX *amx, cell *params)
 {
 	int len;
 	char *name = get_amxstring(amx, params[2], 0, len);
+
+	// Returns 0, not a handle: 0 is falsy to Pawn callers and already documented as failure,
+	// while -1 would read as success to an `if (register_message(...))` test.
+	if (!g_bRunningWithMetamod)
+	{
+		if (params[1] > 0 && params[1] < 256)
+		{
+			int func;
+			if (amx_FindPublic(amx, name, &func) != AMX_ERR_NONE)
+			{
+				LogError(amx, AMX_ERR_NOTFOUND, "Could not find function \"%s\"", name);
+				return -1;
+			}
+
+			char call[128];
+			ke::SafeSprintf(call, sizeof(call), "register_message(msgid %d, \"%s\")", params[1], name);
+			LogNotDispatched(amx, call,
+				"register_message is not dispatched in extension mode; use register_event");
+		}
+		return 0;
+	}
 
 	if (!Msg.Ready())
 		Msg.Init();
@@ -535,6 +587,18 @@ static cell AMX_NATIVE_CALL register_message(AMX *amx, cell *params)
 // unregister_message(msgid, msghandle)
 static cell AMX_NATIVE_CALL unregister_message(AMX *amx, cell *params)
 {
+	if (!g_bRunningWithMetamod)
+	{
+		if (params[1] > 0 && params[1] < 256)
+		{
+			char call[96];
+			ke::SafeSprintf(call, sizeof(call), "unregister_message(msgid %d, handle %d)", params[1], params[2]);
+			LogNotDispatched(amx, call,
+				"register_message is not dispatched in extension mode, so there is no hook to remove");
+		}
+		return 0;
+	}
+
 	if (!Msg.Ready())
 		Msg.Init();
 
@@ -563,6 +627,16 @@ static cell AMX_NATIVE_CALL set_msg_block(AMX *amx, cell *params)
 	if (msgid < 1 || msgid > 255)
 	{
 		LogError(amx, AMX_ERR_NATIVE, "Invalid message id");
+		return 0;
+	}
+
+	// BLOCK_NOT is already the truth here, so restoring it (as user_silentkill does) stays quiet.
+	if (!g_bRunningWithMetamod && block != BLOCK_NOT)
+	{
+		char call[64];
+		ke::SafeSprintf(call, sizeof(call), "set_msg_block(msgid %d, %d)", msgid, block);
+		LogNotDispatched(amx, call,
+			"set_msg_block is not applied in extension mode; no message is blocked");
 		return 0;
 	}
 

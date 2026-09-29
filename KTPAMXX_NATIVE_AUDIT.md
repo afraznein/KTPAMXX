@@ -114,6 +114,37 @@ These hooks must be registered for extension mode to function:
 - Calls `g_logevents.setLogString()`, `parseLogString()`, and `executeLogEvents()`
 - Also fires `plugin_log` forward
 
+### 6. register_message / set_msg_block Not Dispatched in Extension Mode ![BROKEN](https://img.shields.io/badge/-BROKEN-red)
+
+**Status:** open, issue #147. Since 2.7.33 the natives refuse and log instead of failing silently.
+
+**Problem:** `register_message` only appends to `msgHooks[msgid]` and `set_msg_block` only writes
+`msgBlocks[msgid]`. Both arrays are read only by the Metamod engine hooks `C_MessageBegin` /
+`C_MessageEnd`, which extension mode never installs. The extension-mode path, `MessageHook_Handler`
+(fix 4 above), serves `register_event`, the core `modMsgs` handlers and module handlers, and never
+looks at either array. `register_message` also never calls `InstallMessageHook`, so an id with no
+`register_event` or module user has no hook at all. Measured in Lane B: on one server and one message,
+a `register_event("AmmoX")` handler fired 783 times and a `register_message(AmmoX)` handler 0 times.
+
+**Behaviour since 2.7.33 (extension mode only; Metamod mode is unchanged):**
+- `register_message` returns **0** and logs one line to the AMXX log:
+  `[AMXX] register_message(msgid 66, "msg_RoundState") in plugin "KTPMatchHandler.amxx" was refused: register_message is not dispatched in extension mode; use register_event`.
+  0 is the documented failure value and is falsy in Pawn; -1 would read as success to
+  `if (register_message(...))`. A handler name that does not exist still raises, as before.
+- `unregister_message` returns 0 and logs, since nothing was registered.
+- `set_msg_block` with `BLOCK_ONCE` / `BLOCK_SET` returns 0, stores nothing and logs. `BLOCK_NOT` is
+  accepted quietly, because it is already the truth (`user_silentkill` restores it on every call).
+- The refusal is a log line, not `LogError`: a native error aborts the rest of the caller's
+  `plugin_init`, and everything registered after that line would be lost. Each distinct call is
+  logged once per plugin until plugins reload, so a runtime `set_msg_block` cannot flood the log.
+- `get_msg_args` / `get_msg_arg*` / `set_msg_arg*` / `get_msg_origin` only mean anything inside a
+  `register_message` handler, which never runs, and are unchanged.
+
+**What to use instead:** `register_event` to observe a message. There is no extension-mode way to
+block or rewrite a message yet; bridging `msgHooks` into `MessageHook_Handler` is option A of #147
+and would switch on every dormant handler at once. `scripts/test_message_hooks_ext_mode.py` fails if
+`MessageHook_Handler` starts reading `msgHooks`, which is the moment these refusals must be retired.
+
 ---
 
 ## Map Change Implementation
@@ -209,6 +240,10 @@ By checking `pPlayer->initialized`, we detect if reinitialization is needed.
 | `register_menuid` | ![OK](https://img.shields.io/badge/-OK-brightgreen) | Menu IDs |
 | `register_event` | ![OK](https://img.shields.io/badge/-OK-brightgreen) | Event handlers (via IMessageManager) |
 | `register_logevent` | ![OK](https://img.shields.io/badge/-OK-brightgreen) | Log events (via AlertMessage hook) |
+| `register_message` | ![BROKEN](https://img.shields.io/badge/-BROKEN-red) | Never dispatched. Refuses, returns 0 and logs (2.7.33). Use `register_event`. See issue 6 below |
+| `unregister_message` | ![BROKEN](https://img.shields.io/badge/-BROKEN-red) | Nothing to remove. Returns 0 and logs (2.7.33) |
+| `set_msg_block` | ![BROKEN](https://img.shields.io/badge/-BROKEN-red) | Never applied. A block other than `BLOCK_NOT` is refused, returns 0 and logs (2.7.33) |
+| `get_msg_block` | ![OK](https://img.shields.io/badge/-OK-brightgreen) | Reports `BLOCK_NOT`, which is the truth, since a block is never stored |
 
 ### Player Info Natives
 
@@ -466,6 +501,14 @@ Stats tracking intercepts these game messages:
 ---
 
 ## Changelog
+
+<details>
+<summary><strong>2026-09-29</strong> - register_message / set_msg_block fail loudly in extension mode (2.7.33)</summary>
+
+- `register_message`, `unregister_message` and `set_msg_block` (other than `BLOCK_NOT`) now return 0
+  and write one AMXX log line in extension mode instead of succeeding and doing nothing. See issue 6.
+
+</details>
 
 <details>
 <summary><strong>2025-12-18</strong> - HLStatsX Integration (v2.5.0)</summary>

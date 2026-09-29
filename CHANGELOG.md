@@ -1082,6 +1082,34 @@ no longer describes this tree. See the 2.7.32 note.
 
 ## [2.7.33] - unreleased
 
+### Fixed — `register_message` and `set_msg_block` fail loudly in extension mode (core, #147 option B)
+
+- In extension mode `register_message` handlers are never called and `set_msg_block` blocks nothing:
+  both natives only write `msgHooks[]` / `msgBlocks[]`, which only the Metamod `C_MessageBegin` /
+  `C_MessageEnd` hooks read, while the ReHLDS `IMessageManager` handler serves `register_event`,
+  core and module handlers only. Both natives returned success, so a plugin relying on them looked
+  healthy and did nothing. Lane B measured it: 783 `register_event("AmmoX")` calls against 0
+  `register_message(AmmoX)` calls on the same server.
+- In extension mode `register_message` now returns 0 (the documented failure value, falsy in Pawn;
+  -1 would read as success to `if (register_message(...))`), registers nothing, and logs
+  `[AMXX] register_message(msgid N, "handler") in plugin "x.amxx" was refused: register_message is
+  not dispatched in extension mode; use register_event`. `unregister_message` returns 0 and logs.
+  `set_msg_block` with anything but `BLOCK_NOT` returns 0, stores nothing, and logs, so
+  `get_msg_block` reports `BLOCK_NOT`, which is what actually happens. A missing handler function
+  still raises, as before.
+- A log line, not `LogError`: a native error aborts the rest of the caller's `plugin_init`. Each
+  distinct call logs once per plugin until plugins reload, so a runtime `set_msg_block` cannot flood
+  the log.
+- Metamod mode is unchanged: every new branch is gated on `!g_bRunningWithMetamod`, the flag
+  `MNF_IsExtensionMode` already reports to modules.
+- No message traffic changes, and no plugin behaviour changes: a refused handler is one that never
+  ran. The fleet's callers today (KTPMatchHandler `msg_TeamScore` / `msg_RoundState`, KTPHudObserver
+  `msg_round_state`, and stats_logging before 1.26.2) ignore the return value, so they only gain a
+  log line per map load.
+- `scripts/test_message_hooks_ext_mode.py` (CI, with `--selftest`) locks the gate, the 0 return,
+  the no-raise logging and the once-per-call latch, and fails if `MessageHook_Handler` starts
+  reading `msgHooks` — the point at which option A has landed and these refusals must go.
+
 ### Fixed
 
 - **Delayed DODX context confirmation no longer contaminates schema-22 health**
