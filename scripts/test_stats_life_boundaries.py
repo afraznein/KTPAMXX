@@ -1479,19 +1479,31 @@ def test_wave2_streams_wire_and_lifecycle() -> None:
 
 def test_grenade_throw_stream_from_ammox_edge() -> None:
     # The burst is already the `tracked` lifecycle row (Detonate's TraceLine);
-    # the throw is an AmmoX one-step decrease on a grenade channel with a
-    # grenade in hand. Neither dod_client_weapon_fire nor CurWeapon sees it.
-    assert 'register_message(g_kscMsgAmmoX, "ksc_msg_ammox")' in function_body(CAPTURE, "stock ksc_init")
-    handler = function_body(CAPTURE, "public ksc_msg_ammox")
-    assert "ksc_grenade_ammo_observe(id, channel, get_msg_arg_int(2), true)" in handler
+    # the throw is an AmmoX one-step decrease on a grenade channel of a live
+    # player. Neither dod_client_weapon_fire nor CurWeapon sees it.
+    init = function_body(CAPTURE, "stock ksc_init")
+    # register_message handlers are never dispatched in extension mode, so the
+    # AmmoX path has to be an event or it is dead (it was, through 1.26.1).
+    assert 'register_event("AmmoX", "ksc_evt_ammox", "b")' in init
+    assert "register_message(" not in CAPTURE
+    assert "set_msg_block(" not in CAPTURE
+    handler = function_body(CAPTURE, "public ksc_evt_ammox(id)")
+    assert "read_data(1)" in handler
+    assert "ksc_grenade_ammo_observe(id, channel, read_data(2), true)" in handler
+    assert "get_msg_arg_int" not in handler
     observe = function_body(CAPTURE, "stock ksc_grenade_ammo_observe")
-    assert "if (previous < 0 || amount != previous - 1)" in observe
-    assert "in_hand_channel != channel" in observe
+    # One shared last-seen count per channel is the dedupe: it is written
+    # before any early return, so the second source to see a throw reads an
+    # unchanged count.
+    before(observe, "g_kscGrenAmmo[id][channel] = amount", "if (previous < 0 || amount != previous - 1)")
+    before(observe, "if (previous < 0 || amount != previous - 1)", "ksc_emit_grenade_throw(id, weapon_id)")
     assert "is_user_alive(id)" in observe
-    # In-hand is only checkable on the frame-exact AmmoX path; the poll runs
-    # after the weapon switch (run 35216407299: 0 throws with the check on).
-    assert "if (exact) {" in observe
-    assert "ksc_grenade_ammo_observe(id, channel, get_msg_arg_int(2), true)" in handler
+    # In-hand only refines the weapon id; it must never reject. The AmmoX path
+    # has already recorded the new count, so a rejection there would drop the
+    # throw for the poll too.
+    assert "in_hand_channel == channel" in observe
+    assert "if (!in_hand) {" in observe
+    assert observe.count("return") == 2, "only the edge and liveness checks may return"
     # The engine never sends AmmoX to fake clients (Lane B run 35213729357:
     # 0 throws from 27 bursts), so the 0.5 s poll feeds the same observer.
     poll = function_body(CAPTURE, "stock ksc_grenade_ammo_poll")

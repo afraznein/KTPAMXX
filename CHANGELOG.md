@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - 1.26.2: the AmmoX grenade-throw path is an event, so it actually runs
+
+`ksc_msg_ammox` was registered with `register_message`, and in extension mode
+`register_message` handlers are never dispatched: the native only appends to
+`msgHooks[]`, which only the Metamod `C_MessageBegin`/`C_MessageEnd` path reads,
+while the ReHLDS `IMessageManager` hook serves `register_event`, core and module
+handlers only. Every `KTP_GRENADE_THROW` so far came from the 0.5 s ammo poll --
+throw `game_time`s bunch inside one ~0.1 s window of the poll cycle. The core
+defect is tracked as its own issue; this is only the plugin's way round it.
+
+- AmmoX is now `register_event("AmmoX", "ksc_evt_ammox", "b")`, reading the ammo
+  slot and count with `read_data(1)`/`read_data(2)`.
+- The event and the poll still feed one observer with one last-seen count per
+  channel. That count is written before anything can return, so whichever source
+  sees the one-step decrease first emits and the other reads an unchanged count: a
+  throw cannot be emitted twice.
+- The in-hand check no longer rejects. It only supplies the exact weapon id; when
+  the grenade is not in hand the id comes from the channel, as on the poll path.
+  Before, a rejection on the AmmoX path had already recorded the new count, so the
+  poll could not recover that throw -- harmless while the path was dead, a silent
+  loss once it runs.
+
+No wire or schema change: `KTP_GRENADE_THROW` carries the same fields and
+`KSC_SCHEMA_CONTRACT` is unchanged, so no daemon has to go first. What changes is
+when a throw is seen (the throw frame instead of up to 0.5 s later) and, when the
+grenade is still in hand, `weapon_id` read from the hand rather than inferred from
+the class.
+
 ### Changed - 1.26.1: schema 25 completed -- `round_time_left` on score rows, `shooter_flags` bit2 dropped
 
 Schema 25 is the bundle ruled 2026-09-23, and it ships as one producer. 1.26.0

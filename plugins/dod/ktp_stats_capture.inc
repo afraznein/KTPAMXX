@@ -452,13 +452,12 @@ new bool:g_kscDuelFlushed[MAX_PLAYERS + 1]
 // Wave 2 (§3.7): last polled bipod-deploy state, so the 0.5s poll emits edges.
 new g_kscDeployed[MAX_PLAYERS + 1]
 // Grenade throw detection: last seen AmmoX amount per grenade ammo channel.
-// A one-step decrease with a grenade in hand is the throw. Nothing else in
+// A one-step decrease on a live player is the throw. Nothing else in
 // the module fires at the throw -- dod_client_weapon_fire for grenades runs
 // from the Detonate TraceLine, i.e. at the burst, same as `tracked`.
 #define KSC_AMMO_GREN_HAND  9
 #define KSC_AMMO_GREN_STICK 11
 new g_kscGrenAmmo[MAX_PLAYERS + 1][2]
-new g_kscMsgAmmoX = 0
 // Gap repair: every emitted data line is retained here so the daemon can ask
 // for it again by (stream, sequence) when its per-type sequence shows a hole
 // -- the transport is one-way UDP and loses ~0.1% in transit. The daemon asks
@@ -520,9 +519,9 @@ stock ksc_init() {
 	g_kscCvarShots = register_cvar("ktp_stats_shots", "1")
 	g_kscCvarShotDetail = register_cvar("ktp_stats_shot_detail", "0")
 	g_kscCvarTimelimit = get_cvar_pointer("mp_timelimit")
-	g_kscMsgAmmoX = get_user_msgid("AmmoX")
-	if (g_kscMsgAmmoX > 0)
-		register_message(g_kscMsgAmmoX, "ksc_msg_ammox")
+	// "b": AmmoX is sent to one client, and the handler gets that client's id.
+	if (get_user_msgid("AmmoX") > 0)
+		register_event("AmmoX", "ksc_evt_ammox", "b")
 	// rcon-only: the daemon's gap repair. "ktp_capture_resend <stream> <seq>[,<seq>...]"
 	register_srvcmd("ktp_capture_resend", "ksc_cmd_resend")
 }
@@ -3531,31 +3530,35 @@ stock ksc_grenade_throw_weapon_type(weapon_id, out[], len) {
 	}
 }
 
-public ksc_msg_ammox(msg_id, msg_dest, id) {
+// register_event, not register_message: in extension mode register_message
+// handlers are never dispatched, so this was dead and every throw came from the poll.
+public ksc_evt_ammox(id) {
 	if (id < 1 || id > MAX_PLAYERS)
 		return PLUGIN_CONTINUE
-	new ammo_id = get_msg_arg_int(1)
+	new ammo_id = read_data(1)
 	new channel
 	if (ammo_id == KSC_AMMO_GREN_HAND) channel = 0
 	else if (ammo_id == KSC_AMMO_GREN_STICK) channel = 1
 	else return PLUGIN_CONTINUE
 
-	ksc_grenade_ammo_observe(id, channel, get_msg_arg_int(2), true)
+	ksc_grenade_ammo_observe(id, channel, read_data(2), true)
 	return PLUGIN_CONTINUE
 }
 
-// One observer for both sources. AmmoX is frame-exact but the engine never
-// sends it to fake clients, so the 0.5 s poll below reads the same count off
-// the module for everyone; whichever source sees the one-step decrease first
-// emits, and the other then sees an unchanged count. Lane B run 35213729357
-// (all bots) produced 0 throws on AmmoX alone.
-// `exact` = the AmmoX path, same frame as the throw: the grenade is still in
-// hand and its exact weapon id is readable. The poll arrives up to 0.5 s
-// later, after a bot (or a fast human) has already switched back, so it
-// cannot require in-hand; a one-step decrease of grenade ammo on a live
-// player has no other cause (spawn refills are increases, and the count is
-// forgotten on spawn and disconnect). Weapon id then comes from the channel,
-// mills_bomb for the British classes.
+// One observer for both sources, sharing one last-seen count per channel:
+// whichever source sees the one-step decrease first records it and emits, and
+// the other then reads an unchanged count, so a throw cannot land twice. The
+// 0.5 s poll reads the count off the module and is the fallback for any
+// AmmoX that does not arrive.
+// `exact` = the AmmoX path, same frame as the throw: the grenade is usually
+// still in hand and its exact weapon id is readable. The poll arrives up to
+// 0.5 s later, after a bot (or a fast human) has already switched back, so
+// neither path may REQUIRE in-hand -- the AmmoX path records the new count
+// before this check, so rejecting there would drop the throw for both. A
+// one-step decrease of grenade ammo on a live player has no other cause (spawn
+// refills are increases, and the count is forgotten on spawn and disconnect).
+// Without the in-hand id, weapon id comes from the channel, mills_bomb for the
+// British classes.
 stock ksc_grenade_ammo_observe(id, channel, amount, bool:exact) {
 	new previous = g_kscGrenAmmo[id][channel]
 	g_kscGrenAmmo[id][channel] = amount
@@ -3564,13 +3567,12 @@ stock ksc_grenade_ammo_observe(id, channel, amount, bool:exact) {
 	if (!ksc_enabled() || !is_user_alive(id))
 		return
 	new weapon_id, in_hand_channel
-	if (exact) {
-		if (!ksc_grenade_in_hand(id, weapon_id, in_hand_channel) || in_hand_channel != channel)
-			return
-	} else if (channel == 1) {
-		weapon_id = DODW_STICKGRENADE
-	} else {
-		weapon_id = (dod_get_user_class(id) >= DODC_ENFIELD) ? DODW_MILLS_BOMB : DODW_HANDGRENADE
+	new bool:in_hand = exact && ksc_grenade_in_hand(id, weapon_id, in_hand_channel) && in_hand_channel == channel
+	if (!in_hand) {
+		if (channel == 1)
+			weapon_id = DODW_STICKGRENADE
+		else
+			weapon_id = (dod_get_user_class(id) >= DODC_ENFIELD) ? DODW_MILLS_BOMB : DODW_HANDGRENADE
 	}
 	ksc_emit_grenade_throw(id, weapon_id)
 }
