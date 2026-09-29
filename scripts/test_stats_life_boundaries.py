@@ -1504,8 +1504,9 @@ def test_grenade_throw_stream_from_ammox_edge() -> None:
     assert "in_hand_channel == channel" in observe
     assert "if (!in_hand) {" in observe
     assert observe.count("return") == 2, "only the edge and liveness checks may return"
-    # The engine never sends AmmoX to fake clients (Lane B run 35213729357:
-    # 0 throws from 27 bursts), so the 0.5 s poll feeds the same observer.
+    # Bots do get AmmoX, but not on the throw itself (Lane B run 36584112102:
+    # 783 AmmoX events, every live-match throw found by the poll), so the
+    # 0.5 s poll feeds the same observer.
     poll = function_body(CAPTURE, "stock ksc_grenade_ammo_poll")
     assert "dodx_get_grenade_ammo(id, DODW_HANDGRENADE)" in poll
     assert "dodx_get_grenade_ammo(id, DODW_STICKGRENADE)" in poll
