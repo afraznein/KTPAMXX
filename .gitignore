@@ -111,6 +111,7 @@ scripts/*.py
 
 !scripts/test_native_param_contracts.py
 !scripts/test_grenade_slot_log.py
+!scripts/test_message_hooks_ext_mode.py
 
 # Build output directories
 obj-linux/

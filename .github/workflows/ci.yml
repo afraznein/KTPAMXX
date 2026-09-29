@@ -95,6 +95,15 @@ jobs:
         working-directory: KTPAMXX
         run: python3 scripts/test_grenade_slot_log.py
 
+      # Selftest first, for the same reason as the gates above.
+      - name: Prove the extension-mode message hook checks discriminate
+        working-directory: KTPAMXX
+        run: python3 scripts/test_message_hooks_ext_mode.py --selftest
+
+      - name: Test the extension-mode register_message / set_msg_block refusals
+        working-directory: KTPAMXX
+        run: python3 scripts/test_message_hooks_ext_mode.py
+
       - name: Install 32-bit toolchain + compiler
         run: |
           sudo dpkg --add-architecture i386

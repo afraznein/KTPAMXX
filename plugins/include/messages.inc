@@ -412,6 +412,9 @@ native ewrite_string(const x[]);
  * @note For a list of message flags, have a look at the BLOCK_* constants
  *       in message_const.inc.
  *
+ * @note KTP extension mode (no Metamod): blocks are never applied. Any flag other
+ *       than BLOCK_NOT is refused, logged to the AMXX log, and returns 0.
+ *
  * @param iMessage       Message id
  * @param iMessageFlags  BLOCK_* constant
  *
@@ -449,6 +452,8 @@ native get_msg_block(iMessage);
  *       its way.
  * @note The return value can be passed to unregister_message() in order to
  *       stop the message from being hooked.
+ * @note KTP extension mode (no Metamod): handlers are never dispatched. The call
+ *       is refused, logged to the AMXX log, and returns 0. Use register_event.
  *
  * @param iMsgId         Message id
  * @param szFunction     Function that will be called
