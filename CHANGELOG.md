@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - dodx: a deferred score is sent ahead of the stats pause
+
+`Client_ObjScore` accepts a score only while the module is active, then defers
+`client_score` / `dod_score_event` by 0.25 s so the control point can be resolved
+after `SetObj` arrives. Both PreThink paths did that send *after* their
+`isModuleActive()` return. A round-winning capture starts the round freeze, and
+KTPMatchHandler 0.10.176 is the first build that actually pauses dodx for a freeze
+(its RoundState handler was dead before). When the freeze lands inside the 0.25 s
+deferral, the send waited out the freeze, resolved its CP well past the 2 s window,
+and the round-winning capture's `KTP_SCORE_EVENT` carried `flag_index -1`, with a
+`game_time` and `round_time_left` from the end of the freeze rather than the capture.
+
+- The send is now `DODX_SendPendingScore()`, called from both PreThink paths ahead
+  of the pause gate (after the extension-mode ingame/Init handling). It is the only
+  place `dod_score_event` is executed in `moduleconfig.cpp`.
+- Which scores count is unchanged: a score arriving while paused is still refused at
+  `Client_ObjScore`, and the match/half reset still drops a pending send.
+- With no pause in the 0.25 s window, the forwards, their timing and the CP they
+  carry are identical to before.
+- `scripts/test_score_send_before_pause.py` pins the ordering, with `--selftest`.
+
 ### Fixed - 1.26.2: the AmmoX grenade-throw path is an event, so it actually runs
 
 `ksc_msg_ammox` was registered with `register_message`, and in extension mode

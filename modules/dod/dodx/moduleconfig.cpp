@@ -648,13 +648,43 @@ void ServerActivate_Post( edict_t *pEdictList, int edictCount, int clientMax ){
 	RETURN_META(MRES_IGNORED);
 }
 
-void PlayerPreThink_Post(edict_t *pEntity) 
+// Sends a score Client_ObjScore already accepted, so callers run it ahead of the stats
+// pause gate: a round-winning capture's freeze can start inside the 0.25 s deferral, and
+// a send held until unpause resolves its CP more than 2 s after SetObj and loses it.
+static void DODX_SendPendingScore(CPlayer *pPlayer)
 {
-	if ( !isModuleActive() )
-		RETURN_META(MRES_IGNORED);
+	if (!pPlayer->sendScore || pPlayer->sendScore >= gpGlobals->time)
+		return;
 
+	pPlayer->sendScore = 0;
+
+	// ObjScore fires BEFORE SetObj in DoD, so lastScoreCP=-2 means "ObjScore was
+	// received but SetObj hasn't set g_lastCapturedCP yet". By now it has.
+	if (pPlayer->lastScoreCP == -2)
+	{
+		// Negative delta = server time restarted (map change), not a fresh capture.
+		float capDelta = gpGlobals->time - g_lastCapturedTime;
+		if (capDelta >= 0.0f && capDelta < 2.0f)
+			pPlayer->lastScoreCP = g_lastCapturedCP;
+		else
+			pPlayer->lastScoreCP = -1;
+	}
+
+	MF_ExecuteForward(iFScore, pPlayer->index, pPlayer->lastScore, pPlayer->savedScore);
+	if (iFScoreEvent >= 0)
+		MF_ExecuteForward(iFScoreEvent, pPlayer->index, pPlayer->lastScore, (int)pPlayer->savedScore, pPlayer->lastScoreCP);
+	pPlayer->lastScoreCP = -1;
+}
+
+void PlayerPreThink_Post(edict_t *pEntity)
+{
 	CPlayer *pPlayer = GET_PLAYER_POINTER(pEntity);
 	if (!pPlayer->ingame)
+		RETURN_META(MRES_IGNORED);
+
+	DODX_SendPendingScore(pPlayer);
+
+	if ( !isModuleActive() )
 		RETURN_META(MRES_IGNORED);
 
 	// Zors
@@ -676,27 +706,6 @@ void PlayerPreThink_Post(edict_t *pEntity)
 		pPlayer->clearRound = 0.0f;
 		memset(static_cast<void *>(&pPlayer->round),0,sizeof(pPlayer->round));
 		memset(&pPlayer->weaponsRnd,0,sizeof(pPlayer->weaponsRnd));
-	}
-
-	if (pPlayer->sendScore && pPlayer->sendScore < gpGlobals->time)
-	{
-		pPlayer->sendScore = 0;
-
-		// KTP: Resolve pending CP index (ObjScore fires before SetObj)
-		if (pPlayer->lastScoreCP == -2)
-		{
-			// Negative delta = server time restarted (map change), not a fresh capture.
-			float capDelta = gpGlobals->time - g_lastCapturedTime;
-			if (capDelta >= 0.0f && capDelta < 2.0f)
-				pPlayer->lastScoreCP = g_lastCapturedCP;
-			else
-				pPlayer->lastScoreCP = -1;
-		}
-
-		MF_ExecuteForward(iFScore, pPlayer->index, pPlayer->lastScore, pPlayer->savedScore);
-		if (iFScoreEvent >= 0)
-			MF_ExecuteForward(iFScoreEvent, pPlayer->index, pPlayer->lastScore, (int)pPlayer->savedScore, pPlayer->lastScoreCP);
-		pPlayer->lastScoreCP = -1;
 	}
 
 	RETURN_META(MRES_IGNORED);
@@ -2364,6 +2373,8 @@ static void DODX_OnPlayerPreThink(IVoidHookChain<edict_t *, float> *chain, edict
 	// sound hook kept counting -- the direction that invents a quiet player.
 	KTPSampleMove(pPlayer, pEntity);
 
+	DODX_SendPendingScore(pPlayer);
+
 	// Stats tracking — skip if module is paused (round-freeze, dodstats_pause cvar)
 	if (!isModuleActive())
 		return;
@@ -2386,29 +2397,6 @@ static void DODX_OnPlayerPreThink(IVoidHookChain<edict_t *, float> *chain, edict
 		pPlayer->clearRound = 0.0f;
 		memset(static_cast<void *>(&pPlayer->round), 0, sizeof(pPlayer->round));
 		memset(&pPlayer->weaponsRnd, 0, sizeof(pPlayer->weaponsRnd));
-	}
-
-	if (pPlayer->sendScore && pPlayer->sendScore < gpGlobals->time)
-	{
-		pPlayer->sendScore = 0;
-
-		// KTP: Resolve pending CP index. ObjScore fires BEFORE SetObj in DoD,
-		// so lastScoreCP=-2 means "ObjScore was received but SetObj hasn't set
-		// g_lastCapturedCP yet". By now (~0.2s later), SetObj has fired.
-		if (pPlayer->lastScoreCP == -2)
-		{
-			// Negative delta = server time restarted (map change), not a fresh capture.
-			float capDelta = gpGlobals->time - g_lastCapturedTime;
-			if (capDelta >= 0.0f && capDelta < 2.0f)
-				pPlayer->lastScoreCP = g_lastCapturedCP;
-			else
-				pPlayer->lastScoreCP = -1;
-		}
-
-		MF_ExecuteForward(iFScore, pPlayer->index, pPlayer->lastScore, pPlayer->savedScore);
-		if (iFScoreEvent >= 0)
-			MF_ExecuteForward(iFScoreEvent, pPlayer->index, pPlayer->lastScore, (int)pPlayer->savedScore, pPlayer->lastScoreCP);
-		pPlayer->lastScoreCP = -1;
 	}
 }
 
