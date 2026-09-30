@@ -96,11 +96,9 @@ struct KTPMoveStats
 	int soundsWater;         // wade/swim -- not step-timer driven
 	int pmoveSoundsTotal;    // every player sound the movement code emitted
 
-	// The engine's own step timer, sampled at PreThink: a rise means the timer was
-	// reset, which is what happens when a step fires. An INDEPENDENT observation of the
-	// same event as stepsGround, and the only control that separates "this player made
-	// no noise" from "this server emitted no footsteps at all" -- the second reads as
-	// the first in every per-player figure, and would do so fleet-wide and silently.
+	// The engine's own step timer sampled at PreThink; a rise means it was reset.
+	// NOT a control for footstep emission: it co-moves with duck actuation, so any
+	// ratio against it measures its own denominator rather than the steps.
 	int stepTimerFires;
 
 	// In-flight sampling state. `havePrev` distinguishes "was not crouched" from "have

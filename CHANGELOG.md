@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - dodx / stats_logging: `step_timer_fires` was documented as a control it cannot be
+
+Every comment describing `step_timer_fires` called it an INDEPENDENT observation of the
+same event as `steps_ground`, and "the only control -- read it before any per-player
+footstep figure". Measured against 15,207 live `ktp_move_census` rows on 2026-09-30, it
+is neither.
+
+- It co-moves with the exposure under test: coefficient on ducked fraction **+4.02**
+  [+3.72, +4.32], on duck-tap rate **+0.49** [+0.24, +0.76].
+- Its row-level correlation with emitted steps per second is **r = 0.005**, so it is not
+  tracking the event the comment said it observed.
+- `steps_ground / step_timer_fires` is therefore a ratio whose denominator is the
+  variable under test. It renders a clean, monotone "footstep suppression" of **-4% to
+  -28%** across the duck range that is entirely the denominator moving -- and that was
+  drafted as a finding before the co-movement was measured.
+
+What resets `v.flTimeStepSound` across a duck transition is not readable from this tree:
+DoD owns those constants and `pm_shared` is not in KTP-ReHLDS (only `pm_defs.h`). The
+replacement comments therefore state the co-movement and stop, rather than theorising a
+mechanism nobody here can check.
+
+The hazard the old text named is real and now has no remedy in this stream: a server that
+stopped emitting footsteps reads exactly like quiet players. A per-player footstep figure
+has **no** control here, and saying so is the correction -- substituting this column is
+what went wrong.
+
+Comment-only. No behaviour change, no version bump, nothing rebuilt: the shipped dodx and
+`stats_logging` artifacts are byte-unaffected and no wave is owed.
+
+Sites corrected here: `modules/dod/dodx/KTPMoveAccum.h`, `modules/dod/dodx/NBase.cpp`,
+`plugins/include/dodx.inc`, `plugins/dod/ktp_stats_capture.inc`, `CLAUDE.md`, and a pointer
+on the 1.25.0 entry. The live `ktp_move_census.step_timer_fires` column COMMENT carries the
+same claim from migration 038; that is fixed by a forward migration staged in the operator
+queue, never by editing an applied migration. `KTPHLStatsX` carries its own copies.
+
 ### Fixed - dodx: a deferred score is sent ahead of the stats pause
 
 `Client_ObjScore` accepts a score only while the module is active, then defers
@@ -117,6 +152,10 @@ sounds. Timer fires with no steps means the *server* stopped emitting footsteps
 (`mp_footsteps`, or a step path that no longer reaches the sound hook). Without it
 that is indistinguishable from every player moving silently, and the second is the
 reading that would be believed.
+
+🔻 **CORRECTED -- see the `step_timer_fires` entry under [Unreleased].** It co-moves
+with duck actuation and cannot serve as a control. The paragraph above is what shipped,
+not what holds.
 
 ### Added - 1.25.0: dodx registers the ReHLDS `SV_StartSound` chain
 

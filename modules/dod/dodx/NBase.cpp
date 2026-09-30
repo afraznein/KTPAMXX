@@ -2574,10 +2574,9 @@ static cell AMX_NATIVE_CALL dodx_get_shot_target2(AMX *amx, cell *params)
 // a crouch-walker legitimately emits few steps, and that is not an offence. Making
 // them inseparable at the source is cheaper than remembering the rule.
 //
-// step_timer_fires is an INDEPENDENT observation of the same event as steps_ground,
-// taken off the engine's own step timer rather than off the sound. It is the control
-// that separates a player who made no noise from a server that emitted no footsteps
-// at all -- without it the second reads exactly like the first, fleet-wide.
+// step_timer_fires is NOT a control for steps_ground, despite reading a different
+// sensor: it co-moves with duck actuation, so a ratio against it measures its own
+// denominator and renders duck exposure as footstep suppression.
 //
 // out[] = { taps, stam_tap_sum, stam_tap_min, steps_ground, steps_ladder,
 //           sounds_water, pmove_sounds, step_timer_fires }

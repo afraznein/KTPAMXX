@@ -1453,10 +1453,9 @@ native dodx_reset_aim_vis_stats(id);
  * stats[6] pmove_sounds      every player sound the movement code emitted
  * stats[7] step_timer_fires  times the engine's step timer was seen to reset
  *
- * stats[7] is an INDEPENDENT observation of the same event as stats[3], taken
- * from the engine rather than from the sound. Compare them: a server with
- * footsteps disabled shows timer fires with no steps, and without that
- * comparison it is indistinguishable from every player moving silently.
+ * stats[7] is NOT a control for stats[3], despite reading a different sensor:
+ * it co-moves with duck actuation, so a ratio against it measures its own
+ * denominator and renders duck exposure as footstep suppression.
  *
  * Sum with the histograms, never on their own -- see the block comment above.
  *
