@@ -2585,11 +2585,9 @@ stock ksc_move_hist_str(id, which, out[], len) {
 // ordinary play. Splitting this into two markers would make that reading the easy
 // one, so it stays one line even though the line is wide.
 //
-// step_timer_fires is the control for the whole footstep half: it observes the
-// engine's own step timer rather than the emitted sound, so timer fires with no
-// steps means the SERVER stopped emitting footsteps, not that everyone went quiet.
-// Without it those two are indistinguishable and the second is the one that would
-// be believed.
+// step_timer_fires is NOT a control for the footstep half, despite reading a
+// different sensor: it co-moves with duck actuation, so a ratio against it
+// measures its own denominator rather than the steps.
 //
 // Line budget, since a silent truncation here is how the life buffer lost its
 // sequence field. The five histograms are the bulk, at seven characters per bucket
