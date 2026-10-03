@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - 1.26.3: a round restart no longer logs a grenade throw for every player holding one
+
+Once 1.26.2 made the AmmoX path run, a round restart started producing a
+`KTP_GRENADE_THROW` for each live player who still held exactly one grenade. The
+respawn strips the grenade through AmmoX, and that `1 -> 0` arrives before
+`dod_client_spawn` forgets the counts, so the observer read it as a one-step
+decrease on a live player, which is how it recognises a throw. The 0.5 s poll never
+saw it: by the time it ran, spawn had already reset the counts.
+
+Measured on the NY1 canary, 14 halves under 1.26.2 compared with 40 halves under
+1.26.1 across the fleet (2026-09-29 to 2026-10-03):
+
+- 1.26.2: 4,560 throws against 4,459 `tracked` bursts. 104 of the throws that have
+  no burst carry the same `game_time`, to the hundredth, as their thrower's own
+  spawn row inside a round-restart cluster.
+- 1.26.1: 11,469 throws against 11,482 bursts, and none of that shape.
+- With those 104 removed the canary is at 4,456 throws to 4,459 bursts (0.999),
+  in line with 1.26.1 (0.999).
+
+The fix: a throw is now held for one 0.1 s task tick before it is buffered, and
+`dod_client_spawn` withdraws a held throw for that player. Position, angles,
+`game_time`, `event_epoch` and the in-hand weapon id are still read in the throw
+frame. Only the per-type sequence waits for the commit, so a withdrawn throw leaves
+no sequence hole for gap repair to chase. Held throws are committed ahead of the
+drain at every half close, at match start and at `plugin_end`, and on disconnect,
+so a real throw always lands in its own half and is never handed to the slot's next
+occupant.
+
+This is **not** the stats pause. These rows looked like a pause leak because a round
+restart ends every round freeze, but neither stream checks the pause: `tracked` comes
+from Detonate's TraceLine, which dodx does not gate. Real throws made during a freeze
+still detonate and are still tracked: on the canary, 34 throws made 5-10 s before
+a restart have their burst. Gating throws on the pause would have dropped those and left their bursts
+orphaned. A grenade thrown in the last few seconds before a restart still has no
+burst, because the restart removes it before it can detonate. That is the
+background rate, and it was there in 1.26.1 as well.
+
+No wire or schema change. `KTP_GRENADE_THROW` keeps its fields and their order, and
+`KSC_SCHEMA_CONTRACT` stays at 25, so the daemon needs no change and does not have to
+go first. The only difference on the wire is that the restart-edge rows stop arriving.
+
 ### Fixed - dodx / stats_logging: `step_timer_fires` was documented as a control it cannot be
 
 Every comment describing `step_timer_fires` called it an INDEPENDENT observation of the

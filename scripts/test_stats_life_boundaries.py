@@ -1515,9 +1515,74 @@ def test_grenade_throw_stream_from_ammox_edge() -> None:
     assert "g_kscGrenAmmo[id][0] = -1" in function_body(CAPTURE, "stock ksc_clear_player")
     emit = function_body(CAPTURE, "stock ksc_emit_grenade_throw")
     for f in ("matchid", "half", "map", "player", "weapon_id", "weapon_type", "position",
-              "yaw", "pitch", "game_time", "event_epoch", "sequence"):
+              "yaw", "pitch", "game_time", "event_epoch"):
         assert f'({f} ^"%' in emit, f
-    assert "ksc_buffer(line, KSC_EVENT_GRENADE_THROW)" in emit
+    commit = function_body(CAPTURE, "stock ksc_grenade_throw_commit")
+    assert '(sequence ^"%d^")' in commit
+    assert "ksc_buffer(line, KSC_EVENT_GRENADE_THROW)" in commit
+
+
+def _check_throw_hold(capture: str) -> None:
+    emit = function_body(capture, "stock ksc_emit_grenade_throw")
+    commit = function_body(capture, "stock ksc_grenade_throw_commit")
+    cancel = function_body(capture, "stock ksc_grenade_throw_cancel")
+    # Nothing reaches the wire, and no sequence is spent, until the hold ends:
+    # a withdrawn throw must leave neither a row nor a gap-repair hole.
+    assert "ksc_buffer(" not in emit and "ksc_next_type_sequence(" not in emit
+    assert "ksc_buffer(" not in cancel and "ksc_next_type_sequence(" not in cancel
+    assert "g_kscThrowPending[id] = true" in emit
+    assert 'set_task(KSC_THROW_HOLD_SECS, "ksc_grenade_throw_task", KSC_TASK_THROW_BASE + id)' in emit
+    # An older held throw is committed before its slot is overwritten.
+    before(emit, "ksc_grenade_throw_commit(id)", "formatex(g_kscThrowLine[id]")
+    before(commit, "g_kscThrowPending[id] = false", "ksc_buffer(line, KSC_EVENT_GRENADE_THROW)")
+    assert "ksc_grenade_throw_commit(taskid - KSC_TASK_THROW_BASE)" in function_body(
+        capture, "public ksc_grenade_throw_task(taskid)")
+    # The respawn strip is withdrawn before the counts are forgotten.
+    before(function_body(capture, "public dod_client_spawn"),
+           "ksc_grenade_throw_cancel(id)", "g_kscGrenAmmo[id][0] = -1")
+    # A real throw just before a disconnect lands, and cannot pass to the next owner.
+    before(function_body(capture, "stock ksc_clear_player"),
+           "ksc_grenade_throw_commit(id)", "g_kscGrenAmmo[id][0] = -1")
+    # Held throws land in their own half, ahead of the drain and the health record.
+    before(function_body(capture, "stock ksc_close_producer_context"),
+           "ksc_grenade_throw_commit_all()", "ksc_flush()")
+    before(function_body(capture, "stock ksc_on_match_start"),
+           "ksc_grenade_throw_commit_all()", "ksc_emit_health(")
+    before(function_body(capture, "stock ksc_shutdown"),
+           "ksc_grenade_throw_commit_all()", "ksc_flush()")
+    # The per-player task range must not overlap any other task id.
+    base = int(re.search(r"#define KSC_TASK_THROW_BASE\s+(\d+)", capture).group(1))
+    others = {int(v) for k, v in re.findall(r"#define (KSC_TASK_\w+)\s+(\d+)", capture)
+              if k != "KSC_TASK_THROW_BASE"}
+    assert base > 32, "stats_logging.sma's ping task uses the player id as its task id"
+    assert not any(base < v <= base + 32 for v in others), others
+
+
+def test_grenade_throw_withdrawn_by_same_frame_respawn() -> None:
+    # A respawn strips a held grenade through AmmoX before dod_client_spawn runs,
+    # and that one-step decrease reads as a throw; the hold lets spawn withdraw it.
+    _check_throw_hold(CAPTURE)
+    # Negative controls: each removes one guarantee and must be caught.
+    capture = CAPTURE.replace("\r\n", "\n")
+    mutations = {
+        "no spawn withdrawal": ("\tksc_grenade_throw_cancel(id)\n", ""),
+        "buffered at read time": (
+            "\tg_kscThrowPending[id] = true\n",
+            "\tg_kscThrowPending[id] = true\n\tksc_buffer(g_kscThrowLine[id], KSC_EVENT_GRENADE_THROW)\n"),
+        "not committed before close": (
+            "\tksc_grenade_throw_commit_all()\n\tksc_objective_reset_all(true)\n"
+            "\tksc_grenade_cache_clear_all()\n\tksc_break_reset_boundary()",
+            "\tksc_objective_reset_all(true)\n"
+            "\tksc_grenade_cache_clear_all()\n\tksc_break_reset_boundary()"),
+        "colliding task range": ("#define KSC_TASK_THROW_BASE  88100", "#define KSC_TASK_THROW_BASE  88000"),
+    }
+    for label, (old, new) in mutations.items():
+        assert capture.count(old) == 1, f"control {label!r} no longer matches the source"
+        try:
+            _check_throw_hold(capture.replace(old, new))
+        except AssertionError:
+            continue
+        raise AssertionError(f"negative control {label!r} was not caught")
 
 
 def test_gap_repair_retains_every_data_line_and_resends_on_rcon() -> None:
