@@ -458,6 +458,11 @@ new g_kscDeployed[MAX_PLAYERS + 1]
 #define KSC_AMMO_GREN_HAND  9
 #define KSC_AMMO_GREN_STICK 11
 new g_kscGrenAmmo[MAX_PLAYERS + 1][2]
+// A throw is held for one task tick so a respawn in the same frame can withdraw it.
+#define KSC_TASK_THROW_BASE  88100
+#define KSC_THROW_HOLD_SECS  0.1
+new bool:g_kscThrowPending[MAX_PLAYERS + 1]
+new g_kscThrowLine[MAX_PLAYERS + 1][KSC_BUF_LINE_LEN]
 // Gap repair: every emitted data line is retained here so the daemon can ask
 // for it again by (stream, sequence) when its per-type sequence shows a hole
 // -- the transport is one-way UDP and loses ~0.1% in transit. The daemon asks
@@ -754,6 +759,7 @@ stock ksc_close_producer_context() {
 	// Close cached old-context facts before clearing the candidate. A start can
 	// be the only boundary delivered after an abandon/reset, so it must finish a
 	// previously confirmed stream rather than silently overwrite its health.
+	ksc_grenade_throw_commit_all()
 	ksc_objective_reset_all(true)
 	ksc_grenade_cache_clear_all()
 	ksc_break_reset_boundary()
@@ -792,6 +798,7 @@ stock ksc_on_match_start(const matchid[], half) {
 	// The normal H1 end is unaffected: ktp_half_end already emitted and
 	// cleared this context, so the guard is false there.
 	if (g_kscProducerMatchId[0] && g_kscProducerHalf != 0) {
+		ksc_grenade_throw_commit_all()
 		ksc_flush()
 		ksc_emit_health(g_kscProducerMatchId, g_kscProducerHalf)
 	}
@@ -830,6 +837,7 @@ stock ksc_on_match_context_end(const matchid[]) {
 stock ksc_shutdown() {
 	// plugin_end is the last reliable old-map point in the Pawn lifecycle.
 	// Close attempts while their cached context is still available, then drain.
+	ksc_grenade_throw_commit_all()
 	ksc_objective_reset_all(true)
 	ksc_grenade_cache_clear_all()
 	ksc_flush()
@@ -1262,6 +1270,8 @@ stock ksc_clear_player(id) {
 	g_kscLastEnemyAttacker[id] = 0
 	g_kscScoped[id] = 0
 	g_kscDeployed[id] = 0
+	// A throw just before leaving was real; it must not pass to the slot's next owner.
+	ksc_grenade_throw_commit(id)
 	g_kscGrenAmmo[id][0] = -1
 	g_kscGrenAmmo[id][1] = -1
 	// Fold what the leaving player's record still holds before forgetting it.
@@ -1599,6 +1609,9 @@ public client_damage(attacker, victim, damage, wpnindex, hitplace, TA) {
 public dod_client_spawn(id) {
 	ksc_clear_damage_row(id)
 	g_kscDeployed[id] = 0
+	// A respawn strips a held grenade through AmmoX before this forward runs,
+	// which reads as a throw; withdraw it before forgetting the counts.
+	ksc_grenade_throw_cancel(id)
 	// Spawn resets ammo through AmmoX (an increase, never a throw); forget the
 	// previous life's counts so a class change cannot read as a decrease.
 	g_kscGrenAmmo[id][0] = -1
@@ -3552,9 +3565,9 @@ public ksc_evt_ammox(id) {
 // still in hand and its exact weapon id is readable. The poll arrives up to
 // 0.5 s later, after a bot (or a fast human) has already switched back, so
 // neither path may REQUIRE in-hand -- the AmmoX path records the new count
-// before this check, so rejecting there would drop the throw for both. A
-// one-step decrease of grenade ammo on a live player has no other cause (spawn
-// refills are increases, and the count is forgotten on spawn and disconnect).
+// before this check, so rejecting there would drop the throw for both. The one
+// other cause of a one-step decrease on a live player is a respawn stripping the
+// last grenade, and dod_client_spawn withdraws that while the throw is held.
 // Without the in-hand id, weapon id comes from the channel, mills_bomb for the
 // British classes.
 stock ksc_grenade_ammo_observe(id, channel, amount, bool:exact) {
@@ -3588,10 +3601,13 @@ stock ksc_grenade_ammo_poll() {
 	}
 }
 
+// Everything but the sequence is read now; the sequence is taken at commit so a
+// withdrawn throw leaves no hole for gap repair to chase.
 stock ksc_emit_grenade_throw(id, weapon_id) {
 	new matchid[64], half
 	if (!ksc_event_context(matchid, charsmax(matchid), half))
 		return
+	ksc_grenade_throw_commit(id)
 
 	new position[40]
 	if (!ksc_origin_str(id, position, charsmax(position)))
@@ -3600,18 +3616,45 @@ stock ksc_emit_grenade_throw(id, weapon_id) {
 	if (dodx_get_user_angles(id, ang) == 1) { yaw = ang[1]; pitch = ang[0]; }
 
 	new weapon_type[20], player[96], mapname[32], wire_matchid[64], wire_map[32]
-	new line[KSC_BUF_LINE_LEN]
 	ksc_grenade_throw_weapon_type(weapon_id, weapon_type, charsmax(weapon_type))
 	ksc_player_str(id, player, charsmax(player))
 	get_mapname(mapname, charsmax(mapname))
 	ksc_wire_sanitize(matchid, wire_matchid, charsmax(wire_matchid))
 	ksc_wire_sanitize(mapname, wire_map, charsmax(wire_map))
-	new sequence = ksc_next_type_sequence(KSC_EVENT_GRENADE_THROW)
-	formatex(line, charsmax(line),
-		"KTP_GRENADE_THROW (matchid ^"%s^") (half ^"%d^") (map ^"%s^") (player ^"%s^") (weapon_id ^"%d^") (weapon_type ^"%s^") (position ^"%s^") (yaw ^"%.1f^") (pitch ^"%.1f^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^")",
+	formatex(g_kscThrowLine[id], charsmax(g_kscThrowLine[]),
+		"KTP_GRENADE_THROW (matchid ^"%s^") (half ^"%d^") (map ^"%s^") (player ^"%s^") (weapon_id ^"%d^") (weapon_type ^"%s^") (position ^"%s^") (yaw ^"%.1f^") (pitch ^"%.1f^") (game_time ^"%.2f^") (event_epoch ^"%d^")",
 		wire_matchid, half, wire_map, player, weapon_id, weapon_type, position,
-		yaw, pitch, get_gametime(), get_systime(), sequence)
+		yaw, pitch, get_gametime(), get_systime())
+	g_kscThrowPending[id] = true
+	set_task(KSC_THROW_HOLD_SECS, "ksc_grenade_throw_task", KSC_TASK_THROW_BASE + id)
+}
+
+public ksc_grenade_throw_task(taskid) {
+	ksc_grenade_throw_commit(taskid - KSC_TASK_THROW_BASE)
+}
+
+stock ksc_grenade_throw_commit(id) {
+	if (id < 1 || id > MAX_PLAYERS || !g_kscThrowPending[id])
+		return
+	g_kscThrowPending[id] = false
+	remove_task(KSC_TASK_THROW_BASE + id)
+	new line[KSC_BUF_LINE_LEN]
+	formatex(line, charsmax(line), "%s (sequence ^"%d^")", g_kscThrowLine[id],
+		ksc_next_type_sequence(KSC_EVENT_GRENADE_THROW))
 	ksc_buffer(line, KSC_EVENT_GRENADE_THROW)
+}
+
+stock ksc_grenade_throw_cancel(id) {
+	if (id < 1 || id > MAX_PLAYERS || !g_kscThrowPending[id])
+		return
+	g_kscThrowPending[id] = false
+	remove_task(KSC_TASK_THROW_BASE + id)
+}
+
+// Held throws belong to the half they were read in, so they land before it closes.
+stock ksc_grenade_throw_commit_all() {
+	for (new id = 1; id <= MAX_PLAYERS; id++)
+		ksc_grenade_throw_commit(id)
 }
 
 // ---------------------------------------------------------------------------
