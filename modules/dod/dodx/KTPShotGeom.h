@@ -272,6 +272,65 @@ struct KTPShotGeom
 	double prevTime;
 	float  prevDir[3];
 
+	// The hitgroup the target stash's trace resolved on, stamped with the target
+	// group; -1 outside 0-99 so the wire bound is provable without inventing one.
+	int tgtHitgroup;
+
+	// The rewind lag compensation set up for this cmd's packet, from the engine's
+	// ktp_rewind_v1 record. Stamped for EVERY cmd, not only player-hitting traces,
+	// because a miss has a rewind too. Its own seq/consume pair: a miss has no
+	// target state, so it cannot ride tgtSeq. Read at fire time it is still the
+	// fire cmd's, by the same ordering the other stashes rely on; read later it
+	// would be the next packet's.
+	unsigned int rwSeq;    // cmd this record belongs to; 0 = none/consumed
+	int rwFlags;           // ktp_rewind flag bits, 7 of them
+	int rwDepthMs;         // 0-9999
+	int rwWantMs;          // 0-9999
+
+	// have == false (bot, engine without the API, record not this slot's) leaves
+	// no record for the cmd, never the previous cmd's.
+	void stampRewind(bool have, unsigned int flags, float depthMs, float wantMs)
+	{
+		if (!have || cmdSeq == 0)
+		{
+			rwSeq = 0;
+			return;
+		}
+		rwSeq = cmdSeq;
+		rwFlags = (int)(flags & 0x7fu);
+		rwDepthMs = clampMs(depthMs);
+		rwWantMs = clampMs(wantMs);
+	}
+
+	// Destructive, cmd-paired: true only for the calling cmd's own record.
+	bool readRewind(int out[3])
+	{
+		if (rwSeq == 0 || rwSeq != cmdSeq)
+		{
+			rwSeq = 0;
+			return false;
+		}
+		out[0] = rwFlags;
+		out[1] = rwDepthMs;
+		out[2] = rwWantMs;
+		rwSeq = 0;
+		return true;
+	}
+
+	static int clampHitgroup(int hitgroup)
+	{
+		return (hitgroup >= 0 && hitgroup <= 99) ? hitgroup : -1;
+	}
+
+	// The real maximum is about 1.6 s (the 1.5 s cap plus 0.1 s of interp); the
+	// clamp is what makes the 4-digit wire bound provable rather than assumed.
+	static int clampMs(float ms)
+	{
+		if (!(ms > 0.0f)) return 0;
+		if (ms >= 9999.0f) return 9999;
+		return (int)(ms + 0.5f);
+	}
+
 	void reset()
 	{
 		cmdSeq = 0;
@@ -283,6 +342,8 @@ struct KTPShotGeom
 		prevTarget = 0;
 		prevTime = 0.0;
 		prevDir[0] = prevDir[1] = prevDir[2] = 0.0f;
+		rwSeq = 0;
+		rwFlags = rwDepthMs = rwWantMs = -1;
 		resetTarget();
 	}
 
@@ -314,6 +375,7 @@ struct KTPShotGeom
 		shooterPunchYaw = 0;
 		shooterSpeedUnits = 0;
 		shooterStamina = 0;
+		tgtHitgroup = -1;
 	}
 
 	void consume()

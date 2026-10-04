@@ -1758,6 +1758,44 @@ def test_data_streams_never_take_the_shared_sequence() -> None:
             f"stream {name} has no per-type sequence call"
 
 
+def _native_out_cells(signature: str) -> list:
+    body = function_body(DODX_NATIVE, signature)
+    return re.findall(r"^\s*out\[(\d+)\] = (.+);", body, re.M)
+
+
+def test_dodx_shot_target3_is_target2_plus_hitgroup() -> None:
+    # Schema 26: a new name with one more cell, never a widened target2. A
+    # skewed module/plugin pair must fail to load rather than corrupt or invent.
+    two = _native_out_cells("static cell AMX_NATIVE_CALL dodx_get_shot_target2(")
+    three = _native_out_cells("static cell AMX_NATIVE_CALL dodx_get_shot_target3(")
+    assert len(two) == 21, f"target2 writes {len(two)} cells; it must stay at 21"
+    assert three[:21] == two, "target3 must return target2's 21 cells in the same order"
+    assert three[21:] == [("21", "sg.tgtHitgroup")], three[21:]
+    assert re.search(r"^native dodx_get_shot_target2\(id, weapon, target\[21\]\);", DODX_INCLUDE, re.M)
+    assert re.search(r"^native dodx_get_shot_target3\(id, weapon, target\[22\]\);", DODX_INCLUDE, re.M)
+    for name in ("dodx_get_shot_target2", "dodx_get_shot_target3", "dodx_get_shot_rewind"):
+        assert re.search(r'\{"' + name + r'",\s+' + name + r"\}", DODX_NATIVE), f"{name} not registered"
+    capture = function_body(DODX_MODULE, "static void KTPCaptureShotGeom(")
+    before(capture, "sg.tgtEntIndex = tgtIdx;", "sg.tgtHitgroup = KTPShotGeom::clampHitgroup(ptr->iHitgroup);")
+
+
+def test_dodx_rewind_is_stamped_per_cmd_inside_the_rewind_window() -> None:
+    # The record must be read in the cmd's PreThink hook body, right after the cmd
+    # ordinal advances: that runs inside its packet's SV_SetupMove/RestoreMove, and
+    # it runs for every cmd, so a miss carries a rewind as well as a hit.
+    prethink = function_body(DODX_MODULE, "static void DODX_OnPlayerPreThink(")
+    before(prethink, "pPlayer->ktpShot.cmdSeq++;", "g_ktpRewindApi->GetCurrent(index - 1, &rw)")
+    before(prethink, "pPlayer->ktpShot.stampRewind(", "KTPSampleAim(pPlayer, pEntity);")
+    assert "stampRewind" not in function_body(DODX_MODULE, "static void KTPCaptureShotGeom("),         "a trace-time stamp would leave every miss without a rewind"
+    setup = function_body_last(DODX_MODULE, "static bool DODX_SetupExtensionHooks(")
+    activate = function_body_last(DODX_MODULE, "static void DODX_OnSV_ActivateServer(")
+    assert "DODX_ResolveRewindApi();" in setup and "DODX_ResolveRewindApi();" in activate
+    rewind = function_body(DODX_NATIVE, "static cell AMX_NATIVE_CALL dodx_get_shot_rewind(")
+    before(rewind, "out[0] = out[1] = out[2] = -1;", "CHECK_PLAYER(index);")
+    assert "readRewind(rw)" in rewind
+    assert re.search(r"^native dodx_get_shot_rewind\(id, rw\[3\]\);", DODX_INCLUDE, re.M)
+
+
 def main() -> None:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:

@@ -1377,6 +1377,49 @@ native dodx_get_shot_target(id, weapon, target[16]);
 native dodx_get_shot_target2(id, weapon, target[21]);
 
 /**
+ * Same read as dodx_get_shot_target2 [0]-[20] above, in the same order, plus:
+ *
+ *  [21] the studio hitgroup the trace resolved on, as the game DLL assigns them
+ *       (0 generic, 1 head, 2 chest, 3 stomach, 4-7 limbs); -1 when the value
+ *       was outside 0-99. Stamped with the rest of the target group.
+ *
+ * A new name rather than a widened dodx_get_shot_target2, for the reason given
+ * there: a skewed module/plugin pair must fail to load, not corrupt or invent.
+ *
+ * @param id        Firing player index (the forward's id argument)
+ * @param weapon    The forward's weapon argument; must match what the shooter held
+ *                  at trace time or the read returns 0
+ * @param target    Output, 22 cells as above
+ * @return  1 with target state, 0 when none belongs to this shot (record NULL)
+ */
+native dodx_get_shot_target3(id, weapon, target[22]);
+
+/**
+ * The rewind lag compensation applied to the calling shot's usercmd, from the
+ * engine's per-packet ktp_rewind_v1 record. Stamped for every cmd, so a miss
+ * has one as well as a hit. Measurement only.
+ *
+ *  [0] flags: bit0 attempted, bit1 reached (bit0 without bit1 is a rewind miss,
+ *      judged against present-time positions), bit2 clamped by sv_maxunlag
+ *      (pre-clamp latency >= the ceiling), bit3 raw latency over the 1.5 s hard
+ *      cap (so [2] is a floor), bit4 target time pushed to realtime, bit5
+ *      sv_unlag_estimator on, bit6 interp capped or floored
+ *  [1] depth, ms, realtime - target time after the clamp, 0-9999
+ *  [2] want, ms, the same on the pre-clamp latency, 0-9999; equals [1] unless
+ *      bit2 is set
+ *
+ * Same destructive, cmd-paired read as dodx_get_shot_target3; no weapon
+ * argument, because the record belongs to the cmd. Returns 0 with all three
+ * cells -1 for a bot (bots never pass through lag compensation), on an engine
+ * without the API, or when the record is not the calling cmd's.
+ *
+ * @param id        Firing player index (the forward's id argument)
+ * @param rw        Output, 3 cells as above
+ * @return  1 when a record belongs to this shot's cmd, 0 otherwise
+ */
+native dodx_get_shot_rewind(id, rw[3]);
+
+/**
  * Read a player's aim-vs-transmission counters. Measurements only: no threshold,
  * no ratio, no conclusion is applied here.
  *
