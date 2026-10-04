@@ -185,6 +185,11 @@
 // 57B at x10000) are the measured claim on it -- see
 // infra-shot-attribution. Anything else spending that headroom first should
 // say so, because at 936 there was not room for both.
+//
+// Schema 26 says so: hitgroup and the rewind group add 68B. It pays for itself
+// by retiring trace_start_off (0 on every stored sample) and giving yaw/pitch a
+// provable clamp, which together give back 40B, so the counterfactual still
+// fits behind it (ruled 2026-09-29).
 #define KSC_SHOT_BUF_LINE_LEN    960
 #define KSC_SHOT_FLUSH_SECS      1.0
 
@@ -229,7 +234,7 @@
 //
 // Bump this only for a change that really alters the storage contract, and
 // check what the next ordinal is already promised to before taking it.
-#define KSC_SCHEMA_CONTRACT 25
+#define KSC_SCHEMA_CONTRACT 26
 #define KSC_CAPABILITIES "frag_context,damage,position,assist,life,break,flag_state,flag_position,objective_attempt,team_membership,grenade_entity,shot,score,duel,player_state,grenade_throw,position_state,map_revision,sequence,health,move"
 
 enum {
@@ -507,6 +512,7 @@ new g_kscBreakBase[KSC_MAX_FLAGS]   // rolling in-zone baseline to measure drops
 new Float:g_kscLastRoundTime = -1.0
 new bool:g_kscBreakBaselineSuppressed = true
 new g_kscCvarTimelimit
+new g_kscCvarMaxunlag
 new g_kscRoundClockUnavailPolls = 0  // consecutive unavailable polls; -1 once warned
 
 // Defined up here only because Pawn resolves stocks in declaration order and
@@ -524,6 +530,7 @@ stock ksc_init() {
 	g_kscCvarShots = register_cvar("ktp_stats_shots", "1")
 	g_kscCvarShotDetail = register_cvar("ktp_stats_shot_detail", "0")
 	g_kscCvarTimelimit = get_cvar_pointer("mp_timelimit")
+	g_kscCvarMaxunlag = get_cvar_pointer("sv_maxunlag")
 	// "b": AmmoX is sent to one client, and the handler gets that client's id.
 	if (get_user_msgid("AmmoX") > 0)
 		register_event("AmmoX", "ksc_evt_ammox", "b")
@@ -659,10 +666,12 @@ stock ksc_emit_manifest(const matchid[], half) {
 	get_mapname(mapname, charsmax(mapname))
 	new sequence = ksc_next_sequence()
 	formatex(g_kscManifestLine, charsmax(g_kscManifestLine),
-		"KTP_CAPTURE_MANIFEST (matchid ^"%s^") (half ^"%d^") (map ^"%s^") (producer ^"stats_logging^") (producer_version ^"%s^") (schema ^"%d^") (capabilities ^"%s^") (position_interval ^"%.1f^") (buffer_entries ^"%d^") (life_buffer_entries ^"%d^") (map_revision_algorithm ^"sha256^") (map_revision ^"%s^") (sequence ^"%d^") (event_epoch ^"%d^")",
+		"KTP_CAPTURE_MANIFEST (matchid ^"%s^") (half ^"%d^") (map ^"%s^") (producer ^"stats_logging^") (producer_version ^"%s^") (schema ^"%d^") (capabilities ^"%s^") (position_interval ^"%.1f^") (buffer_entries ^"%d^") (life_buffer_entries ^"%d^") (map_revision_algorithm ^"sha256^") (map_revision ^"%s^") (sv_maxunlag ^"%.3f^") (sequence ^"%d^") (event_epoch ^"%d^")",
 		matchid, half, mapname, PLUGIN_VERSION, KSC_SCHEMA_CONTRACT,
 		KSC_CAPABILITIES, KSC_POSITION_BROADCAST_SECS,
 		KSC_BUF_MAX_ENTRIES, KSC_LIFE_BUF_MAX_ENTRIES, g_kscMapRevision,
+		// The ceiling in force for the half, so a per-shot clamp needs no config join.
+		g_kscCvarMaxunlag ? get_pcvar_float(g_kscCvarMaxunlag) : -1.0,
 		sequence, get_systime())
 	log_message("%s", g_kscManifestLine)
 	g_kscManifestRepeatTick = 0
@@ -2765,10 +2774,9 @@ public ksc_position_broadcast_task() {
 // nearest game_time/event_epoch, the same nearest-timestamp technique already
 // proven on frag_context (~99.4% correlation in production).
 //
-// No target/hitgroup field: that belongs to the AC ledger's own
-// dodx_get_shot_geom read (destructive, single-consumer) and inferring a
-// second target here would either duplicate that read or guess independently
-// of it. Scope cut for the compressed wave-0 timeline; not a permanent gap.
+// hitgroup comes from the target stash (dodx_get_shot_target3), stamped in the
+// same first-wins window as the rest of the target group -- never from the AC
+// ledger's geometry stash, whose destructive read has exactly one consumer.
 stock bool:ksc_shot_buffer(const line[]) {
 	g_kscAttempted[KSC_EVENT_SHOT]++
 	if (g_kscShotBufferCount >= KSC_SHOT_BUF_MAX_ENTRIES) {
@@ -2825,6 +2833,12 @@ stock ksc_shot_flush() {
 		log_amx("[KTP-STATS] truncated %d shot line(s) -- exceeded KSC_SHOT_BUF_LINE_LEN (%d), raise it", g_kscShotTruncated, KSC_SHOT_BUF_LINE_LEN)
 		g_kscShotTruncated = 0
 	}
+}
+
+// The engine keeps view angles normalized, so this clamp changes nothing real; it
+// is what makes -999.00 (the no-angles sentinel) the widest literal on the wire.
+stock Float:ksc_shot_angle(Float:a) {
+	return floatclamp(a, -360.0, 360.0)
 }
 
 // The weapon ids dodx_get_shot_target may be queried for, per its contract.
@@ -2921,13 +2935,14 @@ public dod_client_weapon_fire(id, weapon, Float:gametime) {
 	new tgt_health = -1, tgt_dead = -1, tgt_team = -1, shooter_team = -1
 	new shot_ping = -1, shot_loss = -1, cmd_traces = -1
 	new trace_frac = -1, trace_flags = -1
-	new trace_start_off = -1, cmd_all_traces = -1
+	new cmd_all_traces = -1
 	new net_lerp = -1, net_dropped = -1, net_backup = -1, net_cmds = -1
 	new shooter_flags = -1
 	new shooter_speed = -1, shooter_stamina = -1
-	new target[21]
+	new hitgroup = -1
+	new target[22]
 	if (ksc_shot_detail_enabled() && ksc_is_hitscan_firearm(weapon) &&
-			dodx_get_shot_target2(id, weapon, target) == 1) {
+			dodx_get_shot_target3(id, weapon, target) == 1) {
 		// target[0] is the ENTINDEX of the player the trace hit. Without a
 		// target identity a shot can only be correlated to damage by
 		// (attacker, time), which cannot tell "this shot damaged its target"
@@ -2953,7 +2968,6 @@ public dod_client_weapon_fire(id, weapon, Float:gametime) {
 		cmd_traces = target[7]
 		trace_frac = target[8]
 		trace_flags = target[9]
-		trace_start_off = target[10]
 		cmd_all_traces = target[11]
 		net_lerp = target[12]
 		net_dropped = target[13]
@@ -2963,20 +2977,33 @@ public dod_client_weapon_fire(id, weapon, Float:gametime) {
 		shooter_flags = target[16] & 0x3
 		shooter_speed = target[19]
 		shooter_stamina = target[20]
+		hitgroup = target[21]
+	}
+
+	// The rewind belongs to the cmd, not to a weapon or a hit: no hitscan gate, so
+	// misses carry it too. Analysis filters on weapon_id instead.
+	new rw_flags = -1, rw_depth = -1, rw_want = -1
+	new rw[3]
+	if (ksc_shot_detail_enabled() && dodx_get_shot_rewind(id, rw) == 1) {
+		rw_flags = rw[0]
+		rw_depth = rw[1]
+		rw_want = rw[2]
 	}
 
 	new line[KSC_SHOT_BUF_LINE_LEN]
 	formatex(line, charsmax(line),
-		"^"%s^" triggered ^"shot^" (weapon_id ^"%d^") (position ^"%s^") (yaw ^"%.2f^") (pitch ^"%.2f^") (prone ^"%d^") (map ^"%s^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^") (tgt_userid ^"%d^") (tgt_health ^"%d^") (tgt_dead ^"%d^") (tgt_team ^"%d^") (shooter_team ^"%d^") (shot_ping ^"%d^") (shot_loss ^"%d^") (cmd_traces ^"%d^") (trace_frac ^"%d^") (trace_flags ^"%d^") (trace_start_off ^"%d^") (cmd_all_traces ^"%d^") (net_lerp ^"%d^") (net_dropped ^"%d^") (net_backup ^"%d^") (net_cmds ^"%d^") (shooter_flags ^"%d^") (shooter_speed ^"%d^") (shooter_stamina ^"%d^")",
+		"^"%s^" triggered ^"shot^" (weapon_id ^"%d^") (position ^"%s^") (yaw ^"%.2f^") (pitch ^"%.2f^") (prone ^"%d^") (map ^"%s^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^") (tgt_userid ^"%d^") (tgt_health ^"%d^") (tgt_dead ^"%d^") (tgt_team ^"%d^") (shooter_team ^"%d^") (shot_ping ^"%d^") (shot_loss ^"%d^") (cmd_traces ^"%d^") (trace_frac ^"%d^") (trace_flags ^"%d^") (cmd_all_traces ^"%d^") (net_lerp ^"%d^") (net_dropped ^"%d^") (net_backup ^"%d^") (net_cmds ^"%d^") (shooter_flags ^"%d^") (shooter_speed ^"%d^") (shooter_stamina ^"%d^") (hitgroup ^"%d^") (rw_flags ^"%d^") (rw_depth ^"%d^") (rw_want ^"%d^")",
 		pstr, weapon, pos,
-		has_angles ? angles[1] : -999.0, has_angles ? angles[0] : -999.0,
+		has_angles ? ksc_shot_angle(angles[1]) : -999.0,
+		has_angles ? ksc_shot_angle(angles[0]) : -999.0,
 		prone, mapname,
 		producer_matchid, producer_half, gametime, event_epoch, sequence, tgt_userid,
 		tgt_health, tgt_dead, tgt_team, shooter_team,
 		shot_ping, shot_loss, cmd_traces, trace_frac, trace_flags,
-		trace_start_off, cmd_all_traces,
+		cmd_all_traces,
 		net_lerp, net_dropped, net_backup, net_cmds,
-		shooter_flags, shooter_speed, shooter_stamina)
+		shooter_flags, shooter_speed, shooter_stamina,
+		hitgroup, rw_flags, rw_depth, rw_want)
 
 	ksc_shot_buffer(line)
 }

@@ -1257,7 +1257,6 @@ def test_shot_wire_line_fits_shot_buffer() -> None:
         "cmd_traces": "999",             # traceCount clamped <999 before increment
         "trace_frac": "10000",           # flFraction clamped 0..1, x10000
         "trace_flags": "15",             # 4-bit field
-        "trace_start_off": "99999",      # 0-99999 clamp, always non-negative
         "cmd_all_traces": "999",         # allTraceCount, same <999 clamp style
         "net_lerp": "9999",              # -999..9999 clamp
         "net_dropped": "999",            # 0-999 clamp
@@ -1266,7 +1265,14 @@ def test_shot_wire_line_fits_shot_buffer() -> None:
         "shooter_flags": "3",            # target[16] & 0x3 at the capture site
         "shooter_speed": "9999",         # 0-9999 clamp (both bounds)
         "shooter_stamina": "-9999",      # +/-9999 clamp
+        "hitgroup": "99",                # KTPShotGeom::clampHitgroup, -1 or 0-99
+        "rw_flags": "127",               # stampRewind masks to 7 bits; -1 when none
+        "rw_depth": "9999",              # KTPShotGeom::clampMs, 0-9999; -1 when none
+        "rw_want": "9999",               # same clamp
     }
+    # %.2f fields with a provable bound: ksc_shot_angle clamps to +/-360 and the
+    # no-angles sentinel is -999.0, so -999.00 is the widest either can print.
+    float_literal = {"yaw": "-999.00", "pitch": "-999.00"}
 
     out, cursor, seen_player = [], 0, False
     for token in re.finditer(r"%(?:\.2f|[ds])", fmt):
@@ -1275,7 +1281,7 @@ def test_shot_wire_line_fits_shot_buffer() -> None:
         name_match = re.findall(r'\((\w+) "$', fmt[:token.start()])
         name = name_match[0] if name_match else None
         if spec == "%.2f":
-            out.append("-2147483648.00")
+            out.append(float_literal.get(name, "-2147483648.00"))
         elif spec == "%d":
             out.append(int_literal.get(name, "-2147483648"))
         elif not seen_player:
@@ -1417,7 +1423,42 @@ def test_schema25_shooter_flags_drops_attack2_bit() -> None:
     assert "shooter_flags = target[16] & 0x3" in fire
     assert re.search(r"shooter_flags\s*=\s*target\[16\]\s*$", fire, re.M) is None
     assert "new shooter_flags = -1" in fire
-    assert re.search(r"#define\s+KSC_SCHEMA_CONTRACT\s+25(?:\s|$)", CAPTURE)
+    contract = re.search(r"#define\s+KSC_SCHEMA_CONTRACT\s+(\d+)(?:\s|$)", CAPTURE)
+    assert contract and int(contract.group(1)) >= 25
+
+
+def test_schema26_shot_hitgroup_rewind_and_manifest_ceiling() -> None:
+    # Schema 26 (ruled 2026-09-29): hitgroup from target3, the per-cmd rewind,
+    # trace_start_off retired, the sv_maxunlag in force on the manifest.
+    assert re.search(r"#define\s+KSC_SCHEMA_CONTRACT\s+26(?:\s|$)", CAPTURE)
+    fire = function_body(CAPTURE, "public dod_client_weapon_fire")
+    # target3 is target2 plus one cell; a widened target2 call would be the
+    # skewed-pair corruption the new name exists to prevent.
+    assert "new target[22]" in fire and "dodx_get_shot_target3(id, weapon, target) == 1" in fire
+    assert "dodx_get_shot_target2" not in CAPTURE and "dodx_get_shot_target(" not in CAPTURE
+    assert "hitgroup = target[21]" in fire
+    # The rewind belongs to the cmd: read under the detail gate only, never inside
+    # the hitscan-firearm block that guards target state, so misses carry it.
+    target_block = fire[fire.index("dodx_get_shot_target3("):fire.index("hitgroup = target[21]")]
+    assert "dodx_get_shot_rewind" not in target_block
+    assert "if (ksc_shot_detail_enabled() && dodx_get_shot_rewind(id, rw) == 1)" in fire
+    before(fire, "hitgroup = target[21]", "dodx_get_shot_rewind(id, rw)")
+    fmt = fire[fire.index('triggered ^"shot^"'):]
+    fmt = fmt[:fmt.index('",')]
+    assert "trace_start_off" not in fmt and "trace_start_off" not in fire
+    assert fmt.endswith('(hitgroup ^"%d^") (rw_flags ^"%d^") (rw_depth ^"%d^") (rw_want ^"%d^")')
+    assert "hitgroup, rw_flags, rw_depth, rw_want)" in fire
+    assert "has_angles ? ksc_shot_angle(angles[1]) : -999.0" in fire
+    assert "has_angles ? ksc_shot_angle(angles[0]) : -999.0" in fire
+    assert "floatclamp(a, -360.0, 360.0)" in function_body(CAPTURE, "stock Float:ksc_shot_angle")
+
+    emit = function_body(CAPTURE, "stock ksc_emit_manifest")
+    # The daemon's envelope grammar is exact: sv_maxunlag sits after the revision
+    # pair and before sequence, or the whole manifest -- and the half -- is refused.
+    keys = re.findall(r"\((\w+) \^\"", emit)
+    assert keys[-4:] == ["map_revision", "sv_maxunlag", "sequence", "event_epoch"], keys
+    assert '(sv_maxunlag ^"%.3f^")' in emit
+    assert 'g_kscCvarMaxunlag = get_cvar_pointer("sv_maxunlag")' in CAPTURE
 
 
 def test_wave2_streams_wire_and_lifecycle() -> None:
