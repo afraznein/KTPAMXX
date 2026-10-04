@@ -2565,6 +2565,90 @@ static cell AMX_NATIVE_CALL dodx_get_shot_target2(AMX *amx, cell *params)
 	return 1;
 }
 
+// KTP: dodx_get_shot_target3 -- dodx_get_shot_target2's 21 cells in the same
+// order, plus [21] the studio hitgroup the trace resolved on (-1 outside 0-99).
+// A new name, never a widened target2 -- see dodx_get_shot_target for why.
+// target2 stays as it is for plugins built against it. Fixed 22 cells; the sole
+// caller (ksc_emit_shot) declares target[22].
+static cell AMX_NATIVE_CALL dodx_get_shot_target3(AMX *amx, cell *params)
+{
+	int index = params[1];
+	CHECK_PLAYER(index);
+
+	CPlayer *pPlayer = GET_PLAYER_POINTER_I(index);
+	if (!pPlayer->ingame || !pPlayer->pEdict || pPlayer->pEdict->free)
+		return 0;
+
+	KTPShotGeom &sg = pPlayer->ktpShot;
+
+	if (sg.tgtSeq == 0)
+		return 0;
+	if (sg.tgtSeq != sg.cmdSeq)
+	{
+		sg.consumeTarget();
+		return 0;
+	}
+	if ((int)params[2] != sg.geomWeapon)
+		return 0;
+
+	cell *out = MF_GetAmxAddr(amx, params[3]);
+	out[0] = sg.tgtEntIndex;
+	out[1] = sg.tgtHealth;
+	out[2] = sg.tgtDead;
+	out[3] = sg.tgtTeam;
+	out[4] = sg.tgtShooterTeam;
+	out[5] = sg.tgtPing;
+	out[6] = sg.tgtLoss;
+	out[7] = (sg.traceSeq == sg.tgtSeq) ? sg.traceCount : 0;
+	out[8] = sg.traceFrac;
+	out[9] = sg.traceFlags;
+	out[10] = sg.tgtStartOff;
+	out[11] = (sg.allTraceSeq == sg.tgtSeq) ? sg.allTraceCount : 0;
+	const bool netOk = (sg.netSeq == sg.tgtSeq);
+	out[12] = netOk ? sg.netLerpMsec : -1;
+	out[13] = netOk ? sg.netDropped  : -1;
+	out[14] = netOk ? sg.netBackup   : -1;
+	out[15] = netOk ? sg.netCmds     : -1;
+	out[16] = sg.shooterFlags;
+	out[17] = sg.shooterPunchPitch;
+	out[18] = sg.shooterPunchYaw;
+	out[19] = sg.shooterSpeedUnits;
+	out[20] = sg.shooterStamina;
+	out[21] = sg.tgtHitgroup;
+
+	sg.consumeTarget();
+	return 1;
+}
+
+// KTP: the rewind the engine set up for the calling cmd's packet: out[] =
+// { flags, depth_ms, want_ms }. Destructive and cmd-paired like its siblings; no
+// weapon argument, because the record belongs to the cmd, not to a weapon. 0 (and
+// all three -1) for a bot, an engine without ktp_rewind_v1, or a read outside the
+// fire cmd. Measurement only; no threshold.
+static cell AMX_NATIVE_CALL dodx_get_shot_rewind(AMX *amx, cell *params)
+{
+	// Filled before the player check so a caller that mishandles the 0 reads the
+	// sentinel, never its own buffer's stale cells.
+	cell *out = MF_GetAmxAddr(amx, params[2]);
+	out[0] = out[1] = out[2] = -1;
+
+	int index = params[1];
+	CHECK_PLAYER(index);
+
+	CPlayer *pPlayer = GET_PLAYER_POINTER_I(index);
+	if (!pPlayer->ingame || !pPlayer->pEdict || pPlayer->pEdict->free)
+		return 0;
+
+	int rw[3];
+	if (!pPlayer->ktpShot.readRewind(rw))
+		return 0;
+
+	out[0] = rw[0];
+	out[1] = rw[1];
+	out[2] = rw[2];
+	return 1;
+}
+
 // KTP: read a player's crouch-input and footstep-emission census. Measurements only
 // -- no threshold is applied here and none should be added; the consumer decides what
 // the numbers mean.
@@ -2869,6 +2953,8 @@ AMX_NATIVE_INFO base_Natives[] =
 	{"dodx_get_shot_geom",                   dodx_get_shot_geom},
 	{"dodx_get_shot_target",                 dodx_get_shot_target},
 	{"dodx_get_shot_target2",                dodx_get_shot_target2},
+	{"dodx_get_shot_target3",                dodx_get_shot_target3},
+	{"dodx_get_shot_rewind",                 dodx_get_shot_rewind},
 
 	// KTP: aim-vs-transmission counters (blind audit tier 2.7)
 	{"dodx_get_aim_vis_stats",               dodx_get_aim_vis_stats},

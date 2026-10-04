@@ -19,6 +19,7 @@
 // These are relative to the public/ directory which contains the module SDK
 #include "../../../public/resdk/common/hookchains.h"
 #include "../../../public/resdk/engine/rehlds_api.h"
+#include "../../../public/resdk/engine/ktp_rewind_api.h"
 #include "../../../public/resdk/engine/IMessageManager.h"
 
 // KTP: Extension mode state
@@ -1391,6 +1392,29 @@ void OnPluginsLoaded()
 // residual is documented at the capture site rather than papered over.
 static int g_ktpCmdOwner = 0;
 
+// KTP: the engine's per-packet rewind record (ktp_rewind_v1). NULL on an engine
+// that does not register it, and every rewind read then reports no record.
+static ktp_rewind_api_v1_t *g_ktpRewindApi = nullptr;
+
+// Cached on the first lookup that succeeds; attach and every server activate retry.
+static void DODX_ResolveRewindApi()
+{
+	if (g_ktpRewindApi || !MF_GetRehldsApi)
+		return;
+
+	IRehldsApi *pApi = (IRehldsApi *)MF_GetRehldsApi();
+	const RehldsFuncs_t *pFuncs = pApi ? pApi->GetFuncs() : nullptr;
+	if (!pFuncs || !pFuncs->GetPluginApi)
+		return;
+
+	ktp_rewind_api_v1_t *api = (ktp_rewind_api_v1_t *)pFuncs->GetPluginApi(KTP_REWIND_API_V1);
+	if (api && api->size >= sizeof(ktp_rewind_api_v1_t) && api->GetCurrent)
+	{
+		g_ktpRewindApi = api;
+		MF_Log("dodx: engine rewind record %s resolved", KTP_REWIND_API_V1);
+	}
+}
+
 // KTP: per-shot aim geometry capture (tier-2 sensor -- read once by
 // dodx_get_shot_geom, guard rationale in KTPShotGeom.h). Reached only for
 // player-hitting traces whose ignore-entity is a player, so the per-trace cost
@@ -1510,6 +1534,7 @@ static void KTPCaptureShotGeom(CPlayer *pPlayer, const float *v1, const float *v
 	// team-switch it -- after the fact none of these are recoverable.
 	sg.tgtSeq = sg.cmdSeq;
 	sg.tgtEntIndex = tgtIdx;
+	sg.tgtHitgroup = KTPShotGeom::clampHitgroup(ptr->iHitgroup);
 	sg.tgtHealth = (int)ptr->pHit->v.health;
 	sg.tgtDead = (ptr->pHit->v.deadflag != DEAD_NO) ? 1 : 0;
 	sg.tgtTeam = (int)ptr->pHit->v.team;
@@ -2352,6 +2377,16 @@ static void DODX_OnPlayerPreThink(IVoidHookChain<edict_t *, float> *chain, edict
 	pPlayer->ktpShot.cmdSeq++;
 	g_ktpCmdOwner = index;
 
+	// KTP: this cmd runs inside its packet's SV_SetupMove/SV_RestoreMove window, so
+	// the engine's open record is the rewind its traces run against. Every cmd, so
+	// a miss carries one too.
+	{
+		ktp_rewind_sample_t rw;
+		const bool haveRw = g_ktpRewindApi && g_ktpRewindApi->GetCurrent(index - 1, &rw);
+		pPlayer->ktpShot.stampRewind(haveRw, haveRw ? rw.flags : 0u,
+			haveRw ? rw.depth_ms : 0.0f, haveRw ? rw.want_ms : 0.0f);
+	}
+
 	// Bind a pending SV_EstablishTimeBase sample to the cmd that actually runs
 	// next. The packet hook cannot know that ordinal: when commands were dropped
 	// the engine replays lastcmd first, and each replay passes through here. The
@@ -2573,6 +2608,7 @@ static void DODX_OnSV_ActivateServer(IVoidHookChain<int> *chain, int runPhysics)
 	DODX_ClearAmmoRegistry();
 	DODX_NoteGrenadeSlotMap();
 	DODX_ClearGrenadeEntityTracker();
+	DODX_ResolveRewindApi();
 
 	DODX_ReadBSPMapInfo();
 
@@ -2862,6 +2898,8 @@ static bool DODX_SetupExtensionHooks()
 			return false;
 		}
 	}
+
+	DODX_ResolveRewindApi();
 
 	// NOTE: ClientConnected hook not needed - bot detection uses FL_FAKECLIENT, IP never used
 

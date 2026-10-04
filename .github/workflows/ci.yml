@@ -148,6 +148,27 @@ jobs:
           ${{ matrix.cxx }} -m32 -O2 -std=gnu++14 \
             -Imodules/dod/dodx -o /tmp/test_move_accum scripts/test_move_accum.cpp
           /tmp/test_move_accum
+
+      # The schema-26 rewind stash and hitgroup clamp, same two-pass convention.
+      - name: Prove the shot-rewind stash test discriminates
+        working-directory: KTPAMXX
+        run: |
+          set -e
+          ${{ matrix.cxx }} -m32 -O2 -std=gnu++14 -DNEGATIVE_CONTROL \
+            -Imodules/dod/dodx -o /tmp/test_shot_rewind_neg scripts/test_shot_rewind.cpp
+          if /tmp/test_shot_rewind_neg; then
+            echo 'FAIL: the negative control PASSED, so this gate asserts nothing'
+            exit 1
+          fi
+          echo 'negative control failed as required'
+
+      - name: Test the shot-rewind stash
+        working-directory: KTPAMXX
+        run: |
+          set -e
+          ${{ matrix.cxx }} -m32 -O2 -std=gnu++14 \
+            -Imodules/dod/dodx -o /tmp/test_shot_rewind scripts/test_shot_rewind.cpp
+          /tmp/test_shot_rewind
       - name: Install AMBuild
         run: |
           python3 -m pip install --upgrade pip setuptools wheel

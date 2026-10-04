@@ -117,3 +117,20 @@ jobs:
           fi
 
           echo "OK: version macros match and KTPAMXX's $A hookchain entries are an exact prefix of the engine's $E (KTP-ReHLDS @ $REF)"
+
+      # A byte mirror, not a prefix: dodx reads the struct by layout across the
+      # module boundary, and a change is a new ktp_rewind_vN name, never an edit.
+      - name: Diff the mirrored ktp_rewind_api.h
+        env:
+          REF: ${{ steps.counterpart.outputs.ref }}
+        run: |
+          set -euo pipefail
+          AMXX=public/resdk/engine/ktp_rewind_api.h
+          ENGINE=ktprehlds/rehlds/public/rehlds/ktp_rewind_api.h
+          test -f "$AMXX" || { echo "::error::$AMXX missing -- dead probe"; exit 1; }
+          test -f "$ENGINE" || { echo "::error::KTP-ReHLDS @ $REF has no ktp_rewind_api.h; the engine side merges first."; exit 1; }
+          if ! diff -u "$ENGINE" "$AMXX"; then
+            echo "::error::ktp_rewind_api.h has DRIFTED from KTP-ReHLDS @ $REF."
+            exit 1
+          fi
+          echo "OK: ktp_rewind_api.h is byte-identical to KTP-ReHLDS @ $REF"

@@ -31,6 +31,37 @@ every gated stream for the half. On an older dodx this plugin fails to load (unr
 native), which is the intended loud failure. On an engine without `ktp_rewind_v1` the
 `rw_*` fields are -1 and hitgroup still flows.
 
+### Added - dodx: `dodx_get_shot_target3` and `dodx_get_shot_rewind` (schema 26, module side)
+
+The module half of schema 26 (design: KTPInfrastructure
+`docs/handover/SCHEMA_26_SHOT_HITGROUP_AND_REWIND.md`). Nothing calls either native until
+stats_logging 1.27.0; that plugin needs this module, so the module must ship no later than it.
+
+- **Hitgroup.** `KTPCaptureShotGeom` already wrote `ptr->iHitgroup` into the geometry stash,
+  whose one destructive reader is the AC ledger. The target stash now carries it too
+  (`tgtHitgroup`, stamped next to `tgtEntIndex` in the same first-wins window; -1 outside
+  0-99). `dodx_get_shot_target3(id, weapon, target[22])` returns `target2`'s 21 cells in the
+  same order plus `[21]` hitgroup. `dodx_get_shot_target2` is unchanged, for older plugins.
+- **Rewind.** dodx resolves the engine's named plugin API `ktp_rewind_v1` through
+  `RehldsFuncs_t::GetPluginApi` at attach, retrying at every server activate until it finds
+  it. Every cmd's PreThink hook body, right after `cmdSeq++`, stamps the engine's open record
+  into a new seq/consume pair (`rwSeq`, flags, depth, want). That body runs inside the
+  packet's `SV_SetupMove`/`SV_RestoreMove` window, so the record is the rewind this cmd's
+  traces ran against, and it is stamped for misses as well as hits. Reading at emit time
+  instead would attribute the next packet's rewind; stamping at trace time would leave every
+  miss without one. `dodx_get_shot_rewind(id, rw[3])` returns `{ flags, depth_ms, want_ms }`
+  and 1 only for the calling cmd's own record; it is destructive, and -1/0 for a bot, an
+  engine without the API, or another cmd. Depth and want are clamped to 0-9999 ms and flags
+  to 7 bits at the stamp.
+- **No `rehlds_api.h` change.** `GetPluginApi` is already in the bundled prefix copy, so the
+  minimum `REHLDS_API_VERSION_MINOR` does not move and this module runs on the current engine
+  with every rewind read reporting no record. `public/resdk/engine/ktp_rewind_api.h` is a byte
+  mirror of the engine's; Header Drift now diffs it.
+- Tests: `scripts/test_shot_rewind.cpp` (pairing, destructive read, no inheritance across a
+  cmd with no record, clamps; run with a negative control in ci.yml) and two contract tests in
+  `test_stats_life_boundaries.py` (`target3` is `target2` plus one cell, the stamp sits after
+  `cmdSeq++` in PreThink and not at trace time).
+
 ### Fixed - 1.26.3: a round restart no longer logs a grenade throw for every player holding one
 
 Once 1.26.2 made the AmmoX path run, a round restart started producing a
