@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed - 1.27.0: schema 26 -- shot hitgroup, per-shot rewind, and the sv_maxunlag in force
+
+`KSC_SCHEMA_CONTRACT` 25 -> 26 (design: KTPInfrastructure
+`docs/handover/SCHEMA_26_SHOT_HITGROUP_AND_REWIND.md`; its four open questions were ruled
+yes on 2026-09-29).
+
+- The shot row reads `dodx_get_shot_target3` (`target[22]`) and appends `hitgroup`, and,
+  under the same `ksc_shot_detail_enabled()` gate but NOT the hitscan-firearm gate, reads
+  `dodx_get_shot_rewind` and appends `rw_flags`, `rw_depth`, `rw_want`. Every cmd has a
+  rewind, so misses carry it; analysis filters on `weapon_id`. `-1` when unpopulated.
+- `trace_start_off` leaves the wire (0 on every stored sample), and `yaw`/`pitch` go through
+  `ksc_shot_angle`, a +/-360 clamp, so the wire test can bound them at the `-999.00`
+  sentinel. Worst-case shot line: 878 -> **906 B** against the 970 B ceiling, leaving room for
+  the zero-spread counterfactual that takes schema 27.
+- The manifest carries `(sv_maxunlag "%.3f")` after the revision pair, read once when the
+  half is announced (the 10 s replay resends the same bytes).
+
+⛔ **Deploy order: KTPHLStatsX migration 041, then the daemon that accepts schema 26, then
+dodx with `dodx_get_shot_target3`/`dodx_get_shot_rewind` (the same nightly swap as this plugin
+is fine), then this plugin.** A daemon that refuses 26 refuses the whole manifest and drops
+every gated stream for the half. On an older dodx this plugin fails to load (unresolved
+native), which is the intended loud failure. On an engine without `ktp_rewind_v1` the
+`rw_*` fields are -1 and hitgroup still flows.
+
 ### Fixed - 1.26.3: a round restart no longer logs a grenade throw for every player holding one
 
 Once 1.26.2 made the AmmoX path run, a round restart started producing a
