@@ -28,3 +28,4 @@
 # and then bash dies with `$'': command not found` before it does anything --
 # which reads as a broken build script rather than a line-ending problem.
 *.sh text eol=lf
+.githooks/* text eol=lf
