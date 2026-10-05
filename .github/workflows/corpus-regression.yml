@@ -60,7 +60,7 @@ jobs:
   corpus-regression:
     # Pinned to a KTPInfrastructure commit (#201). Re-pin deliberately when the
     # harness needs to move; see the file header comment.
-    uses: afraznein/KTPInfrastructure/.github/workflows/lane-b-stats-e2e.yml@3b6ac496c86d59ef81dd23a9c76193be312449d8
+    uses: afraznein/KTPInfrastructure/.github/workflows/lane-b-stats-e2e.yml@8f9e7e27a7c2466bfafc4dafd776b23b45a882a0
     with:
       lane: corpus
       infrastructure_ref: main
