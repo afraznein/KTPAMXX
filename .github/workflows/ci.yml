@@ -15,9 +15,9 @@ name: CI
 on:
   workflow_dispatch:
   push:
-    branches: [master, main, preprod]
+    branches: [master, main]
   pull_request:
-    branches: [master, main, preprod]
+    branches: [master, main]
 
 jobs:
   build-linux:
