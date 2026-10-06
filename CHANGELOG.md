@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - 1.27.1: the move census window now closes on the half, not only on its own timer
+
+`ksc_move_flush_task` resolved trackedness once per tick and emitted whatever the module
+had accumulated since the previous tick. Trackedness flips between ticks, and nothing
+reset the module's counters at the flip, so two things were wrong in rows already stored:
+
+- **The first row of every half carried warmup.** The loop's `if (!tracked)` branch was
+  commented as preventing exactly this, and it cannot: during warmup each tick reset and
+  emitted nothing, then the first tick after go-live emitted the counters from the
+  previous tick onward -- warmup tail and match head in one row, with `window_ms`
+  describing the whole span as if it were match time.
+- **The last row of every half was dropped.** Go-live's mirror image: the tick after the
+  context closed found no context and reset, so the movement between the final tick and
+  the boundary was discarded rather than emitted.
+
+The window is now closed at the two edges where trackedness actually flips, which are the
+only ones: `ksc_activate_producer_context` (warmup -> live) and `ksc_close_producer_context`
+(live -> no context). The emit body moved to `ksc_move_flush_window`, which takes
+trackedness as a parameter rather than re-deriving it -- `ksc_event_context()` is what
+*activates* a context, so a boundary hook that called it would re-enter the boundary that
+called the hook. The task resolves the context first and then calls the same function, so
+a tick that itself triggers activation closes the warmup window before opening the match's.
+
+A window closed at a boundary is shorter than the tick interval, which is a real
+measurement and not the `window_ms 0` "boundary unknown" case; the half-end row is charged
+to the half's `ktp_capture_health` counters because it is buffered before the drain.
+
+**Untracked windows are still not emitted, and the reason is not the boundary.** The
+daemon refuses them: every manifest-gated stream is keyed on `(matchid, half)`, no
+manifest exists for a window belonging to no half, and `ktpCaptureManifestAuthorizes`
+drops the marker at dispatch. So the gate was never one-sided -- making the state
+reachable needs an authorization decision on the daemon side, not a producer change, and
+`migrate_038_move_census.sql`'s claim that "the daemon is fully prepared to store both" is
+wrong and should be corrected there.
+
+⛔ **Producer-only change; no schema, wire or capability movement.** `KSC_SCHEMA_CONTRACT`
+stays 26 and the marker's fields are unchanged, so no daemon or migration ordering applies.
+`producer_version` in the manifest moves, which re-fingerprints and re-authorizes the half
+exactly as any version bump does.
+
 ### Changed - 1.27.0: schema 26 -- shot hitgroup, per-shot rewind, and the sv_maxunlag in force
 
 `KSC_SCHEMA_CONTRACT` 25 -> 26 (design: KTPInfrastructure

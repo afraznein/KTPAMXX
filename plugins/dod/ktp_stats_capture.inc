@@ -772,6 +772,12 @@ stock ksc_close_producer_context() {
 	ksc_objective_reset_all(true)
 	ksc_grenade_cache_clear_all()
 	ksc_break_reset_boundary()
+	// The census window closes on the half, not on its own timer. The tick after
+	// this one finds no context and resets, so without this the movement between
+	// the last tick and the boundary was discarded rather than emitted.
+	if (g_kscProducerContextConfirmed && g_kscProducerMatchId[0] &&
+			g_kscProducerHalf != 0)
+		ksc_move_flush_window(true, g_kscProducerMatchId, g_kscProducerHalf)
 	// Duel deltas close with the half they were snapshotted for, before health
 	// counts them. Direct log_message: up to 132 lines at a moment the server
 	// is idle, and the shared ring holds fewer than that.
@@ -853,6 +859,11 @@ stock ksc_shutdown() {
 }
 
 stock bool:ksc_activate_producer_context() {
+	// The census window that ends here is warmup, so close it before go-live or the
+	// match's first row carries it. Guarded on the same precondition activation is,
+	// because splitting a window that stays untracked buys nothing.
+	if (g_kscMapRevisionReady)
+		ksc_move_flush_window(false, "-", 0)
 	// Pending matchid="-" facts are transport diagnostics, not members of the
 	// candidate stream. Drain them before sequence 1 so no buffered sentinel can
 	// appear after the authorization manifest on the wire.
@@ -2623,11 +2634,30 @@ public ksc_move_flush_task() {
 	if (!ksc_enabled())
 		return
 
+	// Resolve the context before the window, not after: this call is one of the
+	// places that ACTIVATES a context, and activation closes the window itself. Do
+	// it the other way round and the warmup window is attributed to the match.
+	new producer_matchid[64], producer_half
+	new bool:tracked = ksc_event_context(producer_matchid, charsmax(producer_matchid), producer_half)
+	ksc_move_flush_window(tracked, producer_matchid, producer_half)
+}
+
+// Emit the window that just ended and re-anchor. Separate from the task so a
+// capture boundary can close a window early -- trackedness flips between ticks, and
+// a window straddling the flip would carry warmup movement into the match's first
+// row. Trackedness is a parameter and never re-derived here: ksc_event_context() is
+// what activates a context, so calling it would re-enter the boundary that called
+// this.
+stock ksc_move_flush_window(bool:tracked, const matchid[], half) {
+	if (!ksc_enabled())
+		return
+
 	// window_ms is 0 for "boundary unknown", not for "no time passed": a window in
 	// which nothing happened emits no row at all, so 0 can only mean the baseline was
 	// not trustworthy. Two cases reach it -- the first flush after load, and a gametime
 	// reset at map change, which extension mode does NOT follow with a plugin reload,
-	// so the previous map's anchor is still sitting there.
+	// so the previous map's anchor is still sitting there. A boundary-closed window is
+	// shorter than the tick interval by design; that is a real measurement, not this.
 	new Float:now = get_gametime()
 	new Float:elapsed = now - g_kscMoveWindowStart
 	new window_ms = 0
@@ -2636,9 +2666,6 @@ public ksc_move_flush_task() {
 		window_ms = floatround(elapsed * 1000.0)
 	}
 	g_kscMoveWindowStart = now
-
-	new producer_matchid[64], producer_half
-	new bool:tracked = ksc_event_context(producer_matchid, charsmax(producer_matchid), producer_half)
 
 	new geom[2]
 	dodx_get_move_geom(geom)
@@ -2656,9 +2683,13 @@ public ksc_move_flush_task() {
 		// bounding them -- so a missed reset is a malformed line later, not just a
 		// wrong number.
 		//
-		// No tracked match: warmup and pub noise, the same call the shot stream makes.
-		// Tested first because it cannot vary between players, and because a window
-		// that spans the start of a match must not carry warmup movement into it.
+		// No tracked match: warmup and pub noise. Reset and say nothing -- not because
+		// the state is uninteresting, but because the daemon refuses it: every
+		// manifest-gated stream is keyed on (matchid, half), and there is no manifest
+		// for a window that belongs to no half. Emitting it would log a wide line per
+		// player per window straight into a drop path. The boundary callers above are
+		// what now keeps a tracked window from starting inside warmup; this branch no
+		// longer carries that job.
 		if (!tracked) {
 			dodx_reset_move_stats(id)
 			continue
@@ -2702,7 +2733,7 @@ public ksc_move_flush_task() {
 			pstr, window_ms, geom[0], geom[1], stats[0],
 			taps_ground, taps_air, ground_standing, ground_ducked, air_ducked,
 			stats[1], stats[2], stats[3], stats[4], stats[5], stats[6], stats[7],
-			mapname, producer_matchid, producer_half, now, event_epoch, sequence)
+			mapname, matchid, half, now, event_epoch, sequence)
 
 		ksc_buffer(line, KSC_EVENT_MOVE)
 		dodx_reset_move_stats(id)
