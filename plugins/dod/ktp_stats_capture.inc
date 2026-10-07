@@ -1892,6 +1892,15 @@ stock ksc_objective_clear(f) {
 // Cap progress for flag f as an integer percent of timetocap elapsed.
 // progress = -1 when the point has no capture area (every CA_ read is 0 there).
 stock ksc_cap_progress(f, &Float:timetocap, &progress) {
+	// DODX_OnChangelevel clears the CP array before the map does, so from there
+	// until the next DODX_InitCPFromEntities every index is out of range and
+	// dodx_area_get_data raises a native error that halts the executing public.
+	// Ask the live count, not g_kscFlagCount -- that still holds the old map's.
+	if (dodx_objectives_get_num() <= 0) {
+		timetocap = 0.0
+		progress = -1
+		return
+	}
 	// CA_timetocap is m_nCapTime, an int cell (unlike CA_time_remaining, which
 	// the module returns through amx_ftoc). A Float: cast read the integer's
 	// bits as a float and every 1.23.1 attempt row carried 0.0 / progress 0.
@@ -2135,7 +2144,12 @@ stock ksc_emit_break(f, breaker, victim, contester_count) {
 	// it (time_remaining -- lower is more "clutch"), and did this break save
 	// the defending team from a capout (they'd be down to 0 flags had the cap
 	// finished, i.e. they own exactly 1 right now: this one).
-	new Float:time_remaining = Float:dodx_area_get_data(f, CA_time_remaining)
+	// Same cleared-CP-array guard as ksc_cap_progress. 0.0 is what a point with
+	// no capture area reads, not a sentinel: break_context's daemon parser takes
+	// non-negative only, so -1.0 would land as KTP_BAD_PROPERTY rather than NULL.
+	new Float:time_remaining
+	if (dodx_objectives_get_num() > 0)
+		time_remaining = Float:dodx_area_get_data(f, CA_time_remaining)
 	new defending_team = (g_kscBreakTeam[f] == KSC_TEAM_ALLIES) ? KSC_TEAM_AXIS : KSC_TEAM_ALLIES
 	new is_capout = ksc_is_full_capout_threat(defending_team) ? 1 : 0
 	new producer_matchid[64], producer_half

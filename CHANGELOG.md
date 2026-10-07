@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - 1.27.2: the CP reads at the producer boundary no longer abort the forward
+
+`DODX_OnChangelevel` calls `mObjects.Clear()` from the `PF_changelevel_I` hook, so from
+that moment until the next map's `DODX_InitCPFromEntities()` every CP index is out of
+range while the plugin's cached `g_kscFlagCount` still holds the old map's. The boundary
+reset then walks the old map's flags and `dodx_area_get_data` raises `AMX_ERR_NATIVE`
+("CP index out of range"), which halts the executing public and discards the rest of it.
+
+Both CP-indexed reads reachable from a boundary are now gated on the module's live
+objective count:
+
+- `ksc_cap_progress` -- the single chokepoint every `KTP_OBJECTIVE_ATTEMPT` emit passes
+  through, reached from `ksc_objective_reset_all(true)`. With no CP data it returns the
+  `progress = -1` "no capture area" sentinel the function already documents and the
+  daemon already stores as NULL, instead of aborting.
+- `ksc_emit_break`'s `CA_time_remaining` read. Defensive only -- a break needs a live
+  death event -- and it falls back to `0.0` rather than `-1.0` because `break_context`'s
+  daemon parser accepts non-negative only, so a negative there would land as
+  `KTP_BAD_PROPERTY` rather than NULL.
+
+The count comes from `dodx_objectives_get_num()`, not `g_kscFlagCount`: the cached copy is
+exactly what is stale in this window.
+
+**What this recovers is one row per occurrence, not a half of stats.** `ksc_emit_duels`
+runs after the aborting call, and on a half that logged two of these the game log still
+carried its full duel and capture-health sets -- the flush was never at risk. What was
+lost is the terminal `KTP_OBJECTIVE_ATTEMPT (stop_reason "context_reset")` row for the
+flag being contested at the boundary, plus the tail of `plugin_end`'s `ksc_shutdown()`.
+The abort is also why it logged twice per boundary rather than once: `ksc_objective_clear`
+runs after the emit, so the first abort left the attempt flag set and the `plugin_end`
+path hit the same flag.
+
+⛔ **Producer-only change; no schema, wire or capability movement.** `KSC_SCHEMA_CONTRACT`
+is unchanged and so are the markers' fields. The guard can only fire in the window where
+the CP objects have been cleared and the next map has not built them, so it cannot change
+behaviour on any live map.
+
 ### Fixed - 1.27.1: the move census window now closes on the half, not only on its own timer
 
 `ksc_move_flush_task` resolved trackedness once per tick and emitted whatever the module
