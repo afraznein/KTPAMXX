@@ -1,6 +1,12 @@
 # KTPAMXX Native Audit - Extension Mode Compatibility
 
-> **Version:** 2.5.0 | **Last Updated:** 2025-12-18 | **Status:** Active Development
+> **Audited against:** 2.5.0 | **Last updated:** 2025-12-18 | **Status:** ⚠️ stale snapshot
+>
+> 🔻 **CORRECTED 2026-10-07.** This line read `**Version:** 2.5.0`, which reads as *the tree's
+> current version*. It is not — it is the version this audit was **written against**, and the tree
+> has moved many releases past it. ➡️ **`product.version` is the version of record and
+> `CHANGELOG.md` is the history; neither is this file.** Re-verify any native's status below
+> against the source before relying on it.
 
 [![Extension Mode](https://img.shields.io/badge/Extension%20Mode-Supported-brightgreen)](#)
 [![Map Change](https://img.shields.io/badge/Map%20Change-Fixed-brightgreen)](#)
