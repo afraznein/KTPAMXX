@@ -252,7 +252,10 @@ void ReadFileIntoPl(abl *pl, FILE *fp)
 		size += dbg.size;
 	}
 	pl->size = size;
-	pl->data = new char[size];
+	// Zero-init is load-bearing: dbghdr.size overstates what sc6.c's append_dbginfo()
+	// actually wrote, so this read is short and the unread tail used to ship as raw
+	// heap -- a different md5 every run. Do not "simplify" the () away.
+	pl->data = new char[size]();
 	rewind(fp);
 	fread(pl->data, 1, size, fp);
 }
