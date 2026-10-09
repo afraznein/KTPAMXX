@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - amxxpc: compiled plugins no longer carry uninitialised heap, so they rebuild to the same md5
+
+`amxxpc`'s `ReadFileIntoPl()` sizes the plugin image as `AMX_HEADER.size + AMX_DBG_HDR.size`,
+allocates that with `new char[size]` and `fread`s the `.amx` into it. `AMX_DBG_HDR.size`
+overstates what `sc6.c`'s `append_dbginfo()` actually wrote, so the read is short by that
+difference and the unread tail of the buffer shipped into the `.amxx` as raw heap. The
+buffer is now zero-initialised.
+
+Measured on `KTPScoreTracker` with the build SHA and `KTP_BUILD_TIME` pinned, three builds
+back to back on one `amxxpc`: before, three distinct md5s and three distinct sizes
+(9,083 / 9,089 / 9,088 bytes), with 3,338 bytes of the image past the end of the debug
+tables holding 32-bit-pointer-shaped values that moved between runs. After, one md5 and one
+size (8,410 bytes) across three builds, and that trailing region reads as all zeros.
+
+This is why the defect looked plugin-dependent. Every plugin has such a tail, and its size
+scales with the symbol count, but a large plugin's image allocation is served by fresh
+`mmap` pages rather than the `brk` heap — so the tail is already zeros and the artifact was
+already reproducible. `KTPMatchHandler` (1,462,394-byte image, 48,785-byte tail) and
+`stats_logging` (4,294,974-byte image, 24,643-byte tail) build to byte-identical md5s
+before and after this change, which is the evidence that nothing else moved.
+
+Format-neutral by construction: `AMX_HEADER.size`, `AMX_DBG_HDR.size` and the container's
+`imagesize` are unchanged, and the runtime's `dbg_LoadInfo()` walks the debug tables by
+their header counts and never reads past them, so the tail's content was never interpreted.
+
+The sizing defect itself is upstream of this and deliberately not touched here:
+`append_dbginfo()`'s first pass adds `sizeof(AMX_DBG_SYMBOL) + strlen(skipwhitespace(name+1))`
+per symbol, but that string is the whole remainder of the `sclist.c` debug record
+(`S:%08x %x:%s %08x %08x %x %x` plus any array dimensions), not just the name the second
+pass writes. That accounts for 21 bytes per symbol plus the dimension text, which matches
+the measured tails on all three plugins above. Correcting it would change
+`AMX_DBG_HDR.size` and every artifact's bytes, so it belongs in its own change with its own
+review.
+
 ### Fixed - 1.27.2: the CP reads at the producer boundary no longer abort the forward
 
 `DODX_OnChangelevel` calls `mObjects.Clear()` from the `PF_changelevel_I` hook, so from
