@@ -140,12 +140,10 @@
 // 512 entries covers the measured burst with headroom; raise if
 // KTP_CAPTURE_HEALTH's "shot" row ever shows dropped > 0.
 //
-// Line budget: one full ksc_player_str() token (~96B incl. quoting) plus map
-// (32) plus matchid (64) plus position/angles/flags/clocks. Worst case by field
-// widths, re-measured each time the line grew: 504B bare, 610B with the four
-// target-state fields, 689B once ping/loss/cmd_traces joined -- which no longer
-// fit 640, so 768. 739B with trace_start_off and cmd_all_traces. Now 817B with
-// the four SV_EstablishTimeBase fields, which 768 cannot hold -- hence 896.
+// Line budget: one full ksc_player_str() token plus map, matchid and the
+// position/angles/flags/clocks group dominate it. The growth history that used
+// to be listed here is in git and in the CHANGELOG; every figure in it had gone
+// stale against a constant two raises further on.
 //
 // KSC_SHOT_BUF_MAX_ENTRIES stays 512 on purpose. It was sized against the
 // documented ~120 shots/s burst against a 1s flush (~4x headroom) and is pinned
@@ -165,31 +163,24 @@
 // before raising it -- an earlier pass raised this on an assumed overflow that
 // re-measurement showed was still 29B inside the old budget.
 #define KSC_SHOT_BUF_MAX_ENTRIES 512
-// Raised 896 -> 960 for the shooter stance/spread fields. See
-// test_shot_wire_line_fits_shot_buffer, which derives the true worst case
-// from the live format string using each field's PROVABLE bound (an
-// explicit C++ clamp, not a blanket "every %d could be -2147483648"
-// assumption) -- 878B for this wire, comfortably under both this buffer and
-// the real binding constraint, which is NOT this buffer: log_message()'s
-// eventual path through ReHLDS's Log_Printf has a hardcoded 1024-byte
-// buffer with a ~25-byte timestamp prefix always prepended, so anything
-// approaching ~999B risks silent truncation one layer further down
-// regardless of what this constant says. Keep this under ~965 for exactly
-// that reason -- raising it further does not buy real headroom the way it
-// looks like it would.
+// Read the worst case from test_shot_wire_line_fits_shot_buffer, never from a
+// figure written here: it derives the bound from the live format string using
+// each field's PROVABLE bound, so it re-measures when a field moves and a
+// number in this comment does not. Every figure this block used to carry had
+// rotted, and one of them (936, with "34 free") was quoted to a collaborator as
+// headroom when it came from a projection that was OVER the ceiling.
 //
-// 936 -> 878 when schema 25 dropped shooter_punch_pitch/yaw. The constant is
-// deliberately NOT lowered to match: the ring is already sized and paid for,
-// and lowering it would only have to be undone. The 58B is headroom now, and
-// the zero-spread counterfactual fields (spread_x / spread_y / spread_class,
-// 57B at x10000) are the measured claim on it -- see
-// infra-shot-attribution. Anything else spending that headroom first should
-// say so, because at 936 there was not room for both.
+// TWO ceilings bind, and this one is the lower: ksc_shot_buffer() copies at
+// LINE_LEN - 1, so a longer line is silently truncated here; separately,
+// log_message() reaches ReHLDS's Log_Printf, a hardcoded 1024-byte buffer that
+// always prepends a ~25-byte timestamp, which the test pins at 970. So raising
+// this constant past ~965 buys nothing real, and the headroom between the live
+// worst case and LINE_LEN - 1 is the only budget there is.
 //
-// Schema 26 says so: hitgroup and the rewind group add 68B. It pays for itself
-// by retiring trace_start_off (0 on every stored sample) and giving yaw/pitch a
-// provable clamp, which together give back 40B, so the counterfactual still
-// fits behind it (ruled 2026-09-29).
+// The zero-spread counterfactual (spread_x / spread_y / spread_class at x10000)
+// is the standing claim on that budget -- see infra-shot-attribution -- and it
+// does NOT fit at 960: raising this constant is part of landing it, not a
+// separate tidy-up. Anything else spending the headroom first should say so.
 #define KSC_SHOT_BUF_LINE_LEN    960
 #define KSC_SHOT_FLUSH_SECS      1.0
 
