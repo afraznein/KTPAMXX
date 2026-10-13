@@ -3389,11 +3389,16 @@ static void KTPAMX_ReloadPlugins()
 	g_grenades.clear();
 	g_auth.clear();
 	g_putinserver_mask = 0;
+	// CoreCfg's latches too: the Clear that pairs with them lives in C_ServerDeactivate_Post,
+	// which is Metamod-only, so m_ConfigsExecuted stayed set and OnMapConfigTimer returned
+	// before ExecuteMapConfig — per-map configs ran on a process's first map only.
+	CoreCfg.Clear();
 
 	// Execute plugin_init and plugin_cfg for the new map
 	// Plugins are still loaded, we just fire the forwards so they can reinitialize
 	executeForwards(FF_PluginInit);
 	executeForwards(FF_PluginCfg);
+	CoreCfg.SetMapConfigTimer(6.1); // re-arm what the Clear above reset, as C_ServerActivate_Post does
 
 	// Correct time in Counter-Strike and other mods (except DOD)
 	if (!g_bmod_dod)
