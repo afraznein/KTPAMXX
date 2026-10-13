@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - extension mode: per-map configs now run on every map, not only on a process's first one
+
+`CoreConfig`'s latches are reset by `CoreCfg.Clear()`, which is called from
+`C_ServerDeactivate_Post` — a Metamod-only path. Extension mode re-implements the map-change
+lifecycle in `SV_InactivateClients_RH` and `KTPAMX_ReloadPlugins()`, and neither cleared
+`CoreCfg`. So `m_ConfigsExecuted` was latched true by the first map's 6.1 s timer and stayed
+true for the life of the process: `OnMapConfigTimer()` returned at its first line on every
+subsequent map, `ExecuteMapConfig()` was never reached again, and `configs/maps/<map>.cfg`
+stopped being executed after the first map. `OnConfigsExecuted` stopped firing with it.
+`KTPAMX_ReloadPlugins()` now clears `CoreCfg` alongside the other per-map state and re-arms
+the timer after `plugin_cfg`, which is what `C_ServerActivate_Post` does in Metamod mode.
+
+Measured on the fleet before the fix, from the hosts' own logs rather than from reasoning
+about the call graph: across 14 sessions of the two maps that have a per-map config
+(`dod_orange`, `dod_pandemic_aim`), on 8 instances between 2026-09-22 and 2026-10-11, not one
+of the four cvars those configs set (`mp_forcecamera`, `mp_forcechasecam`, `mp_timelimit`,
+`mp_limitalliesgarand`) changed during the session or differed at the next map load. The
+engine writes a `Server cvar` line for each of them at every map load and on every change, and
+the same instrument caught unrelated `mp_timelimit` changes inside three of those sessions, so
+the absence is a measurement and not a blind probe. Both config files have been in place since
+2026-09-15/16, before every session counted.
+
+Nothing else on the fleet is affected today: `configs/maps/` holds only those two files, no
+`prefix_dod.cfg` exists, and no loaded plugin registers `OnConfigsExecuted`.
+
+One extension-mode divergence is deliberately left alone here, by source reading and not
+measured live: `amxx.cfg` is executed once per process in extension mode
+(`KTPAMX_InitAsRehldsExtension`) where Metamod mode re-executes it per map from
+`C_ServerActivate_Post`. Widening this change to cover it would re-exec the main config and
+every `AutoExecConfig` file on all 24 instances at every map change, which is a separate
+decision.
+
 ### Fixed - amxxpc: compiled plugins no longer carry uninitialised heap, so they rebuild to the same md5
 
 `amxxpc`'s `ReadFileIntoPl()` sizes the plugin image as `AMX_HEADER.size + AMX_DBG_HDR.size`,
