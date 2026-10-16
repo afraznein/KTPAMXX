@@ -2649,6 +2649,35 @@ static cell AMX_NATIVE_CALL dodx_get_shot_rewind(AMX *amx, cell *params)
 	return 1;
 }
 
+// KTP: how many traces this shooter owned in the calling cmd, whatever they hit.
+// The same counter the target natives expose as out[11], read without routing
+// through the target stash -- which is the only way a shot that hit nobody can
+// report it, because nothing stamps tgtSeq on that path and every target native
+// refuses before reading. Non-destructive, no weapon argument (the count belongs
+// to the cmd), and 0 with the cell at -1 when this cmd has no count. Measurement
+// only; no threshold.
+static cell AMX_NATIVE_CALL dodx_get_shot_traces(AMX *amx, cell *params)
+{
+	// Filled before the player check so a caller that mishandles the 0 reads the
+	// sentinel, never its own buffer's stale cell.
+	cell *out = MF_GetAmxAddr(amx, params[2]);
+	out[0] = -1;
+
+	int index = params[1];
+	CHECK_PLAYER(index);
+
+	CPlayer *pPlayer = GET_PLAYER_POINTER_I(index);
+	if (!pPlayer->ingame || !pPlayer->pEdict || pPlayer->pEdict->free)
+		return 0;
+
+	int count;
+	if (!pPlayer->ktpShot.readAllTraces(count))
+		return 0;
+
+	out[0] = count;
+	return 1;
+}
+
 // KTP: read a player's crouch-input and footstep-emission census. Measurements only
 // -- no threshold is applied here and none should be added; the consumer decides what
 // the numbers mean.
@@ -2955,6 +2984,7 @@ AMX_NATIVE_INFO base_Natives[] =
 	{"dodx_get_shot_target2",                dodx_get_shot_target2},
 	{"dodx_get_shot_target3",                dodx_get_shot_target3},
 	{"dodx_get_shot_rewind",                 dodx_get_shot_rewind},
+	{"dodx_get_shot_traces",                 dodx_get_shot_traces},
 
 	// KTP: aim-vs-transmission counters (blind audit tier 2.7)
 	{"dodx_get_aim_vis_stats",               dodx_get_aim_vis_stats},

@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - dodx: `dodx_get_shot_traces`, so a shot that hit nobody can report its trace count
+
+`DODX_OnTraceLine`'s shooter-only branch already counts every trace the shooter owned in
+the cmd, whatever it hit, ahead of the player-hit filter. That count was unreadable on the
+one case it exists for. `allTraceCount` is exposed only as `out[11]` of
+`dodx_get_shot_target` / `target2` / `target3`, and all three return 0 early on
+`sg.tgtSeq == 0` and then gate the field itself on `allTraceSeq == tgtSeq`. `tgtSeq` is
+stamped in exactly one place, inside `KTPCaptureShotGeom`, which is called from inside the
+branch requiring `ptr->pHit` to be a client — so a trace that resolved against the world
+never stamps it, every target native refuses before reading, and the collected count is
+discarded.
+
+⚠️ **The failure was silent in the expensive direction:** the counter increments, the column
+exists, and the read returns a well-formed 0 that cannot be told apart from one trace with
+nothing to report.
+
+`dodx_get_shot_traces(id, traces[1])` reads the same counter keyed on **`cmdSeq`**, which is
+what a shot with no target can still carry. Non-destructive, unlike the target and rewind
+natives: the counter is still accumulating inside the cmd, so consuming it would restart the
+count at the next trace, and `out[11]` already reads the field without consuming it. It
+returns 0 with the cell at `-1` when this cmd carries no count, which is the distinction
+`out[11]` cannot express. `allTraceSeq == 0` is checked explicitly, because `cmdSeq` is 0
+before the first cmd and an equality-only key would report the uninitialised counter as this
+cmd's.
+
+⛔ **Read path only — no capture-site change, no wire or schema movement, and nothing calls
+it.** Every existing native keeps its bytes and its semantics; `consumeTarget()` clears only
+`tgtSeq`, so a target read still leaves the count readable, and `resetTarget()` still takes
+it so a new target stash cannot inherit a stale cmd's traces. Both are pinned by the test.
+The capture call at the shooter-only branch that the zero-spread counterfactual also needs is
+a separate, deliberate change in a producer queue that is held; what this removes is the
+constraint that would have made it read 0 after landing.
+
+Test: `scripts/test_shot_alltraces.cpp` (CI, with a negative control, same two-pass
+convention as `test_shot_rewind.cpp`) — the `0 == 0` trap, a hit-nobody shot reading its
+count with no target stamped, the non-destructive read continuing to accumulate, no
+inheritance across cmds, survival of `consumeTarget()`, clearing by `resetTarget()`, a
+stamped count of 0 being a measurement rather than an absence, and the bound the wire needs.
+
 ### Fixed - extension mode: per-map configs now run on every map, not only on a process's first one
 
 `CoreConfig`'s latches are reset by `CoreCfg.Clear()`, which is called from

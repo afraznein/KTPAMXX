@@ -1420,6 +1420,31 @@ native dodx_get_shot_target3(id, weapon, target[22]);
 native dodx_get_shot_rewind(id, rw[3]);
 
 /**
+ * How many traces the shooter owned in the calling shot's usercmd, whatever they
+ * hit. The same counter dodx_get_shot_target3 reports as target[11], read without
+ * routing through the target stash. Measurement only.
+ *
+ * This is the only way a shot that hit nobody can report anything. The capture
+ * that stamps the target stash sits inside the player-hit filter, so a trace that
+ * resolved against the world leaves tgtSeq at 0 and every target native refuses
+ * before reading, discarding a count it had already collected.
+ *
+ * Non-destructive, unlike dodx_get_shot_target3 and dodx_get_shot_rewind: the
+ * counter is still accumulating inside the cmd, so consuming it would restart it.
+ * No weapon argument, because the count belongs to the cmd, not to a weapon.
+ *
+ * Returns 0 with the cell at -1 when this cmd carries no count -- a cmd in which
+ * the shooter owned no trace at all, or a read outside the fire cmd. That sentinel
+ * is what separates "nothing to report" from a genuine count, which target[11]
+ * cannot do: it returns a well-formed 0 for both.
+ *
+ * @param id        Firing player index (the forward's id argument)
+ * @param traces    Output, 1 cell: traces this shooter owned in this cmd
+ * @return  1 when a count belongs to this shot's cmd, 0 otherwise
+ */
+native dodx_get_shot_traces(id, traces[1]);
+
+/**
  * Read a player's aim-vs-transmission counters. Measurements only: no threshold,
  * no ratio, no conclusion is applied here.
  *

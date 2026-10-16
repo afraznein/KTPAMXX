@@ -302,6 +302,25 @@ struct KTPShotGeom
 		rwWantMs = clampMs(wantMs);
 	}
 
+	// Keyed on the CMD, not on the target stash. A shot that hit nobody stamps no
+	// tgtSeq, so every target native refuses before reading and the count this
+	// cmd already collected is discarded -- as a well-formed 0, indistinguishable
+	// from one trace with nothing to report.
+	//
+	// allTraceSeq == 0 is checked explicitly: cmdSeq is 0 before the first cmd,
+	// and 0 == 0 would report the uninitialised counter as this cmd's.
+	//
+	// Not destructive. The counter is still accumulating inside the cmd, so
+	// clearing it would restart the count at the next trace, and the target
+	// natives read the same field without consuming it.
+	bool readAllTraces(int &out) const
+	{
+		if (allTraceSeq == 0 || allTraceSeq != cmdSeq)
+			return false;
+		out = allTraceCount;
+		return true;
+	}
+
 	// Destructive, cmd-paired: true only for the calling cmd's own record.
 	bool readRewind(int out[3])
 	{
