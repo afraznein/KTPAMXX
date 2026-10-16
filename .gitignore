@@ -113,6 +113,7 @@ scripts/*.py
 !scripts/test_grenade_slot_log.py
 !scripts/test_message_hooks_ext_mode.py
 !scripts/test_score_send_before_pause.py
+!scripts/test_amxxpc_image_zeroinit.py
 
 # Build output directories
 obj-linux/

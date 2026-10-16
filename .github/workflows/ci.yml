@@ -113,6 +113,15 @@ jobs:
         working-directory: KTPAMXX
         run: python3 scripts/test_score_send_before_pause.py
 
+      # Selftest first, for the same reason as the gates above.
+      - name: Prove the amxxpc image zero-init checks discriminate
+        working-directory: KTPAMXX
+        run: python3 scripts/test_amxxpc_image_zeroinit.py --selftest
+
+      - name: Test the amxxpc plugin image is zero-initialised
+        working-directory: KTPAMXX
+        run: python3 scripts/test_amxxpc_image_zeroinit.py
+
       - name: Install 32-bit toolchain + compiler
         run: |
           sudo dpkg --add-architecture i386
