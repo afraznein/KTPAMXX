@@ -39,6 +39,29 @@ measured live: `amxx.cfg` is executed once per process in extension mode
 every `AutoExecConfig` file on all 24 instances at every map change, which is a separate
 decision.
 
+### Added - a test for the amxxpc plugin image zero-init, which shipped without one
+
+The zero-init that made compiled plugins reproducible is one character — the `()` on
+`new char[size]()` in `ReadFileIntoPl()` — and nothing held it in place.
+`scripts/test_amxxpc_image_zeroinit.py` (CI, with `--selftest`) locks it, the ordering
+against the `fread`, the sizing that makes the read short in the first place, and the
+comment that is the only local explanation for the `()`.
+
+⚠️ **A build-it-twice-and-compare test is not the gate, and the reason is worth carrying.**
+The tail only varies between runs when the heap it comes off varies. Re-measuring #131
+today with the `()` removed and everything else pinned — same clone, one `amxxpc`, one
+`amxxpc32.so`, the git SHA and `KTP_BUILD_TIME` both fixed — gave **one** md5 across three
+back-to-back builds, not three: on this workstation the unread tail held recycled compiler
+text (`break ; 444`, `pushaddr fffffd7`) rather than the pointer-shaped heap the issue
+observed, so it was uninitialised but deterministic. **A reproducibility test would have
+passed on the broken tree.** What the artifact's reproducibility actually rests on is that
+the tail cannot hold anything, which is a property of the allocation.
+
+The defect itself reproduces exactly either way, and that is what the gate is for: with the
+`()` removed, every byte of the image past the end of the debug tables is non-zero; with it,
+every one of them is zero, and the two inflated images are otherwise byte-identical and the
+same length — the format-neutrality claim, re-measured rather than restated.
+
 ### Fixed - amxxpc: compiled plugins no longer carry uninitialised heap, so they rebuild to the same md5
 
 `amxxpc`'s `ReadFileIntoPl()` sizes the plugin image as `AMX_HEADER.size + AMX_DBG_HDR.size`,
