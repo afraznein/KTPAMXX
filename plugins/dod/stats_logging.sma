@@ -17,7 +17,7 @@
 #include <ktp_version_reporter>
 
 #define PLUGIN_NAME "Stats Logging"
-#define PLUGIN_VERSION "1.27.2"
+#define PLUGIN_VERSION "1.28.0"
 
 // KTP: extra per-match stat capture for HLStatsX (assists, cap breaks,
 // positions and frag context today; the per-hit damage ledger in a later
