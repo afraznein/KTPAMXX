@@ -6,8 +6,9 @@
 // flag positions, flag-ownership changes, factual objective-attempt and
 // grenade-entity lifecycles, break context
 // (contester count/time remaining/capout),
-// last-flag-defense (kill-position-based, not break-queue-based), and a
-// periodic roster-position broadcast for positional/"holding" stats.
+// last-flag-defense (kill-position-based, not break-queue-based), a
+// periodic roster-position broadcast for positional/"holding" stats, and
+// voice-menu commands as generic player actions.
 //
 // Cap-break attribution reads bounding boxes through dodx natives, NOT fakemeta:
 // `fakemeta.inc` carries `#pragma reqlib fakemeta`, and this fleet's modules.ini
@@ -3789,3 +3790,29 @@ stock strtok_seq(const src[], out[], len) {
 	return src[i] == ',' ? i + 1 : i
 }
 
+// ---------------------------------------------------------------------------
+// Voice commands (voice_negative, voice_grenade, ...). DoD 1.3 sends each
+// voice-menu pick to the server as a plain client command, so every one passes
+// through this forward before the game DLL plays the sound. The 27 commands
+// dod.so handles by name are seeded as generic actions by KTPHLStatsX
+// migration 045; the daemon's stock PlayerAction path records them, and
+// recordEvent() injects match_id and gates on KTP_ROUND_LIVE, so warmup
+// chatter carries no match. Any other voice_ string (none today) is tallied as
+// an unresolved action by the daemon and otherwise dropped.
+// NOT a KSC stream: no sequence, no health row, no KSC_CAPABILITIES entry.
+// Untracked buffer, never a direct log_message -- this forward runs inside
+// SV_ClientCommand, where synchronous log I/O stalls the frame as it does in
+// postthink.
+public client_command(id) {
+	new cmd[32]
+	read_argv(0, cmd, charsmax(cmd))
+	if (!equal(cmd, "voice_", 6) || !ksc_enabled() || !is_user_connected(id))
+		return PLUGIN_CONTINUE
+
+	new safe_cmd[32], who[96], line[KSC_BUF_LINE_LEN]
+	ksc_wire_sanitize(cmd, safe_cmd, charsmax(safe_cmd))
+	ksc_player_str(id, who, charsmax(who))
+	formatex(line, charsmax(line), "^"%s^" triggered ^"%s^"", who, safe_cmd)
+	ksc_untracked_buffer(line)
+	return PLUGIN_CONTINUE
+}

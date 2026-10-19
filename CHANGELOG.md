@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - 1.28.0: voice-menu commands counted as generic player actions
+
+`stats_logging` now hooks the `client_command` forward and, for any command
+prefixed `voice_`, buffers one `"<player>" triggered "<command>"` line through
+the untracked capture ring. DoD 1.3 sends each voice-menu pick to the server as
+a plain client command, so this sees every one before the game DLL plays the
+sound. The daemon's stock PlayerAction path records the line against the live
+match once KTPHLStatsX migration 045 seeds the 27 commands `dod.so` handles by
+name as `hlstats_Actions` rows (reward 0, PlayerActions only). Not a capture
+stream: no sequence, no health row, no `KSC_CAPABILITIES` entry, no schema
+bump. The command string is passed through `ksc_wire_sanitize` before it is
+quoted, and the hook honours the `ktp_stats_capture` kill switch.
+
 ### Added - dodx: `dodx_get_shot_traces`, so a shot that hit nobody can report its trace count
 
 `DODX_OnTraceLine`'s shooter-only branch already counts every trace the shooter owned in
