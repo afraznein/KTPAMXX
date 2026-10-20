@@ -287,6 +287,102 @@ struct KTPShotGeom
 	int rwDepthMs;         // 0-9999
 	int rwWantMs;          // 0-9999
 
+	// THE RAY OF THE CMD'S FIRST SHOOTER-OWNED TRACE, stashed RAW.
+	//
+	// WHAT IT IS FOR. Everything above needs a target: the geometry stash is
+	// stamped only from inside the player-hit filter, so a cmd whose trace resolved
+	// against the world leaves no ray, no angle and no endpoint behind.
+	// allTraceCount survives that cmd (readAllTraces), but a count is not a shot --
+	// the counterfactual question is where the ray went, and nothing in this stack
+	// has ever kept it for a shot that hit nobody.
+	//
+	// WHY IT SITS IN THE SHOOTER-ONLY BRANCH. That branch runs ahead of the
+	// player-hit filter and already has v1, v2 and ptr in hand; the filter below it
+	// is what discards them.
+	//
+	// FIRST-WINS, AND WHAT THAT COSTS. The branch runs per TRACE, not at shot rate,
+	// so the common path has to stay one compare, and first-wins makes it exactly
+	// that once the cmd is stamped. The cost is stated rather than hidden: by the
+	// ordering in this file's header the bullet's trace runs in PostThink, and a
+	// shooter-owned trace from player Think or a touch handler runs BEFORE it -- so
+	// the sample is the cmd's FIRST shooter-owned trace, which is not provably the
+	// bullet's. readAllTraces is the control: a cmd whose count is 1 produced only
+	// this trace, and a count above 1 says the sample is one of several. Last-wins
+	// would answer that by writing nine floats on every trace of every cmd, which is
+	// the per-trace cost this branch exists to avoid.
+	//
+	// NOTHING HERE IS DERIVED, DELIBERATELY. No sqrt, no acos, no engine call: all
+	// of those run at shot rate elsewhere in this file and would run at trace rate
+	// here. The coordinates are copied verbatim from the TraceLine arguments, in
+	// engine world units, on no clock at all -- the pairing key is cmdSeq like every
+	// sibling stash, and there is no time field.
+	//
+	// missFrac IS NOT traceFrac. Same unit (flFraction x10000) and a different
+	// sample: traceFrac is the player-hitting trace the geometry stash captured,
+	// missFrac is the cmd's first shooter-owned trace. On a cmd that produced both
+	// they can disagree, and reading one as the other would re-express a measurement
+	// under a name that already means something else.
+	unsigned int missSeq;    // cmd this ray belongs to; 0 = none/consumed
+	float missStart[3];      // v1 verbatim: where the trace started
+	float missEnd[3];        // v2 verbatim: where it was AIMED, not where it stopped
+	float missImpact[3];     // ptr->vecEndPos verbatim: where it stopped
+	int missFrac;            // ptr->flFraction x10000, clamped at the stamp
+	int missWeapon;          // CPlayer::current at trace time -- DATA, not a key
+	int missHitEnt;          // ENTINDEX of ptr->pHit; 0 is worldspawn, -1 is no edict
+	// Its OWN bit layout. The positions deliberately do NOT mirror traceFlags:
+	// that field's bits 2 and 3 read the HIT ENTITY's solid and takedamage fields,
+	// which on a trace that resolved against the world describe worldspawn, so
+	// reusing those positions would leave two bits that look like data and measure
+	// nothing.
+	//   bit0 0x1 fStartSolid -- the trace STARTED inside solid geometry.
+	//   bit1 0x2 fAllSolid   -- the whole trace was in solid.
+	//   bit2 0x4 flFraction >= 1 -- the ray ran its full length and stopped on
+	//        nothing, which is the only case where missImpact equals missEnd by
+	//        construction rather than by coincidence.
+	//   bit3 0x8 ptr->pHit carried FL_CLIENT|FL_FAKECLIENT -- this trace DID hit a
+	//        player, so the cmd's first trace was not a miss at all. Read off the
+	//        edict at trace time, not inferred from missHitEnt's slot range, which
+	//        would need a maxClients the sample does not carry.
+	// Bits 4-7 are free.
+	int missFlags;
+
+	// First-wins within the cmd, and refuses a cmd that has not started. Takes the
+	// trace verbatim: the caller passes what TraceLine was given, and the only
+	// arithmetic is the fraction's fixed-point clamp, which is one multiply.
+	//
+	// hitEnt and hitIsPlayer are passed in rather than read from a TraceResult here
+	// because resolving an edict to an index needs the module's own ENTINDEX_SAFE,
+	// which this header deliberately does not depend on.
+	void stampMiss(const float *v1, const float *v2, const float *impact,
+	               float frac, bool startSolid, bool allSolid,
+	               int hitEnt, bool hitIsPlayer, int weapon)
+	{
+		if (cmdSeq == 0 || missSeq == cmdSeq)
+			return;
+
+		missSeq = cmdSeq;
+		missStart[0] = v1[0]; missStart[1] = v1[1]; missStart[2] = v1[2];
+		missEnd[0]   = v2[0]; missEnd[1]   = v2[1]; missEnd[2]   = v2[2];
+		missImpact[0] = impact[0]; missImpact[1] = impact[1]; missImpact[2] = impact[2];
+
+		// Clamped at the stamp, not at the read: the read is a pure projection of
+		// what is stored, so a value the wire cannot carry must never be stored.
+		float f = frac;
+		if (!(f > 0.0f)) f = 0.0f;      // also catches NaN
+		if (f > 1.0f)    f = 1.0f;
+		missFrac = (int)(f * 10000.0f + 0.5f);
+
+		int flags = 0;
+		if (startSolid)  flags |= 0x1;
+		if (allSolid)    flags |= 0x2;
+		if (frac >= 1.0f) flags |= 0x4;
+		if (hitIsPlayer) flags |= 0x8;
+		missFlags = flags;
+
+		missWeapon = weapon;
+		missHitEnt = hitEnt;
+	}
+
 	// have == false (bot, engine without the API, record not this slot's) leaves
 	// no record for the cmd, never the previous cmd's.
 	void stampRewind(bool have, unsigned int flags, float depthMs, float wantMs)
@@ -336,6 +432,35 @@ struct KTPShotGeom
 		return true;
 	}
 
+	// Destructive and cmd-paired, like readRewind and unlike readAllTraces: the ray
+	// is first-wins, so it is not still changing inside the cmd and a stash reports
+	// at most one shot. missSeq == 0 is checked explicitly for the same reason
+	// readRewind checks rwSeq -- cmdSeq is 0 before the first cmd, and 0 == 0 would
+	// report an uninitialised stash as this cmd's.
+	//
+	// Projection only: nothing here recomputes, so what a consumer reads is what the
+	// trace handed the stamp.
+	bool readMiss(int ints[4], float start[3], float end[3], float impact[3])
+	{
+		if (missSeq == 0 || missSeq != cmdSeq)
+		{
+			missSeq = 0;
+			return false;
+		}
+		ints[0] = missFrac;
+		ints[1] = missFlags;
+		ints[2] = missHitEnt;
+		ints[3] = missWeapon;
+		for (int i = 0; i < 3; i++)
+		{
+			start[i]  = missStart[i];
+			end[i]    = missEnd[i];
+			impact[i] = missImpact[i];
+		}
+		missSeq = 0;
+		return true;
+	}
+
 	static int clampHitgroup(int hitgroup)
 	{
 		return (hitgroup >= 0 && hitgroup <= 99) ? hitgroup : -1;
@@ -363,6 +488,16 @@ struct KTPShotGeom
 		prevDir[0] = prevDir[1] = prevDir[2] = 0.0f;
 		rwSeq = 0;
 		rwFlags = rwDepthMs = rwWantMs = -1;
+		// Cleared here and NOT in resetTarget(): the ray is target-independent by
+		// construction, so a target stash being reset must not take with it the one
+		// record a shot with no target has. cmdSeq is what keeps a stale ray
+		// unreadable, and it only grows.
+		missSeq = 0;
+		missFrac = missFlags = 0;
+		missWeapon = 0;
+		missHitEnt = -1;
+		for (int i = 0; i < 3; i++)
+			missStart[i] = missEnd[i] = missImpact[i] = 0.0f;
 		resetTarget();
 	}
 

@@ -1997,6 +1997,29 @@ static void DODX_OnTraceLine(IVoidHookChain<const float *, const float *, int, e
 					// Same SMALLINT bound as traceCount, for the same reason.
 					if (asg.allTraceCount < 999)
 						asg.allTraceCount++;
+
+					// And stash the ray itself, first-wins. The counter above says
+					// a cmd produced traces; this says where one of them went --
+					// which is the only record a shot that resolved against the
+					// world leaves behind, because KTPCaptureShotGeom below is
+					// reached only by a trace that hit a player.
+					//
+					// The seq compare is HERE as well as inside stampMiss so the
+					// already-stamped path does not even deref ptr->pHit: argument
+					// evaluation would otherwise cost three loads per trace on a
+					// hook that runs per trace. The cost of first-wins, and why
+					// last-wins is not affordable here, are in KTPShotGeom.h.
+					if (asg.missSeq != asg.cmdSeq)
+					{
+						const bool hitValid = ptr->pHit && !ptr->pHit->free;
+						asg.stampMiss(v1, v2, ptr->vecEndPos,
+						              ptr->flFraction,
+						              ptr->fStartSolid != 0,
+						              ptr->fAllSolid != 0,
+						              hitValid ? ENTINDEX_SAFE(ptr->pHit) : -1,
+						              hitValid && (ptr->pHit->v.flags & (FL_CLIENT | FL_FAKECLIENT)) != 0,
+						              pShooter->current);
+					}
 				}
 			}
 		}

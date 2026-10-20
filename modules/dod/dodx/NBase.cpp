@@ -2678,6 +2678,72 @@ static cell AMX_NATIVE_CALL dodx_get_shot_traces(AMX *amx, cell *params)
 	return 1;
 }
 
+// KTP: the RAY of the calling cmd's first shooter-owned trace -- the one record a
+// shot that resolved against the world leaves behind. dodx_get_shot_geom and the
+// target natives are stamped from inside the player-hit filter, so a shot that hit
+// nobody has no ray on any of them; dodx_get_shot_traces says such a cmd produced
+// traces but not where any of them went, which is the question the counterfactual
+// asks. Measurement only -- nothing here applies a threshold, computes a ratio or
+// reaches a conclusion, and the ray is a verbatim copy of what TraceLine was given.
+//
+// Destructive and cmd-paired like dodx_get_shot_rewind; no weapon argument, because
+// the ray belongs to the cmd. out[3] carries the weapon the shooter held at trace
+// time as DATA, not as a validation key: geomWeapon, which the target natives
+// validate against, is itself only stamped on a player hit, so a hit-nobody shot has
+// no weapon to validate.
+//
+// out[0] == -1 is the only unambiguous "no sample" marker in the array -- a real
+// fraction is 0..10000 and a world coordinate has no out-of-range value, so the
+// coordinates must be judged by the RETURN, never by their contents.
+//
+// WHAT IT IS NOT. The sample is the cmd's FIRST shooter-owned trace, which is not
+// provably the bullet's: the bullet traces in PostThink and a shooter-owned trace
+// from player Think or a touch handler runs earlier in the same cmd. Pair it with
+// dodx_get_shot_traces -- a count of 1 means this trace was the cmd's only one.
+// Bit3 of out[1] says the sample hit a player, in which case the cmd's first trace
+// was not a miss at all.
+//
+// out[] = { frac_x10000, flags, hit_entindex, weapon_at_trace,
+//           start_x, start_y, start_z, end_x, end_y, end_z,
+//           impact_x, impact_y, impact_z }
+static cell AMX_NATIVE_CALL dodx_get_shot_miss(AMX *amx, cell *params)
+{
+	// Filled before the player check so a caller that mishandles the 0 reads the
+	// sentinel, never its own buffer's stale cells.
+	cell *out = MF_GetAmxAddr(amx, params[2]);
+	out[0] = out[1] = out[2] = out[3] = -1;
+	for (int i = 4; i < 13; i++)
+		out[i] = amx_ftoc(0.0f);
+
+	int index = params[1];
+	CHECK_PLAYER(index);
+
+	CPlayer *pPlayer = GET_PLAYER_POINTER_I(index);
+	if (!pPlayer->ingame || !pPlayer->pEdict || pPlayer->pEdict->free)
+		return 0;
+
+	int ints[4];
+	float start[3], end[3], impact[3];
+	if (!pPlayer->ktpShot.readMiss(ints, start, end, impact))
+		return 0;
+
+	out[0] = ints[0];
+	out[1] = ints[1];
+	out[2] = ints[2];
+	out[3] = ints[3];
+	// Floats, not fixed-point: these are world coordinates the engine handed us, and
+	// quantising them here would commit a public sensor file to a precision no
+	// consumer has asked for yet. Same amx_ftoc convention the grenade trace path
+	// already uses for positions.
+	for (int i = 0; i < 3; i++)
+	{
+		out[4 + i]  = amx_ftoc(start[i]);
+		out[7 + i]  = amx_ftoc(end[i]);
+		out[10 + i] = amx_ftoc(impact[i]);
+	}
+	return 1;
+}
+
 // KTP: read a player's crouch-input and footstep-emission census. Measurements only
 // -- no threshold is applied here and none should be added; the consumer decides what
 // the numbers mean.
@@ -2985,6 +3051,7 @@ AMX_NATIVE_INFO base_Natives[] =
 	{"dodx_get_shot_target3",                dodx_get_shot_target3},
 	{"dodx_get_shot_rewind",                 dodx_get_shot_rewind},
 	{"dodx_get_shot_traces",                 dodx_get_shot_traces},
+	{"dodx_get_shot_miss",                   dodx_get_shot_miss},
 
 	// KTP: aim-vs-transmission counters (blind audit tier 2.7)
 	{"dodx_get_aim_vis_stats",               dodx_get_aim_vis_stats},
