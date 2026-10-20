@@ -1445,6 +1445,55 @@ native dodx_get_shot_rewind(id, rw[3]);
 native dodx_get_shot_traces(id, traces[1]);
 
 /**
+ * The ray of the calling shot's usercmd -- specifically its FIRST shooter-owned
+ * trace, whatever that trace hit. Measurement only.
+ *
+ * This is the only record a shot that resolved against the world leaves behind.
+ * dodx_get_shot_geom and dodx_get_shot_target3 are stamped from inside the
+ * player-hit filter, so neither has a ray for a shot that hit nobody;
+ * dodx_get_shot_traces says such a cmd produced traces but not where any of them
+ * went.
+ *
+ *  [0] trace fraction x10000, 0-10000. -1 means NO SAMPLE and the whole array is
+ *      meaningless -- this is the only unambiguous marker in it, because a world
+ *      coordinate has no out-of-range value. NOT the same measurement as
+ *      dodx_get_shot_target3's trace[8]: that one is the player-hitting trace the
+ *      geometry stash captured, this one is the cmd's first shooter-owned trace,
+ *      and on a cmd that produced both they can disagree.
+ *  [1] flags: bit0 the trace started inside solid geometry, bit1 the whole trace
+ *      was in solid, bit2 the ray ran its full length and stopped on nothing,
+ *      bit3 the trace hit a PLAYER -- so the cmd's first trace was not a miss at
+ *      all. The bit positions deliberately do not match target[9]'s: that field's
+ *      bits 2 and 3 describe the hit entity's own solid and takedamage state,
+ *      which here would describe worldspawn.
+ *  [2] entity index of what the trace resolved against: 0 is worldspawn, above 0
+ *      is that entity, -1 is no edict at all
+ *  [3] weapon id the shooter held at trace time. DATA, not a validation key --
+ *      a hit-nobody shot stamps no weapon for a caller to match against, so
+ *      unlike dodx_get_shot_geom this native takes no weapon argument
+ *  [4..6]  Float: where the trace started, world units
+ *  [7..9]  Float: where it was AIMED, world units -- not where it stopped
+ *  [10..12] Float: where it stopped, world units
+ *
+ * Coordinates are a verbatim copy of what the engine handed the TraceLine hook,
+ * in engine world units, on no clock: the pairing key is the usercmd ordinal, as
+ * for every other shot native, and no time is recorded.
+ *
+ * WHAT IT DOES NOT SAY. The bullet traces in PostThink, and a shooter-owned trace
+ * from player Think or a touch handler runs earlier in the same cmd, so this
+ * sample is not provably the bullet's. dodx_get_shot_traces is the control: a
+ * count of 1 means the cmd produced only this trace.
+ *
+ * Destructive and cmd-paired like dodx_get_shot_rewind. Returns 0 with [0] at -1
+ * for a read outside the fire cmd, or a cmd in which the shooter owned no trace.
+ *
+ * @param id        Firing player index (the forward's id argument)
+ * @param ray       Output, 13 cells as above
+ * @return  1 when a ray belongs to this shot's cmd, 0 otherwise
+ */
+native dodx_get_shot_miss(id, ray[13]);
+
+/**
  * Read a player's aim-vs-transmission counters. Measurements only: no threshold,
  * no ratio, no conclusion is applied here.
  *

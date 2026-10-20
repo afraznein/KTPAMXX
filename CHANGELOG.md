@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - dodx: `dodx_get_shot_miss`, so a shot that hit nobody records its ray
+
+`KTPCaptureShotGeom` is reached from exactly one place, nested inside the branch that
+requires the trace to have hit a client, and that branch returns unconditionally. So a
+shot whose trace resolved against the world stashed no geometry, no target state and no
+ray at all — the one case the counterfactual work needs most. `dodx_get_shot_traces`
+(above) made the cmd's trace *count* readable on that path; a count says a trace
+happened and nothing about where it went.
+
+`DODX_OnTraceLine`'s shooter-only branch runs ahead of the player-hit filter and already
+has `v1`, `v2` and `ptr` in hand. It now stashes them, first-wins per cmd, into a new
+independent seq/consume pair keyed on `cmdSeq` — the key a shot with no target can still
+carry — read back by `dodx_get_shot_miss(id, ray[13])`: the ray's start, its aimed end,
+where it stopped, the trace fraction, a flag bitfield and what it resolved against.
+
+**Nothing in the capture is derived.** No `sqrt`, no `acos`, no engine call: that branch
+runs per TRACE, not at shot rate, and the whole reason the existing geometry capture may
+use trigonometry is that it runs at 1/1500th the frequency. Coordinates are copied
+verbatim from the TraceLine arguments, in engine world units, on no clock; the only
+arithmetic is the fraction's fixed-point clamp. The already-stamped path is one compare,
+kept at the call site as well as inside `stampMiss` so it does not even deref the hit
+edict.
+
+⚠️ **`ray[0]` is not `target[8]`.** Same unit (`flFraction` ×10000) and a different
+sample: `target[8]` is the player-hitting trace the geometry stash captured, `ray[0]` is
+the cmd's first shooter-owned trace, and on a cmd that produced both they can disagree.
+⚠️ **`ray[1]`'s bit positions deliberately do not mirror `target[9]`'s.** That field's
+bits 2 and 3 read the hit entity's own `solid` and `takedamage`, which on a trace that
+resolved against the world describe worldspawn — reusing those positions would have left
+two bits that look like data and measure nothing. The new field has its own layout and
+four free bits.
+
+⚠️ **What it does not say:** the sample is the cmd's FIRST shooter-owned trace, which is
+not provably the bullet's — the bullet traces in PostThink and a shooter-owned trace from
+player Think or a touch handler runs earlier in the same cmd. `dodx_get_shot_traces` is
+the control: a count of 1 means the cmd produced only this trace. `ray[1]` bit3 says the
+sample hit a player, in which case the cmd's first trace was not a miss at all.
+
+⛔ **No wire field, no column, no schema bump, no migration, and nothing calls it.** Every
+existing native keeps its bytes and its semantics; the ray is cleared by `reset()` and
+deliberately *not* by `resetTarget()`, because it is the record of a shot with no target
+and nothing on the target path may own its lifetime. Pinned by the test.
+
+Test: `scripts/test_shot_miss.cpp` (CI, with a negative control, same two-pass convention
+as `test_shot_alltraces.cpp`) — the `0 == 0` trap, a hit-nobody shot reading its ray with
+no target or geometry stamped, aimed end against impact point, first-wins through
+`stampMiss` itself with no outer guard in front of it, the destructive read, a refusal
+that consumes, independence from `consumeTarget()` and `resetTarget()` in both
+directions, the hit stash left untouched, the fraction's floor and ceiling including NaN,
+and one meaning per flag bit.
+
 ### Added - 1.28.0: voice-menu commands counted as generic player actions
 
 `stats_logging` now hooks the `client_command` forward and, for any command

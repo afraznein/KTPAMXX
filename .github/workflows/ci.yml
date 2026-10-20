@@ -200,6 +200,27 @@ jobs:
             -Imodules/dod/dodx -o /tmp/test_shot_alltraces scripts/test_shot_alltraces.cpp
           /tmp/test_shot_alltraces
 
+      # The cmd-keyed ray a hit-nobody shot leaves behind, same two-pass convention.
+      - name: Prove the shot-ray test discriminates
+        working-directory: KTPAMXX
+        run: |
+          set -e
+          ${{ matrix.cxx }} -m32 -O2 -std=gnu++14 -DNEGATIVE_CONTROL \
+            -Imodules/dod/dodx -o /tmp/test_shot_miss_neg scripts/test_shot_miss.cpp
+          if /tmp/test_shot_miss_neg; then
+            echo 'FAIL: the negative control PASSED, so this gate asserts nothing'
+            exit 1
+          fi
+          echo 'negative control failed as required'
+
+      - name: Test the cmd-keyed shot ray
+        working-directory: KTPAMXX
+        run: |
+          set -e
+          ${{ matrix.cxx }} -m32 -O2 -std=gnu++14 \
+            -Imodules/dod/dodx -o /tmp/test_shot_miss scripts/test_shot_miss.cpp
+          /tmp/test_shot_miss
+
       - name: Install AMBuild
         run: |
           python3 -m pip install --upgrade pip setuptools wheel
