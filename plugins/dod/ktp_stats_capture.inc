@@ -205,7 +205,11 @@
 // A module that outgrows it truncates here and is then REJECTED by the daemon rather
 // than stored short: the bucket count travels on the wire, so a field carrying fewer
 // values than it claims fails the count check. Loud, which is the direction we want.
-#define KSC_MOVE_MAX_BUCKETS 8
+// Re-derived 2026-10-20 when the line grew two histograms (steps_ducked,
+// ground_ms_ducked_silent): at 8 the worst case is 1,097 chars and does not fit; at 6
+// -- the module's actual count -- it is 999. A module that goes to 7 buckets must
+// widen KSC_BUF_LINE_LEN first, and KTPHLStatsX's selftest says so before the wire.
+#define KSC_MOVE_MAX_BUCKETS 6
 // Six digits plus a separator per bucket; the last needs no separator, so this is
 // one character of slack plus the terminator.
 #define KSC_MOVE_FIELD_LEN   (KSC_MOVE_MAX_BUCKETS * 7)
@@ -2710,11 +2714,14 @@ stock ksc_move_flush_window(bool:tracked, const matchid[], half) {
 		new taps_ground[KSC_MOVE_FIELD_LEN], taps_air[KSC_MOVE_FIELD_LEN]
 		new ground_standing[KSC_MOVE_FIELD_LEN], ground_ducked[KSC_MOVE_FIELD_LEN]
 		new air_ducked[KSC_MOVE_FIELD_LEN]
+		new steps_ducked[KSC_MOVE_FIELD_LEN], ducked_silent[KSC_MOVE_FIELD_LEN]
 		ksc_move_hist_str(id, 0, taps_ground, charsmax(taps_ground))
 		ksc_move_hist_str(id, 1, taps_air, charsmax(taps_air))
 		ksc_move_hist_str(id, 2, ground_standing, charsmax(ground_standing))
 		ksc_move_hist_str(id, 3, ground_ducked, charsmax(ground_ducked))
 		ksc_move_hist_str(id, 4, air_ducked, charsmax(air_ducked))
+		ksc_move_hist_str(id, 5, steps_ducked, charsmax(steps_ducked))
+		ksc_move_hist_str(id, 6, ducked_silent, charsmax(ducked_silent))
 
 		// Nothing observed is not worth a row: on a quiet server every connected
 		// player would otherwise produce one every window. A player who moved at all
@@ -2735,10 +2742,11 @@ stock ksc_move_flush_window(bool:tracked, const matchid[], half) {
 
 		new line[KSC_BUF_LINE_LEN]
 		formatex(line, charsmax(line),
-			"^"%s^" triggered ^"move_census^" (window_ms ^"%d^") (buckets ^"%d^") (bucket_width ^"%d^") (taps ^"%d^") (taps_ground ^"%s^") (taps_air ^"%s^") (ground_ms_standing ^"%s^") (ground_ms_ducked ^"%s^") (air_ms_ducked ^"%s^") (stam_tap_sum ^"%d^") (stam_tap_min ^"%d^") (steps_ground ^"%d^") (steps_ladder ^"%d^") (sounds_water ^"%d^") (pmove_sounds ^"%d^") (step_timer_fires ^"%d^") (map ^"%s^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^")",
+			"^"%s^" triggered ^"move_census^" (window_ms ^"%d^") (buckets ^"%d^") (bucket_width ^"%d^") (taps ^"%d^") (taps_ground ^"%s^") (taps_air ^"%s^") (ground_ms_standing ^"%s^") (ground_ms_ducked ^"%s^") (air_ms_ducked ^"%s^") (stam_tap_sum ^"%d^") (stam_tap_min ^"%d^") (steps_ground ^"%d^") (steps_ladder ^"%d^") (sounds_water ^"%d^") (pmove_sounds ^"%d^") (step_timer_fires ^"%d^") (steps_ducked ^"%s^") (ground_ms_ducked_silent ^"%s^") (map ^"%s^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^")",
 			pstr, window_ms, geom[0], geom[1], stats[0],
 			taps_ground, taps_air, ground_standing, ground_ducked, air_ducked,
 			stats[1], stats[2], stats[3], stats[4], stats[5], stats[6], stats[7],
+			steps_ducked, ducked_silent,
 			mapname, matchid, half, now, event_epoch, sequence)
 
 		ksc_buffer(line, KSC_EVENT_MOVE)

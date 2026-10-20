@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - 1.29.0: the move census says WHEN a crouched footstep sounded, and when the timer made silence
+
+Two histograms join the `move_census` line, both over the same horizontal-speed buckets
+as the time rows and both measure-only:
+
+- `steps_ducked` -- ground footsteps the sound hook saw while the player was `FL_DUCKING`,
+  bucketed by the speed he carried at emission. Against `ground_ms_ducked` the same cell is
+  "sounds per second crouched at that speed". Standing steps are `steps_ground` minus this
+  row's sum; they were not given their own row because the line budget holds exactly two.
+- `ground_ms_ducked_silent` -- crouched ground time spent inside a step-timer window whose
+  opening reset played no footstep. DoD's `pm_shared` restarts `flTimeStepSound` BEFORE
+  `PM_PlayStepSound` decides to skip (prone, `mp_footsteps`, horizontal speed <= 100), so a
+  reset taken slowly buys the whole next window silent at any speed. This row is where
+  that time lands. A subset of `ground_ms_ducked`.
+
+The hook already received stance and velocity; it now hands them to
+`KTPMoveStats::NoteGroundStep`. The sampler learns whether the last observed timer rise
+had a step beside it by comparing `stepsGround` against its value at the previous rise --
+the sound is played in the same pmove that resets the timer, so the hook has counted it
+by the sample that sees the rise. Both paths are exercised in `scripts/test_move_accum.cpp`.
+
+`KSC_MOVE_MAX_BUCKETS` drops from 8 to 6, the module's actual count: with two more
+histograms the 8-bucket worst case is 1,097 characters against a 1,023 budget, and at 6 it
+is 999. KTPHLStatsX's `selftest-move-census.pl` mirrors both numbers and fails first. No
+schema ordinal and no capability change: the fields are appended and named, so a daemon
+without migration 046 stores the row without them.
+
 ### Added - dodx: `dodx_get_shot_miss`, so a shot that hit nobody records its ray
 
 `KTPCaptureShotGeom` is reached from exactly one place, nested inside the branch that

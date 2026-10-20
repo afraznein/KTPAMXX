@@ -101,12 +101,31 @@ struct KTPMoveStats
 	// ratio against it measures its own denominator rather than the steps.
 	int stepTimerFires;
 
+	// Ground footsteps by horizontal-speed bucket AT EMISSION, crouched only. The
+	// standing count is stepsGround minus this row's sum. Read against groundMsDucked:
+	// the same cell in the two rows is the numerator and the denominator of "sounds
+	// per second crouched at that speed". The movement code never plays a step below
+	// ~100 u/s and plays a crouched one at 0.35 volume on a 400 ms timer, so this row is
+	// where "crouched above crouch-walk speed" either sounds or does not.
+	int stepsDucked[KTPMove::SPEED_BUCKETS];
+	// Milliseconds on the ground, crouched, inside a step-timer window whose opening
+	// reset played no footstep. The engine restarts the timer BEFORE it decides whether
+	// to play the sound, so a reset taken at <= 100 u/s buys the whole next window silent
+	// at any speed; this row is where that time lands, by the speed it was spent at. A
+	// subset of groundMsDucked, never read on its own.
+	int groundMsDuckedSilent[KTPMove::SPEED_BUCKETS];
+
 	// In-flight sampling state. `havePrev` distinguishes "was not crouched" from "have
 	// not looked yet": adopting a state without it fabricates an edge at every respawn,
 	// and adopting a timer value without it fabricates a step.
 	double lastTime;
 	int    prevStepTimer;
 	bool   havePrev;
+	// stepsGround as it stood at the last observed timer reset, and whether that reset
+	// played a step. The sound for a reset is played in the same pmove that resets the
+	// timer, so by the sample that sees the rise the hook has already counted it.
+	int    stepsAtLastFire;
+	bool   windowSilent;
 
 	void Reset()
 	{
@@ -124,7 +143,11 @@ struct KTPMoveStats
 			tapsGround[i] = tapsAir[i] = 0;
 			groundMsStanding[i] = groundMsDucked[i] = 0;
 			airMsDucked[i] = 0;
+			stepsDucked[i] = 0;
+			groundMsDuckedSilent[i] = 0;
 		}
+		// stepsGround is cleared below, so the baseline it is compared against must be too.
+		stepsAtLastFire = 0;
 		tapsTotal = 0;
 		stamAtTapSum = 0;
 		stamAtTapMin = -1;
@@ -140,6 +163,18 @@ struct KTPMoveStats
 		lastTime = 0.0;
 		prevStepTimer = 0;
 		havePrev = false;
+		stepsAtLastFire = stepsGround;
+		windowSilent = false;
+	}
+
+	// A ground footstep as the sound hook saw it, with the stance and horizontal speed
+	// the entity carried at that moment. Those are pmove's write-back of the PREVIOUS
+	// command, so at most one command stale -- the hook fires inside pmove, before this
+	// command's own write-back.
+	void NoteGroundStep(bool ducking, float speedSq)
+	{
+		stepsGround++;
+		if (ducking) stepsDucked[Bucket(speedSq)]++;
 	}
 
 	// One usercmd's worth of observation, taking plain values rather than an edict.
@@ -176,8 +211,15 @@ struct KTPMoveStats
 			// A rise in the engine's step timer is a step having just been played. Read as
 			// a TRANSITION and never against a value: DoD owns the reset constant and this
 			// stack cannot see it, but a rise means the same thing whatever it is.
+			// The elapsed interval below is charged to the window that was open DURING it,
+			// so the silence flag is read before a reset seen at this sample replaces it.
+			const bool wasSilent = windowSilent;
 			if (stepTimer > prevStepTimer)
+			{
 				stepTimerFires++;
+				windowSilent = (stepsGround == stepsAtLastFire);
+				stepsAtLastFire = stepsGround;
+			}
 
 			// The interval that just elapsed is charged to the state being read now,
 			// because pmove writes these fields back at the END of the command that ran in
@@ -188,8 +230,15 @@ struct KTPMoveStats
 				const int ms = (int)(gapMs + 0.5);
 				if (onGround)
 				{
-					if (ducking) groundMsDucked[bucket] += ms;
-					else         groundMsStanding[bucket] += ms;
+					if (ducking)
+					{
+						groundMsDucked[bucket] += ms;
+						if (wasSilent) groundMsDuckedSilent[bucket] += ms;
+					}
+					else
+					{
+						groundMsStanding[bucket] += ms;
+					}
 				}
 				else if (ducking)
 				{

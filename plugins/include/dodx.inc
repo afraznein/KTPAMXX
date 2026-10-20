@@ -1590,6 +1590,15 @@ native dodx_get_move_stats(id, stats[8]);
  *   which = 2  milliseconds on the ground, standing
  *   which = 3  milliseconds on the ground, crouched
  *   which = 4  milliseconds airborne, crouched
+ *   which = 5  ground footsteps emitted while crouched, by speed at emission
+ *              (standing footsteps are steps_ground minus this row's sum)
+ *   which = 6  milliseconds on the ground, crouched, inside a step-timer window
+ *              whose opening reset played no footstep -- a subset of which = 3
+ *
+ * which = 5 against which = 3 is "sounds per second crouched at that speed";
+ * which = 6 is the time the engine's timer order makes silent regardless of
+ * speed (the timer restarts before the play-or-skip decision). Neither is a
+ * verdict: the movement code's own thresholds make both legitimate ways to move.
  *
  * Ground and airborne are never folded together: a duck-jump is crouching at
  * running speed by construction, so a combined row cannot be read.
