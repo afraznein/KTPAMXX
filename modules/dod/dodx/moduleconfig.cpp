@@ -1933,6 +1933,15 @@ static void DODX_OnStartSound(IVoidHookChain<int, edict_t *, int, const char *, 
 
 	KTPMoveStats &st = pPlayer->ktpMove;
 	st.pmoveSoundsTotal++;
+	// Stance and horizontal speed at emission. v.flags and v.velocity are pmove's
+	// write-back of the previous command (this hook fires inside pmove, before this
+	// command's own write-back), so they are at most one command stale. FL_DUCKING is
+	// the same bit the time sampler buckets by, which is what makes the two rows a
+	// numerator and a denominator.
+	const bool ducking = (entity->v.flags & FL_DUCKING) != 0;
+	const float vx = entity->v.velocity.x;
+	const float vy = entity->v.velocity.y;
+	const float speedSq = vx * vx + vy * vy;
 
 	switch (sample[10])
 	{
@@ -1940,11 +1949,11 @@ static void DODX_OnStartSound(IVoidHookChain<int, edict_t *, int, const char *, 
 	case 'g':  // grate
 	case 'm':  // metal
 	case 't':  // tile
-		st.stepsGround++;
+		st.NoteGroundStep(ducking, speedSq);
 		break;
 	case 's':  // step, slosh, snow -- or swim, which is not one of them
 		if (sample[11] == 'w') st.soundsWater++;
-		else                   st.stepsGround++;
+		else                   st.NoteGroundStep(ducking, speedSq);
 		break;
 	case 'l':  // ladder
 		st.stepsLadder++;

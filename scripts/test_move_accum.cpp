@@ -156,6 +156,48 @@ int main()
     CHECK(st.stepTimerFires == 1, "the first step after a flush is still counted");
     CHECK(st.groundMsStanding[4] == 10, "time across the flush boundary is still measured");
 
+    // ---------------- crouched footsteps by speed at emission ----------------
+    st.Reset();
+    st.NoteGroundStep(false, Sq(220.0f));
+    st.NoteGroundStep(true,  Sq(160.0f));
+    st.NoteGroundStep(true,  Sq(160.0f));
+    CHECK(st.stepsGround == 3, "every noted step is in steps_ground");
+    CHECK(st.stepsDucked[3] == 2, "crouched steps land in the bucket of their emission speed");
+    CHECK(SumRow(st.stepsDucked) == 2, "a standing step is not in the crouched row");
+
+    // ---------------- a silent timer reset marks the window that follows ----------------
+    st.Reset();
+    st.Observe(100.000, true, true, Sq(70.0f), false, 90, 100);   // baseline, crouch-walking
+    st.Observe(100.010, true, true, Sq(70.0f), false, 90, 400);   // reset, and no step was heard
+    CHECK(st.stepTimerFires == 1, "the reset is a fire");
+    st.Observe(100.020, true, true, Sq(180.0f), false, 90, 390);  // now crouched at 180 u/s
+    st.Observe(100.030, true, true, Sq(180.0f), false, 90, 380);
+    CHECK(st.groundMsDucked[3] == 20, "crouched time at 180 lands in the 150-200 bucket");
+    CHECK(st.groundMsDuckedSilent[3] == 20, "and all of it sits inside the silent window");
+    // A reset that DID play a step opens a window that is not silent. The step reaches
+    // the hook in the same pmove as the reset, i.e. before the sample that sees the rise.
+    st.NoteGroundStep(true, Sq(180.0f));
+    st.Observe(100.040, true, true, Sq(180.0f), false, 90, 400);  // the interval before it was still silent
+    st.Observe(100.050, true, true, Sq(180.0f), false, 90, 390);
+    CHECK(st.groundMsDucked[3] == 40, "crouched time keeps accumulating");
+    CHECK(st.groundMsDuckedSilent[3] == 30, "the 10 ms after a sounded reset is not silent");
+    // Standing time inside a silent window is not charged: the row is crouched only.
+    st.Observe(100.060, true, true, Sq(70.0f), false, 90, 400);   // silent reset again
+    st.Observe(100.070, true, false, Sq(180.0f), false, 90, 390); // stood up
+    CHECK(st.groundMsStanding[3] == 10 && st.groundMsDuckedSilent[3] == 30,
+          "standing time in a silent window goes to the standing row only");
+    // A sounded reset, then a flush. The flush zeroes stepsGround AND the baseline it
+    // is compared against, so the next silent reset reads as silent rather than as
+    // "one step since a baseline that no longer exists".
+    st.NoteGroundStep(false, Sq(180.0f));
+    st.Observe(100.080, true, false, Sq(180.0f), false, 90, 400); // sounded reset: not silent
+    st.ResetCounters();
+    st.Observe(100.090, true, true, Sq(180.0f), false, 90, 390);  // 10 ms crouched, not silent
+    CHECK(st.groundMsDuckedSilent[3] == 0, "after a sounded reset the window is not silent");
+    st.Observe(100.100, true, true, Sq(180.0f), false, 90, 400);  // reset, no step since the flush
+    st.Observe(100.110, true, true, Sq(180.0f), false, 90, 390);
+    CHECK(st.groundMsDuckedSilent[3] == 10, "a silent reset right after a flush still marks its window");
+
 #ifdef NEGATIVE_CONTROL
     // Proves this harness can fail: without it, everything above passing would be
     // equally consistent with a binary that never ran an assertion.
