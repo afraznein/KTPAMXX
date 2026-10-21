@@ -35,12 +35,18 @@ so it is not recorded and the held-weapon read stands.
 until a death in the current life has been reported, so a record left from an earlier life
 cannot be picked up by the next one — which matters because the Damage hook ticks the
 observed-deaths tally *after* it reports, so the tally alone would still match a previous
-death when the Damage hook wins the race. The tally is checked alongside the gate so a
-counter reset reads as "nothing recorded".
+death when the Damage hook wins the race. The tally is checked alongside the gate, and the
+read is destructive, so no record outlives the death it belongs to.
 
-Both death paths keep their 33ms dedup window and their exactly-once semantics unchanged:
-this changes which weapon a report carries, never how many reports fire. No wire field, no
-schema ordinal, no native and no forward signature moves.
+**Which ordering this reaches, stated rather than implied.** A record exists only once
+`Client_DeathMsg` has reported, so the Damage hook can consume one only when it is the
+SECOND report for that death — the late-`Health` path already written up as
+`Client_DeathMsg`'s KNOWN LIMITATION. When the Damage hook reports first it suppresses
+DeathMsg, nothing is ever recorded, and behaviour is unchanged. So this makes a duplicated
+pair AGREE on the weapon rather than removing the duplicate: the two `client_death`
+forwards on that path stay, and so does each dedup window. What changes is which weapon a
+report carries, never how many reports fire. No wire field, no schema ordinal, no native
+and no forward signature moves.
 
 ### Added - 1.30.0: the aim-vs-transmission sensor finally has a reader
 

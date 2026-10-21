@@ -59,13 +59,14 @@ static void countObservedDeath(int victimIdx)
 }
 
 // The Damage hook sees the attacker's HELD weapon a usercmd after the kill, so it
-// can name a weapon the engine never logged. Keyed on the observed-deaths tally
-// rather than a time window, so a later death cannot read this one's record.
+// can name a weapon the engine never logged. The read is gated on the per-life
+// death flag and destructive, so no record outlives the death it belongs to.
 static int g_engineDeathWeapon[33] = {0};
 static int g_engineDeathTally[33] = {0};
 
-// Weapon 0 is DODX's unresolved slot rather than a weapon, so an unknown logname
-// records nothing and the caller keeps its own read.
+// Index 0 is weaponData's mortar entry AND the unknown bucket, so an unresolved
+// logname is not separable from a real mortar -- and 0 is where saveKill books an
+// unknown weapon anyway, so recording nothing leaves the caller its own read.
 static void noteEngineDeathWeapon(int victimIdx, int weapon)
 {
 	if (victimIdx < 1 || victimIdx >= 33 || weapon <= 0)
@@ -74,20 +75,22 @@ static void noteEngineDeathWeapon(int victimIdx, int weapon)
 	g_engineDeathTally[victimIdx] = g_observedDeaths[victimIdx];
 }
 
-// The per-life gate is what makes this safe to read: it is false until a death in
-// THIS life has been reported, so a record left from an earlier life cannot be
-// picked up by the next one.
-static int engineDeathWeapon(int victimIdx)
+static int takeEngineDeathWeapon(int victimIdx)
 {
 	if (victimIdx < 1 || victimIdx >= 33)
 		return -1;
+	// False until a death in THIS life has been reported, so a record left from an
+	// earlier life cannot be picked up by the next one.
 	if (!g_deathCountedThisLife[victimIdx])
 		return -1;
 	if (g_engineDeathWeapon[victimIdx] <= 0)
 		return -1;
 	if (g_engineDeathTally[victimIdx] != g_observedDeaths[victimIdx])
 		return -1;
-	return g_engineDeathWeapon[victimIdx];
+
+	int weapon = g_engineDeathWeapon[victimIdx];
+	g_engineDeathWeapon[victimIdx] = 0;
+	return weapon;
 }
 
 void Client_ResetHUD_End(void* mValue)
@@ -418,7 +421,7 @@ void Client_Health_End(void* mValue)
 		// HLStatsX joins the frag marker to the stock kill line on the weapon, and
 		// the engine's own name for it carries the melee and butt variants a
 		// held-weapon read gets wrong.
-		int killWeapon = engineDeathWeapon(mPlayer->index);
+		int killWeapon = takeEngineDeathWeapon(mPlayer->index);
 		if (killWeapon < 0)
 			killWeapon = weapon;
 
@@ -852,7 +855,7 @@ void Client_DeathMsg(void* mValue)
 		MF_ExecuteForward(iFDeath, killerIdx, victimIdx, weapon, aim, TA);
 		g_lastDeathReportTime[victimIdx] = now;
 		countObservedDeath(victimIdx);
-		// After the tally ticks: the record is keyed on this death's value.
+		// Must follow countObservedDeath: the tally is this record's key.
 		noteEngineDeathWeapon(victimIdx, weapon);
 		break;
 	}
