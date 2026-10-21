@@ -101,6 +101,12 @@
 // the wire inside its rendered width -- so a longer interval is not free.
 #define KSC_MOVE_FLUSH_SECS 30.0
 
+// Aim-vs-transmission cadence. On the same thirty seconds as the move census and
+// the aim-geometry flush, so the three views describe the same spans. Volume sits
+// below the census: a row needs the player to have aimed at a live enemy at all,
+// where the census charges standing still.
+#define KSC_AIM_VIS_FLUSH_SECS 30.0
+
 // Bumped 48 -> 128 for the damage ledger: ~1,100-1,500 hits/match (measured
 // on a prior live audit) dwarfs the ~150-400 kills/match that sized this
 // buffer before. Client_damage can fire many times per second in a heavy
@@ -231,7 +237,7 @@
 // Bump this only for a change that really alters the storage contract, and
 // check what the next ordinal is already promised to before taking it.
 #define KSC_SCHEMA_CONTRACT 26
-#define KSC_CAPABILITIES "frag_context,damage,position,assist,life,break,flag_state,flag_position,objective_attempt,team_membership,grenade_entity,shot,score,duel,player_state,grenade_throw,position_state,map_revision,sequence,health,move"
+#define KSC_CAPABILITIES "frag_context,damage,position,assist,life,break,flag_state,flag_position,objective_attempt,team_membership,grenade_entity,shot,score,duel,player_state,grenade_throw,position_state,map_revision,sequence,health,move,aim_vis"
 
 enum {
 	KSC_EVENT_LIFE = 0,
@@ -259,6 +265,8 @@ enum {
 	KSC_EVENT_GRENADE_THROW,
 	// Crouch-input and footstep-emission census, appended so no index shifts.
 	KSC_EVENT_MOVE,
+	// Aim-vs-transmission census (tier 2.7), appended for the same reason.
+	KSC_EVENT_AIM_VIS,
 	KSC_EVENT_COUNT
 }
 
@@ -276,6 +284,7 @@ enum {
 // 88015 is the flag-position retry, which is why this is not it -- that pair
 // collided once already and the symptom was a silently cancelled flush.
 #define KSC_TASK_MOVE           88016
+#define KSC_TASK_AIM_VIS        88017
 
 new g_kscBuffer[KSC_BUF_MAX_ENTRIES][KSC_BUF_LINE_LEN]
 new g_kscBufferType[KSC_BUF_MAX_ENTRIES]
@@ -330,7 +339,7 @@ new const g_kscEventNames[KSC_EVENT_COUNT][] = {
 	"life", "damage", "position", "frag", "assist", "break",
 	"flag_state", "flag_position", "objective_attempt", "team_membership",
 	"grenade_entity", "shot", "score", "duel", "player_state", "grenade_throw",
-	"move"
+	"move", "aim_vis"
 }
 
 // [victim][attacker] -- enemy damage dealt to victim since their last spawn.
@@ -571,6 +580,7 @@ stock ksc_cfg() {
 	set_task(KSC_POSITION_BROADCAST_SECS, "ksc_position_broadcast_task", KSC_TASK_POSITIONS, .flags="b")
 	set_task(KSC_SHOT_FLUSH_SECS, "ksc_shot_flush_task", KSC_TASK_SHOT_FLUSH, .flags="b")
 	set_task(KSC_MOVE_FLUSH_SECS, "ksc_move_flush_task", KSC_TASK_MOVE, .flags="b")
+	set_task(KSC_AIM_VIS_FLUSH_SECS, "ksc_aim_vis_flush_task", KSC_TASK_AIM_VIS, .flags="b")
 	ksc_capture_map_revision()
 
 	// The arm that actually survives a changelevel. controlpoints_init runs
@@ -774,6 +784,11 @@ stock ksc_close_producer_context() {
 	if (g_kscProducerContextConfirmed && g_kscProducerMatchId[0] &&
 			g_kscProducerHalf != 0)
 		ksc_move_flush_window(true, g_kscProducerMatchId, g_kscProducerHalf)
+	// The aim-vis window closes on the half for the same reason, and ahead of the
+	// buffer drain below so its lines go out with the rest of this context.
+	if (g_kscProducerContextConfirmed && g_kscProducerMatchId[0] &&
+			g_kscProducerHalf != 0)
+		ksc_aim_vis_flush_window(true, g_kscProducerMatchId, g_kscProducerHalf)
 	// Duel deltas close with the half they were snapshotted for, before health
 	// counts them. Direct log_message: up to 132 lines at a moment the server
 	// is idle, and the shared ring holds fewer than that.
@@ -858,8 +873,10 @@ stock bool:ksc_activate_producer_context() {
 	// The census window that ends here is warmup, so close it before go-live or the
 	// match's first row carries it. Guarded on the same precondition activation is,
 	// because splitting a window that stays untracked buys nothing.
-	if (g_kscMapRevisionReady)
+	if (g_kscMapRevisionReady) {
 		ksc_move_flush_window(false, "-", 0)
+		ksc_aim_vis_flush_window(false, "-", 0)
+	}
 	// Pending matchid="-" facts are transport diagnostics, not members of the
 	// candidate stream. Drain them before sequence 1 so no buffered sentinel can
 	// appear after the authorization manifest on the wire.
@@ -2761,6 +2778,131 @@ stock bool:ksc_move_field_nonzero(const field[]) {
 	for (new i = 0; field[i]; i++)
 		if (field[i] >= '1' && field[i] <= '9') return true
 	return false
+}
+
+// Cell order of dodx_get_aim_vis_stats, named rather than indexed: the subset and
+// the third state are adjacent, and swapping them is the one mistake this stream
+// cannot survive.
+enum {
+	KSC_AIM_VIS_KNOWN = 0,
+	KSC_AIM_VIS_UNPACKED,
+	KSC_AIM_VIS_UNKNOWN,
+	KSC_AIM_VIS_WINDOW_SUM,
+	KSC_AIM_VIS_WINDOW_MAX,
+	KSC_AIM_VIS_RECORDER_LIVE,
+	KSC_AIM_VIS_CELLS
+}
+
+// Gametime the current aim-vis window opened. Global rather than per-player for
+// the same reason the census one is: the flush resets every player together.
+new Float:g_kscAimVisWindowStart = 0.0
+
+// Periodic aim-vs-transmission census (tier 2.7) -- counts only. Each module
+// sample asks whether the live enemy a player's aim trace landed on had been
+// transmitted to that player at all inside a lookback derived from their own ping.
+// Whether any of these numbers means anything is the query layer's question, and
+// this file must not answer it: KTPAMXX is public, so a cut point written here is
+// a published one.
+//
+// THREE STATES, NOT TWO. known is the denominator, unpacked is a SUBSET of it, and
+// unknown belongs to neither -- folding it into either side fabricates a rate.
+// There is no packed count on the wire and none derived by subtraction, because
+// PVS is leaf-based and entities stay packed behind walls: the complement measures
+// level topology, not a player.
+//
+// THE DENOMINATOR SHIPS IN THE SAME LINE AS THE NUMERATOR, on purpose and for the
+// reason the census ships both its halves together: an unpacked count on its own
+// reads as an accusation against anyone who had a busy session, and splitting the
+// line would make that the easy reading.
+public ksc_aim_vis_flush_task() {
+	if (!ksc_enabled())
+		return
+
+	// Context before the window: this call is one of the places that ACTIVATES a
+	// context, and activation closes the window itself. The other order attributes
+	// the warmup window to the match.
+	new producer_matchid[64], producer_half
+	new bool:tracked = ksc_event_context(producer_matchid, charsmax(producer_matchid), producer_half)
+	ksc_aim_vis_flush_window(tracked, producer_matchid, producer_half)
+}
+
+// Emit the window that just ended and re-anchor. Separate from the task so a
+// capture boundary can close a window early. Trackedness is a parameter and never
+// re-derived here, because ksc_event_context() is what activates a context.
+stock ksc_aim_vis_flush_window(bool:tracked, const matchid[], half) {
+	if (!ksc_enabled())
+		return
+
+	// interval_ms is 0 for "boundary unknown", never for "no time passed": a window
+	// with nothing in it emits no row at all. The first flush after load reaches it,
+	// and so does a map-change gametime reset -- extension mode does not reload the
+	// plugin on a map change, so the previous map's anchor is still sitting here.
+	new Float:now = get_gametime()
+	new Float:elapsed = now - g_kscAimVisWindowStart
+	new interval_ms = 0
+	if (g_kscAimVisWindowStart > 0.0 && elapsed >= 0.0 &&
+		elapsed <= KSC_AIM_VIS_FLUSH_SECS * 10.0) {
+		interval_ms = floatround(elapsed * 1000.0)
+	}
+	g_kscAimVisWindowStart = now
+
+	new mapname[32]
+	get_mapname(mapname, charsmax(mapname))
+
+	for (new id = 1; id <= MAX_PLAYERS; id++) {
+		if (!is_user_connected(id))
+			continue
+
+		// Reset on every path, emitting or not. The module counts whether or not
+		// anything reads it, so a window that is skipped and not cleared carries
+		// warmup -- or the previous half -- into the next row.
+		if (!tracked) {
+			dodx_reset_aim_vis_stats(id)
+			continue
+		}
+
+		new stats[KSC_AIM_VIS_CELLS]
+		if (!dodx_get_aim_vis_stats(id, stats)) {
+			dodx_reset_aim_vis_stats(id)
+			continue
+		}
+
+		// Nothing sampled is not worth a row. A recorder_live of 0 still emits:
+		// "the instrument was off for this interval" is a reading the row exists to
+		// carry, and the module puts every sample in unknown while it holds.
+		if (stats[KSC_AIM_VIS_KNOWN] == 0 && stats[KSC_AIM_VIS_UNKNOWN] == 0) {
+			dodx_reset_aim_vis_stats(id)
+			continue
+		}
+
+		new pstr[96]
+		ksc_player_str(id, pstr, charsmax(pstr))
+
+		new event_epoch = get_systime()
+		new sequence = ksc_next_type_sequence(KSC_EVENT_AIM_VIS)
+
+		// Field names and order are the receiver's, not a choice made here:
+		// KTPHLStatsX's selftest-aim-vis.pl parses this exact line through the
+		// daemon's own getProperties and checks the worst case against
+		// KSC_BUF_LINE_LEN, so a width mistake fails there instead of on the wire.
+		//
+		// window_ms_* is the per-sample LOOKBACK (hundreds of ms, from the player's
+		// ping); interval_ms is this flush window (tens of seconds). The daemon
+		// refuses a row whose lookback exceeds its interval, which a boundary-closed
+		// window can legitimately produce -- and that refusal is logged against this
+		// producer, which is the loud direction and the reason it is not clamped here.
+		new line[KSC_BUF_LINE_LEN]
+		formatex(line, charsmax(line),
+			"^"%s^" triggered ^"aim_vis^" (interval_ms ^"%d^") (samples_known ^"%d^") (samples_unpacked ^"%d^") (samples_unknown ^"%d^") (window_ms_sum ^"%d^") (window_ms_max ^"%d^") (recorder_live ^"%d^") (map ^"%s^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^")",
+			pstr, interval_ms,
+			stats[KSC_AIM_VIS_KNOWN], stats[KSC_AIM_VIS_UNPACKED],
+			stats[KSC_AIM_VIS_UNKNOWN], stats[KSC_AIM_VIS_WINDOW_SUM],
+			stats[KSC_AIM_VIS_WINDOW_MAX], stats[KSC_AIM_VIS_RECORDER_LIVE],
+			mapname, matchid, half, now, event_epoch, sequence)
+
+		ksc_buffer(line, KSC_EVENT_AIM_VIS)
+		dodx_reset_aim_vis_stats(id)
+	}
 }
 
 // Periodic roster-position sample -- raw facts only, on purpose. Per the
