@@ -58,6 +58,38 @@ static void countObservedDeath(int victimIdx)
 	g_observedDeaths[victimIdx]++;
 }
 
+// The Damage hook sees the attacker's HELD weapon a usercmd after the kill, so it
+// can name a weapon the engine never logged. Keyed on the observed-deaths tally
+// rather than a time window, so a later death cannot read this one's record.
+static int g_engineDeathWeapon[33] = {0};
+static int g_engineDeathTally[33] = {0};
+
+// Weapon 0 is DODX's unresolved slot rather than a weapon, so an unknown logname
+// records nothing and the caller keeps its own read.
+static void noteEngineDeathWeapon(int victimIdx, int weapon)
+{
+	if (victimIdx < 1 || victimIdx >= 33 || weapon <= 0)
+		return;
+	g_engineDeathWeapon[victimIdx] = weapon;
+	g_engineDeathTally[victimIdx] = g_observedDeaths[victimIdx];
+}
+
+// The per-life gate is what makes this safe to read: it is false until a death in
+// THIS life has been reported, so a record left from an earlier life cannot be
+// picked up by the next one.
+static int engineDeathWeapon(int victimIdx)
+{
+	if (victimIdx < 1 || victimIdx >= 33)
+		return -1;
+	if (!g_deathCountedThisLife[victimIdx])
+		return -1;
+	if (g_engineDeathWeapon[victimIdx] <= 0)
+		return -1;
+	if (g_engineDeathTally[victimIdx] != g_observedDeaths[victimIdx])
+		return -1;
+	return g_engineDeathWeapon[victimIdx];
+}
+
 void Client_ResetHUD_End(void* mValue)
 {
 	if (!mPlayer)
@@ -383,8 +415,15 @@ void Client_Health_End(void* mValue)
 				return;
 		}
 
-		pAttacker->saveKill(mPlayer,weapon,( aim == 1 ) ? 1:0 ,TA);
-		MF_ExecuteForward( iFDeath, pAttacker->index, mPlayer->index, weapon, aim, TA );
+		// HLStatsX joins the frag marker to the stock kill line on the weapon, and
+		// the engine's own name for it carries the melee and butt variants a
+		// held-weapon read gets wrong.
+		int killWeapon = engineDeathWeapon(mPlayer->index);
+		if (killWeapon < 0)
+			killWeapon = weapon;
+
+		pAttacker->saveKill(mPlayer,killWeapon,( aim == 1 ) ? 1:0 ,TA);
+		MF_ExecuteForward( iFDeath, pAttacker->index, mPlayer->index, killWeapon, aim, TA );
 		if (mPlayer->index >= 1 && mPlayer->index < 33)
 			g_lastDeathReportTime[mPlayer->index] = gpGlobals ? gpGlobals->time : 0.0f;
 		countObservedDeath(mPlayer->index);
@@ -813,6 +852,8 @@ void Client_DeathMsg(void* mValue)
 		MF_ExecuteForward(iFDeath, killerIdx, victimIdx, weapon, aim, TA);
 		g_lastDeathReportTime[victimIdx] = now;
 		countObservedDeath(victimIdx);
+		// After the tally ticks: the record is keyed on this death's value.
+		noteEngineDeathWeapon(victimIdx, weapon);
 		break;
 	}
 	}

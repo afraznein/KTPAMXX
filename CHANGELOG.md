@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - dodx: a frag carries the weapon the engine logged, not the one the attacker is holding
+
+The Damage hook resolved the kill weapon from `pAttacker->current`: the attacker's held
+weapon at the moment the VICTIM's `Health` message arrives. HLSDK-lineage DLLs send that
+message from `UpdateClientData` — the PreThink of the next usercmd, on a slot that has
+stopped running commands because its owner is dead — so the weapon it names is read a
+usercmd after the kill and can be one the engine never logged.
+
+That name is load-bearing. `hlstats_Events_Frags` is joined to the frag-context marker on
+the weapon, so a disagreement reports as a row that does not exist: observed producer
+`mp44` and `mp40` against engine `kar`, and producer `bar` against `garandbutt`
+(KTPHLStatsX `CLAUDE.md`, § a `frag_context` no-row can be a WEAPON DISAGREEMENT). The
+daemon cannot absorb it — there is no alias relation between `mp44` and `kar`, the broad
+weapon fallback is refused in that alias map's own comment because it can steal an
+unrelated frag, and the `mortar` escape only catches an UNRESOLVED slot, never a
+resolved-but-wrong one.
+
+`Client_DeathMsg` already resolves the engine's own logname to a weapon index, melee and
+butt variants included — `garandbutt`, `bayonet`, `enf_bayonet` and `k43butt` each carry
+their own `logname` in `weaponData`. That index is now recorded per victim, and the Damage
+hook's death branch uses it for both `saveKill()` and the `client_death` forward. An
+unknown logname resolves to weapon 0, which is DODX's unresolved slot rather than a weapon,
+so it is not recorded and the held-weapon read stands.
+
+**The record is keyed on the life, not on a clock.** `g_deathCountedThisLife` is false
+until a death in the current life has been reported, so a record left from an earlier life
+cannot be picked up by the next one — which matters because the Damage hook ticks the
+observed-deaths tally *after* it reports, so the tally alone would still match a previous
+death when the Damage hook wins the race. The tally is checked alongside the gate so a
+counter reset reads as "nothing recorded".
+
+Both death paths keep their 33ms dedup window and their exactly-once semantics unchanged:
+this changes which weapon a report carries, never how many reports fire. No wire field, no
+schema ordinal, no native and no forward signature moves.
+
 ### Added - 1.30.0: the aim-vs-transmission sensor finally has a reader
 
 The tier-2.7 pack-visibility counters have been recording on every instance since
