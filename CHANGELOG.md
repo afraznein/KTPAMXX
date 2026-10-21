@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - 1.30.0: the aim-vs-transmission sensor finally has a reader
+
+The tier-2.7 pack-visibility counters have been recording on every instance since
+`dodx` 2.7.28 and nothing read them: `dodx_get_aim_vis_stats` resolved to the module, its
+config, the include that declares it, the README and this file, and to nothing under
+`plugins/`. The hook registers unconditionally wherever the engine exposes the packet
+hookchain, so the instrument was not dormant -- it was sampling and discarding. This is the
+read half.
+
+`ksc_aim_vis_flush_task` emits one `aim_vis` marker per thirty seconds per player who aimed
+at a live enemy at all, in read-ship-reset order -- the reset is a separate native precisely
+so a failed flush cannot discard the interval that justified it. A player who never put a
+crosshair on an enemy produces no row, and a window with nothing in it emits nothing.
+
+**Three counts, not two, and the row is useless without all three.** `samples_known` is the
+denominator; `samples_unpacked` is the subset of it whose enemy had been transmitted to that
+client at no point inside the per-sample lookback; `samples_unknown` got no answer and
+belongs to neither side. There is no packed count on the wire and nothing derives one by
+subtraction: PVS is leaf-based and entities stay packed behind walls, so the complement
+measures level topology rather than a player. The denominator travels in the same line as
+the numerator for the reason the move census ships both its halves together -- an unpacked
+count on its own reads as an accusation against anyone who had a busy session.
+
+**No threshold, no ratio, no conclusion**, here or anywhere this stream reaches: there is no
+cut point in the module, the producer, the wire or the schema, and the only reader allowed to
+hold one is private. `recorder_live` is carried per row rather than assumed, because a 0
+means every sample landed in unknown and the row says nothing about the player.
+
+`interval_ms` is this flush window; `window_ms_*` is the per-sample lookback, which is
+derived from the player's own ping. The two are different quantities in the same line and the
+names are all that separate them -- `ktp_move_census` has a column called `window_ms` that is
+its flush interval.
+
+The window closes on the half as well as on its timer, so the samples between the last tick
+and a boundary are emitted rather than discarded, and it re-anchors at go-live so warmup
+cannot land in the match's first row.
+
+No `KSC_SCHEMA_CONTRACT` bump: `aim_vis` joins `KSC_CAPABILITIES` at the existing ordinal.
+An unknown schema gets a producer's whole manifest refused and takes every other capture
+stream down with it for the half; an unknown capability loses only itself. The destination --
+`ktp_aim_vis` (KTPHLStatsX migration 042) and `doEvent_KTPAimVis` -- shipped first, and the
+daemon validates the field order and widths this line emits.
+
 ### Added - 1.29.0: the move census says WHEN a crouched footstep sounded, and when the timer made silence
 
 Two histograms join the `move_census` line, both over the same horizontal-speed buckets
