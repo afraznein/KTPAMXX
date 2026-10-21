@@ -784,8 +784,8 @@ stock ksc_close_producer_context() {
 	if (g_kscProducerContextConfirmed && g_kscProducerMatchId[0] &&
 			g_kscProducerHalf != 0)
 		ksc_move_flush_window(true, g_kscProducerMatchId, g_kscProducerHalf)
-	// The aim-vis window closes on the half for the same reason, and before
-	// ksc_flush() so its lines drain with the rest of this context.
+	// The aim-vis window closes on the half for the same reason, and ahead of the
+	// buffer drain below so its lines go out with the rest of this context.
 	if (g_kscProducerContextConfirmed && g_kscProducerMatchId[0] &&
 			g_kscProducerHalf != 0)
 		ksc_aim_vis_flush_window(true, g_kscProducerMatchId, g_kscProducerHalf)
