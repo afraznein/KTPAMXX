@@ -8,7 +8,7 @@
 // (contester count/time remaining/capout),
 // last-flag-defense (kill-position-based, not break-queue-based), a
 // periodic roster-position broadcast for positional/"holding" stats, and
-// voice-menu commands as generic player actions.
+// voice-menu commands and hand signals as generic player actions.
 //
 // Cap-break attribution reads bounding boxes through dodx natives, NOT fakemeta:
 // `fakemeta.inc` carries `#pragma reqlib fakemeta`, and this fleet's modules.ini
@@ -3948,11 +3948,12 @@ stock strtok_seq(const src[], out[], len) {
 }
 
 // ---------------------------------------------------------------------------
-// Voice commands (voice_negative, voice_grenade, ...). DoD 1.3 sends each
-// voice-menu pick to the server as a plain client command, so every one passes
-// through this forward before the game DLL plays the sound. The 27 commands
-// dod.so handles by name are seeded as generic actions by KTPHLStatsX
-// migration 045; the daemon's stock PlayerAction path records them, and
+// Voice commands (voice_negative, voice_grenade, ...) and hand signals
+// (signal_yes, signal_grenade, ...). DoD 1.3 sends each voice-menu pick and each
+// hand signal to the server as a plain client command, so every one passes
+// through this forward before the game DLL plays the sound or the animation.
+// The 27 voice commands and 16 hand signals dod.so handles by name are seeded
+// as generic actions by KTPHLStatsX migrations 045 and 048; the daemon's stock PlayerAction path records them, and
 // recordEvent() injects match_id and gates on KTP_ROUND_LIVE, so warmup
 // chatter carries no match. Any other voice_ string (none today) is tallied as
 // an unresolved action by the daemon and otherwise dropped.
@@ -3963,7 +3964,7 @@ stock strtok_seq(const src[], out[], len) {
 public client_command(id) {
 	new cmd[32]
 	read_argv(0, cmd, charsmax(cmd))
-	if (!equal(cmd, "voice_", 6) || !ksc_enabled() || !is_user_connected(id))
+	if (!(equal(cmd, "voice_", 6) || equal(cmd, "signal_", 7)) || !ksc_enabled() || !is_user_connected(id))
 		return PLUGIN_CONTINUE
 
 	new safe_cmd[32], who[96], line[KSC_BUF_LINE_LEN]

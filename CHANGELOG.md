@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - 1.32.0: hand signals counted alongside voice commands
+
+The `client_command` hook that logs `voice_*` presses (1.28.0) now also accepts the `signal_*`
+prefix: DoD 1.3 sends each hand signal (`signal_yes`, `signal_grenade`, 16 in all, read from
+`dod.so`) to the server as a plain client command exactly like a voice-menu pick. One
+`"<player>" triggered "<command>"` line per press through the untracked ring; KTPHLStatsX
+migration 048 seeds the 16 codes (reward 0, PlayerActions only). Same rules as voice: not a
+stream, no schema bump, sanitised, honours the kill switch.
+
 ### Added - 1.31.0: the move census completes its time ledger, and landings leave the crouched cadence row
 
 Two nights on 1.29.0's columns (coordination `research/movement-sound-signature`, §6) showed
