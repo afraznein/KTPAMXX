@@ -2821,6 +2821,7 @@ static cell AMX_NATIVE_CALL dodx_get_move_hist(AMX *amx, cell *params)
 	case 4: src = st.airMsDucked;       break;
 	case 5: src = st.stepsDucked;       break;
 	case 6: src = st.groundMsDuckedSilent; break;
+	case 7: src = st.airMsStanding;     break;
 	default: return 0;
 	}
 

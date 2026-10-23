@@ -55,7 +55,14 @@ namespace KTPMove
 	// as fixed-width fields, and an unbounded counter would overflow that and malform
 	// the batch silently. Reached only if a flush is missed entirely, which the consumer
 	// prevents by resetting unconditionally -- this is the backstop for when it doesn't.
-	const int    WIRE_MAX = 999999;
+	//
+	// Five digits, not six (changed 1.31.0): the census line is one engine log line and
+	// ReHLDS's Log_Printf holds 1,024 bytes including its timestamp, so every digit of
+	// worst-case width is paid for in every histogram. A window is at most 30 s, so no
+	// ms bucket can reach 30,001 and no tap or step count comes near 99,999 -- the
+	// ceiling still bounds every real value with 3x to spare, and only a missed flush
+	// could ever touch it.
+	const int    WIRE_MAX = 99999;
 }
 
 // Crouch input and step emission for one player, accumulated between flushes.
@@ -81,6 +88,11 @@ struct KTPMoveStats
 	// Milliseconds airborne while crouched, by speed bucket. Not derivable from the
 	// ground rows, and it is where crouch-at-speed legitimately concentrates.
 	int airMsDucked[KTPMove::SPEED_BUCKETS];
+	// Milliseconds airborne while NOT crouched, by speed bucket. Added 1.31.0: without
+	// it the time a player spends in the air is only known when he ducked up there, and
+	// airborne time is the one state that emits no footstep at all -- distance covered
+	// per cue cannot be summed without it.
+	int airMsStanding[KTPMove::SPEED_BUCKETS];
 
 	int tapsTotal;
 	// fuser4 at each tap, summed and floored. Sum plus count rather than a mean so the
@@ -101,8 +113,12 @@ struct KTPMoveStats
 	// ratio against it measures its own denominator rather than the steps.
 	int stepTimerFires;
 
-	// Ground footsteps by horizontal-speed bucket AT EMISSION, crouched only. The
-	// standing count is stepsGround minus this row's sum. Read against groundMsDucked:
+	// Ground footsteps by horizontal-speed bucket AT EMISSION, crouched AND on the ground
+	// at the previous command. A landing step (PM_CheckFalling zeroes the timer and plays
+	// one on touchdown, when the previous command was airborne) is left OUT of this row
+	// since 1.31.0: it is cadence-free and was reading as 7-34 cues/s in the fast buckets.
+	// It stays in stepsGround, because a landing is a cue the opponent hears.
+	// Read against groundMsDucked:
 	// the same cell in the two rows is the numerator and the denominator of "sounds
 	// per second crouched at that speed". The movement code never plays a step below
 	// ~100 u/s and plays a crouched one at 0.35 volume on a 400 ms timer, so this row is
@@ -143,6 +159,7 @@ struct KTPMoveStats
 			tapsGround[i] = tapsAir[i] = 0;
 			groundMsStanding[i] = groundMsDucked[i] = 0;
 			airMsDucked[i] = 0;
+			airMsStanding[i] = 0;
 			stepsDucked[i] = 0;
 			groundMsDuckedSilent[i] = 0;
 		}
@@ -171,10 +188,10 @@ struct KTPMoveStats
 	// the entity carried at that moment. Those are pmove's write-back of the PREVIOUS
 	// command, so at most one command stale -- the hook fires inside pmove, before this
 	// command's own write-back.
-	void NoteGroundStep(bool ducking, float speedSq)
+	void NoteGroundStep(bool ducking, bool onGround, float speedSq)
 	{
 		stepsGround++;
-		if (ducking) stepsDucked[Bucket(speedSq)]++;
+		if (ducking && onGround) stepsDucked[Bucket(speedSq)]++;
 	}
 
 	// One usercmd's worth of observation, taking plain values rather than an edict.
@@ -243,6 +260,10 @@ struct KTPMoveStats
 				else if (ducking)
 				{
 					airMsDucked[bucket] += ms;
+				}
+				else
+				{
+					airMsStanding[bucket] += ms;
 				}
 			}
 		}

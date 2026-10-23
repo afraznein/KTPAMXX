@@ -46,6 +46,8 @@ int main()
     CHECK(KTPMoveStats::Wire(-5) == 0, "negative clamps to 0");
     CHECK(KTPMoveStats::Wire(12345) == 12345, "ordinary value passes through");
     CHECK(KTPMoveStats::Wire(KTPMove::WIRE_MAX + 1) == KTPMove::WIRE_MAX, "clamped at the ceiling");
+    CHECK(KTPMove::WIRE_MAX == 99999, "five digits: the line budget is derived from this width");
+    CHECK(KTPMove::WIRE_MAX >= 30000 * 3, "a 30 s window's ms bucket still has 3x headroom under the ceiling");
     char buf[64];
     snprintf(buf, sizeof(buf), "%d", KTPMoveStats::Wire(2147483647));
     CHECK(strlen(buf) <= 6, "a wired value never renders wider than six digits");
@@ -158,12 +160,26 @@ int main()
 
     // ---------------- crouched footsteps by speed at emission ----------------
     st.Reset();
-    st.NoteGroundStep(false, Sq(220.0f));
-    st.NoteGroundStep(true,  Sq(160.0f));
-    st.NoteGroundStep(true,  Sq(160.0f));
+    st.NoteGroundStep(false, true, Sq(220.0f));
+    st.NoteGroundStep(true,  true, Sq(160.0f));
+    st.NoteGroundStep(true,  true, Sq(160.0f));
     CHECK(st.stepsGround == 3, "every noted step is in steps_ground");
     CHECK(st.stepsDucked[3] == 2, "crouched steps land in the bucket of their emission speed");
     CHECK(SumRow(st.stepsDucked) == 2, "a standing step is not in the crouched row");
+    // A landing (previous command airborne) is a cue, so it counts in steps_ground, but
+    // it is not cadence and must not inflate the crouched row.
+    st.NoteGroundStep(true, false, Sq(260.0f));
+    CHECK(st.stepsGround == 4, "a landing step is still a cue in steps_ground");
+    CHECK(SumRow(st.stepsDucked) == 2, "a crouched landing is not a crouched cadence step");
+
+    // ---------------- airborne time is charged whether crouched or not ----------------
+    st.Reset();
+    st.Observe(95.000, false, false, Sq(230.0f), false, 90, 400);  // baseline, airborne standing
+    st.Observe(95.010, false, false, Sq(230.0f), false, 90, 400);
+    st.Observe(95.020, false, true,  Sq(230.0f), false, 90, 400);  // ducked in the air
+    CHECK(st.airMsStanding[4] == 10, "airborne standing time lands in its speed bucket");
+    CHECK(st.airMsDucked[4] == 10, "airborne crouched time stays in its own row");
+    CHECK(SumRow(st.groundMsStanding) + SumRow(st.groundMsDucked) == 0, "no ground time while airborne");
 
     // ---------------- a silent timer reset marks the window that follows ----------------
     st.Reset();
@@ -176,7 +192,7 @@ int main()
     CHECK(st.groundMsDuckedSilent[3] == 20, "and all of it sits inside the silent window");
     // A reset that DID play a step opens a window that is not silent. The step reaches
     // the hook in the same pmove as the reset, i.e. before the sample that sees the rise.
-    st.NoteGroundStep(true, Sq(180.0f));
+    st.NoteGroundStep(true, true, Sq(180.0f));
     st.Observe(100.040, true, true, Sq(180.0f), false, 90, 400);  // the interval before it was still silent
     st.Observe(100.050, true, true, Sq(180.0f), false, 90, 390);
     CHECK(st.groundMsDucked[3] == 40, "crouched time keeps accumulating");
@@ -189,7 +205,7 @@ int main()
     // A sounded reset, then a flush. The flush zeroes stepsGround AND the baseline it
     // is compared against, so the next silent reset reads as silent rather than as
     // "one step since a baseline that no longer exists".
-    st.NoteGroundStep(false, Sq(180.0f));
+    st.NoteGroundStep(false, true, Sq(180.0f));
     st.Observe(100.080, true, false, Sq(180.0f), false, 90, 400); // sounded reset: not silent
     st.ResetCounters();
     st.Observe(100.090, true, true, Sq(180.0f), false, 90, 390);  // 10 ms crouched, not silent

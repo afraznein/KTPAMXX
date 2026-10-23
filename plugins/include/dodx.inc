@@ -1594,6 +1594,11 @@ native dodx_get_move_stats(id, stats[8]);
  *              (standing footsteps are steps_ground minus this row's sum)
  *   which = 6  milliseconds on the ground, crouched, inside a step-timer window
  *              whose opening reset played no footstep -- a subset of which = 3
+ *   which = 7  milliseconds airborne, NOT crouched (1.31.0) -- with which = 4 it
+ *              completes the time ledger, so distance per emitted cue can be summed
+ *
+ * which = 5 counts only steps emitted with the player on the ground at the previous
+ * command (1.31.0): a landing step is cadence-free and stays in steps_ground only.
  *
  * which = 5 against which = 3 is "sounds per second crouched at that speed";
  * which = 6 is the time the engine's timer order makes silent regardless of

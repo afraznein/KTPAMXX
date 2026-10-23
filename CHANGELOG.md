@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - 1.31.0: the move census completes its time ledger, and landings leave the crouched cadence row
+
+Two nights on 1.29.0's columns (coordination `research/movement-sound-signature`, §6) showed
+100% of crouched time above 100 u/s sitting in windows that also held airborne-crouched time,
+with 7-34 "cues per second" in the fast crouched buckets -- far past any cadence the step
+timer allows. Those are landing steps: `PM_CheckFalling` zeroes the timer and plays one on
+touchdown, and the hook reads "crouched, fast" at that instant. The live quiet-movement
+pattern is the duck-jump chain, and the row could not price it, because airborne time was
+only recorded when the player ducked up there.
+
+- `air_ms_standing` -- milliseconds airborne while NOT crouched, by speed bucket. With
+  `air_ms_ducked` the four time histograms now cover every state, so distance covered per
+  emitted cue can be summed per window.
+- `steps_ducked` now counts only steps emitted with the player on the ground at the previous
+  command (`v.flags & FL_ONGROUND`, pmove's write-back). A landing is a cue the opponent
+  hears and stays in `steps_ground`; it is not cadence and no longer inflates the crouched row.
+
+**The line budget was measured against the wrong ceiling and this fixes it.** The census
+line leaves through `log_message()`, and ReHLDS's `Log_Printf` holds 1,024 bytes INCLUDING
+its 25-byte timestamp, so 997 characters is the most that arrives whole -- the 2026-10-20
+derivation ("999 of 1,023 fits") was 2 over at worst case. Room for the new field was made
+without touching a shipped field's name or meaning: `KTPMove::WIRE_MAX` drops from 999,999
+to 99,999 (a 30 s window cannot put more than 30,000 ms in a bucket, and no count comes
+near the ceiling), and the selftest's worst-case player string is pinned at the engine's
+own name limit rather than the buffer size. KTPHLStatsX's `selftest-move-census.pl` carries
+the derivation and the 997 pin. The line is now full for practical purposes; the next field
+needs a second marker.
+
+No schema ordinal and no capability change: the field is appended and named, so a daemon
+without migration 047 stores the row without it.
+
 ### Fixed - dodx: a frag carries the weapon the engine logged, not the one the attacker is holding
 
 The Damage hook resolved the kill weapon from `pAttacker->current`: the attacker's held
