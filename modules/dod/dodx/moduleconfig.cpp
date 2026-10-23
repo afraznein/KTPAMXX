@@ -1939,6 +1939,8 @@ static void DODX_OnStartSound(IVoidHookChain<int, edict_t *, int, const char *, 
 	// the same bit the time sampler buckets by, which is what makes the two rows a
 	// numerator and a denominator.
 	const bool ducking = (entity->v.flags & FL_DUCKING) != 0;
+	// Clear when the previous command was airborne: this step is a landing.
+	const bool onGround = (entity->v.flags & FL_ONGROUND) != 0;
 	const float vx = entity->v.velocity.x;
 	const float vy = entity->v.velocity.y;
 	const float speedSq = vx * vx + vy * vy;
@@ -1949,11 +1951,11 @@ static void DODX_OnStartSound(IVoidHookChain<int, edict_t *, int, const char *, 
 	case 'g':  // grate
 	case 'm':  // metal
 	case 't':  // tile
-		st.NoteGroundStep(ducking, speedSq);
+		st.NoteGroundStep(ducking, onGround, speedSq);
 		break;
 	case 's':  // step, slosh, snow -- or swim, which is not one of them
 		if (sample[11] == 'w') st.soundsWater++;
-		else                   st.NoteGroundStep(ducking, speedSq);
+		else                   st.NoteGroundStep(ducking, onGround, speedSq);
 		break;
 	case 'l':  // ladder
 		st.stepsLadder++;
