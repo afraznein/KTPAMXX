@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - 1.32.1: the voice hook no longer logs menu-opens the actions table deliberately excludes
+
+`client_command` filtered on the bare `voice_` prefix, so `voice_menu1`, `voice_menu2` and
+`voice_menu3` were logged too. Those are the console commands that OPEN a voice menu, not picks:
+KTPHLStatsX `migrate_045_voice_command_actions.sql` seeds the named commands and says in its header
+that `voice_menu` and `voice_serverdebug` "are also in that binary but are not voice-menu picks and
+are deliberately left out". The hook never implemented that exclusion and its comment claimed there
+was no other `voice_` string, so every press reached the daemon as an action it cannot resolve,
+tallied once per process lifetime and discarded.
+
+Measured on the fleet logs before the fix: voice events are absent on every day from 2026-10-03 to
+10-21 and present from 10-22, the day 1.30.0 carried the 1.28.0 hook live, so this is the hook's own
+output rather than a long-standing gap. A menu-open does not predict a pick either — a named voice
+command follows one within ten seconds in well under one press in a hundred, and more players press
+a menu key than ever send a command, with repeats inside three seconds commonplace. Nothing of
+value was being dropped; the daemon was being asked to resolve a keypress.
+
 ### Added - 1.32.0: hand signals counted alongside voice commands
 
 The `client_command` hook that logs `voice_*` presses (1.28.0) now also accepts the `signal_*`

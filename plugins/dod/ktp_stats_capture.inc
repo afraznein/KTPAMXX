@@ -3952,11 +3952,13 @@ stock strtok_seq(const src[], out[], len) {
 // (signal_yes, signal_grenade, ...). DoD 1.3 sends each voice-menu pick and each
 // hand signal to the server as a plain client command, so every one passes
 // through this forward before the game DLL plays the sound or the animation.
-// The 27 voice commands and 16 hand signals dod.so handles by name are seeded
-// as generic actions by KTPHLStatsX migrations 045 and 048; the daemon's stock PlayerAction path records them, and
-// recordEvent() injects match_id and gates on KTP_ROUND_LIVE, so warmup
-// chatter carries no match. Any other voice_ string (none today) is tallied as
-// an unresolved action by the daemon and otherwise dropped.
+// The voice commands and hand signals dod.so handles by name are seeded as
+// generic actions by KTPHLStatsX migrations 045 and 048; the daemon's stock
+// PlayerAction path records them, and recordEvent() injects match_id and gates
+// on KTP_ROUND_LIVE, so warmup chatter carries no match. voice_menu<N> and
+// voice_serverdebug share the prefix and are filtered below: migration 045
+// leaves both out of hlstats_Actions on purpose, so emitting them only feeds
+// the daemon actions it cannot resolve and discards.
 // NOT a KSC stream: no sequence, no health row, no KSC_CAPABILITIES entry.
 // Untracked buffer, never a direct log_message -- this forward runs inside
 // SV_ClientCommand, where synchronous log I/O stalls the frame as it does in
@@ -3965,6 +3967,10 @@ public client_command(id) {
 	new cmd[32]
 	read_argv(0, cmd, charsmax(cmd))
 	if (!(equal(cmd, "voice_", 6) || equal(cmd, "signal_", 7)) || !ksc_enabled() || !is_user_connected(id))
+		return PLUGIN_CONTINUE
+	// A menu-open and the debug toggle are not picks, and migration 045 keeps both
+	// out of the actions table -- logging them only produces discards.
+	if (equal(cmd, "voice_menu", 10) || equal(cmd, "voice_serverdebug", 17))
 		return PLUGIN_CONTINUE
 
 	new safe_cmd[32], who[96], line[KSC_BUF_LINE_LEN]
