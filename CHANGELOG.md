@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - 1.33.0: voice-menu picks are counted, and kept apart from bound keys
+
+Most players send a voice command through DoD's server-drawn voice menu, not a bound key:
+`voice_menu1`..`voice_menu3` opens the menu and the pick arrives as `menuselect <slot>`, which
+names no voice at all. The 1.28.0 hook therefore saw only bound-key presses (the daemon's only
+unresolved codes since 10-22 were exactly voice_menu1/2/3). The hook now remembers which voice menu
+a player opened and, on the next `menuselect` within 10 s, logs the voice that slot plays as
+`voicemenu_<name>` -- its own action family (KTPHLStatsX migration 049), so the database records
+whether each command came from a bound key (`voice_*`) or the menu (`voicemenu_*`). An open AMXX
+menu takes precedence: the pick was for it. The 27-slot table is dod.so's own order; Lane B checks
+every slot against the `#Voice_subtitle_*` the game sends. Not a stream, no schema bump.
+
 ### Fixed - 1.32.1: the voice hook no longer logs menu-opens the actions table deliberately excludes
 
 `client_command` filtered on the bare `voice_` prefix, so `voice_menu1`, `voice_menu2` and
