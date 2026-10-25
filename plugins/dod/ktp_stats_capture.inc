@@ -3963,20 +3963,72 @@ stock strtok_seq(const src[], out[], len) {
 // Untracked buffer, never a direct log_message -- this forward runs inside
 // SV_ClientCommand, where synchronous log I/O stalls the frame as it does in
 // postthink.
-public client_command(id) {
-	new cmd[32]
-	read_argv(0, cmd, charsmax(cmd))
-	if (!(equal(cmd, "voice_", 6) || equal(cmd, "signal_", 7)) || !ksc_enabled() || !is_user_connected(id))
-		return PLUGIN_CONTINUE
-	// A menu-open and the debug toggle are not picks, and migration 045 keeps both
-	// out of the actions table -- logging them only produces discards.
-	if (equal(cmd, "voice_menu", 10) || equal(cmd, "voice_serverdebug", 17))
-		return PLUGIN_CONTINUE
+// Voice-menu picks (1.33.0). Most players never send `voice_negative`: they open a
+// server-drawn voice menu (`voice_menu1`..`voice_menu3`, dod.so `#Menu_*Voice1..3` via
+// ShowMenu) and pick a slot, which arrives as `menuselect <slot>`. Nothing in that path
+// carries the voice name, so the bound-key hook above saw a fraction of the league's
+// negs (measured 2026-10-25: the daemon's only unresolved codes were voice_menu1/2/3).
+// The slot table is the order dod.so lays the 27 voice commands out in, three menus of
+// nine; Lane B verifies every slot against the #Voice_subtitle_* the game itself sends.
+// Logged as `voicemenu_<name>` -- a separate action family (KTPHLStatsX migration 049)
+// so the database keeps HOW the command was sent, bound key vs menu (drew, 2026-10-25).
+new const g_kscVoiceMenuSlots[3][9][] = {
+	{ "attack", "hold", "fallback", "left", "right", "sticktogether", "cover", "usegrens", "ceasefire" },
+	{ "yessir", "negative", "backup", "fireinhole", "grenade", "sniper", "fireleft", "fireright", "areaclear" },
+	{ "gogogo", "displace", "enemyahead", "enemybehind", "mgahead", "moveupmg", "needammo", "usebazooka", "bazookaspotted" }
+}
+#define KSC_VOICE_MENU_WINDOW 10.0   // seconds a voice menu stays "open" for a menuselect
+new g_kscVoiceMenu[MAX_PLAYERS + 1]
+new Float:g_kscVoiceMenuAt[MAX_PLAYERS + 1]
 
-	new safe_cmd[32], who[96], line[KSC_BUF_LINE_LEN]
-	ksc_wire_sanitize(cmd, safe_cmd, charsmax(safe_cmd))
+stock ksc_log_player_action(id, const code[]) {
+	new safe_cmd[40], who[96], line[KSC_BUF_LINE_LEN]
+	ksc_wire_sanitize(code, safe_cmd, charsmax(safe_cmd))
 	ksc_player_str(id, who, charsmax(who))
 	formatex(line, charsmax(line), "^"%s^" triggered ^"%s^"", who, safe_cmd)
 	ksc_untracked_buffer(line)
+}
+
+public client_command(id) {
+	new cmd[32]
+	read_argv(0, cmd, charsmax(cmd))
+	if (id < 1 || id > MAX_PLAYERS)
+		return PLUGIN_CONTINUE
+
+	// Menu open: remember which one; it is not itself a pick.
+	if (equal(cmd, "voice_menu", 10)) {
+		new n = str_to_num(cmd[10])
+		g_kscVoiceMenu[id] = (n >= 1 && n <= 3) ? n : 0
+		g_kscVoiceMenuAt[id] = get_gametime()
+		return PLUGIN_CONTINUE
+	}
+	// Menu pick: map (menu, slot) to the voice it plays. Any menuselect consumes the
+	// open voice menu; an AMXX menu on screen means the pick was for that menu instead.
+	if (equal(cmd, "menuselect")) {
+		new m = g_kscVoiceMenu[id]
+		g_kscVoiceMenu[id] = 0
+		if (!m || get_gametime() - g_kscVoiceMenuAt[id] > KSC_VOICE_MENU_WINDOW
+				|| !ksc_enabled() || !is_user_connected(id))
+			return PLUGIN_CONTINUE
+		new amx_menu, amx_newmenu
+		if (player_menu_info(id, amx_menu, amx_newmenu) && (amx_menu > 0 || amx_newmenu != -1))
+			return PLUGIN_CONTINUE
+		new arg[4]
+		read_argv(1, arg, charsmax(arg))
+		new slot = str_to_num(arg)
+		if (slot < 1 || slot > 9)
+			return PLUGIN_CONTINUE
+		new code[40]
+		formatex(code, charsmax(code), "voicemenu_%s", g_kscVoiceMenuSlots[m - 1][slot - 1])
+		ksc_log_player_action(id, code)
+		return PLUGIN_CONTINUE
+	}
+
+	if (!(equal(cmd, "voice_", 6) || equal(cmd, "signal_", 7)) || !ksc_enabled() || !is_user_connected(id))
+		return PLUGIN_CONTINUE
+	// The debug toggle is not a pick, and migration 045 keeps it out of the actions table.
+	if (equal(cmd, "voice_serverdebug", 17))
+		return PLUGIN_CONTINUE
+	ksc_log_player_action(id, cmd)
 	return PLUGIN_CONTINUE
 }
