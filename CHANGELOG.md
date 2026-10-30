@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - 1.34.0: each hit records how far the rewind moved its victim (`tgt_shift`)
+
+When a shot hits, the shot row now carries `tgt_shift`: how far the shooter's lag-compensation
+rewind had moved the victim from where the victim really was, in world units. It is the "died
+behind the wall" a victim feels, measured per hit. In 15 12-mans settings changed neither
+registration (99.97%) nor the rewind's reach, and the rewind ran about 100 ms deep at the median.
+This field says what that depth costs the player on the other end. On LAN it is a few units.
+
+- dodx resolves the engine's new named API `ktp_rewind_shift_v1` (KTP-ReHLDS,
+  `public/resdk/engine/ktp_rewind_shift_api.h`, a byte mirror) next to `ktp_rewind_v1`, each
+  under its own name. It stamps the value in `KTPCaptureShotGeom` with the rest of the target
+  group, inside the shooter's rewind window, where the engine still holds both origins.
+- New native `dodx_get_shot_target4(id, weapon, target[23])`: target3's 22 cells plus
+  `[22]` the shift, clamped 0-9999, or -1 on an engine without the API. It is a new name, not a
+  widened target3, for the usual skewed-pair reason. target3 stays registered.
+- The shot line appends ` (tgt_shift "%d")` after `rw_want`. The worst-case line still fits
+  the 960 buffer (pinned by `test_shot_wire_line_fits_shot_buffer`). No `KSC_SCHEMA_CONTRACT`
+  bump: the daemon reads shot properties by name and stores NULL when one is absent. The
+  KTPHLStatsX side adds the column (its migration runs before its daemon).
+
+Ships with dodx in the same nightly swap as this plugin. A plugin without the module fails to
+load on the missing native, as target3 did. The value stays -1 until the engine wave that
+carries `ktp_rewind_shift_v1`.
+
 ### Added - 1.33.0: voice-menu picks are counted, and kept apart from bound keys
 
 Most players send a voice command through DoD's server-drawn voice menu, not a bound key:

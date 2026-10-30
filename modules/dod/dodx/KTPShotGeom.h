@@ -276,6 +276,12 @@ struct KTPShotGeom
 	// group; -1 outside 0-99 so the wire bound is provable without inventing one.
 	int tgtHitgroup;
 
+	// How far the shooter's rewind had moved the target from where it really was
+	// (engine ktp_rewind_shift_v1), stamped with the target group: the victim's
+	// "shot behind the wall", in units. -1 on an engine without the API or for a
+	// trace outside the shooter's rewind window; clamped 0-9999 like the ms fields.
+	int tgtShiftUnits;
+
 	// The rewind lag compensation set up for this cmd's packet, from the engine's
 	// ktp_rewind_v1 record. Stamped for EVERY cmd, not only player-hitting traces,
 	// because a miss has a rewind too. Its own seq/consume pair: a miss has no
@@ -530,6 +536,7 @@ struct KTPShotGeom
 		shooterSpeedUnits = 0;
 		shooterStamina = 0;
 		tgtHitgroup = -1;
+		tgtShiftUnits = -1;
 	}
 
 	void consume()

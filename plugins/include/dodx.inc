@@ -1395,6 +1395,25 @@ native dodx_get_shot_target2(id, weapon, target[21]);
 native dodx_get_shot_target3(id, weapon, target[22]);
 
 /**
+ * dodx_get_shot_target3's 22 cells in the same order, plus:
+ *
+ *  [22] shift, units: how far the shooter's lag-compensation rewind had moved
+ *       the target from where it really was when the shot was judged. The
+ *       victim's "shot behind the wall", measured. 0 when the rewind did not
+ *       move it; 0-9999; -1 on an engine without ktp_rewind_shift_v1 or for a
+ *       trace outside the shooter's rewind window.
+ *
+ * A new name rather than a widened dodx_get_shot_target3, for the same reason.
+ *
+ * @param id        Firing player index (the forward's id argument)
+ * @param weapon    The forward's weapon argument; must match what the shooter held
+ *                  at trace time or the read returns 0
+ * @param target    Output, 23 cells as above
+ * @return  1 with target state, 0 when none belongs to this shot (record NULL)
+ */
+native dodx_get_shot_target4(id, weapon, target[23]);
+
+/**
  * The rewind lag compensation applied to the calling shot's usercmd, from the
  * engine's per-packet ktp_rewind_v1 record. Stamped for every cmd, so a miss
  * has one as well as a hit. Measurement only.

@@ -2968,9 +2968,11 @@ public ksc_position_broadcast_task() {
 // nearest game_time/event_epoch, the same nearest-timestamp technique already
 // proven on frag_context (~99.4% correlation in production).
 //
-// hitgroup comes from the target stash (dodx_get_shot_target3), stamped in the
-// same first-wins window as the rest of the target group -- never from the AC
-// ledger's geometry stash, whose destructive read has exactly one consumer.
+// hitgroup and tgt_shift come from the target stash (dodx_get_shot_target4),
+// stamped in the same first-wins window as the rest of the target group -- never
+// from the AC ledger's geometry stash, whose destructive read has exactly one
+// consumer. tgt_shift is the victim's "shot behind the wall": how far the
+// shooter's rewind moved them from where they really were, in units.
 stock bool:ksc_shot_buffer(const line[]) {
 	g_kscAttempted[KSC_EVENT_SHOT]++
 	if (g_kscShotBufferCount >= KSC_SHOT_BUF_MAX_ENTRIES) {
@@ -3133,10 +3135,10 @@ public dod_client_weapon_fire(id, weapon, Float:gametime) {
 	new net_lerp = -1, net_dropped = -1, net_backup = -1, net_cmds = -1
 	new shooter_flags = -1
 	new shooter_speed = -1, shooter_stamina = -1
-	new hitgroup = -1
-	new target[22]
+	new hitgroup = -1, tgt_shift = -1
+	new target[23]
 	if (ksc_shot_detail_enabled() && ksc_is_hitscan_firearm(weapon) &&
-			dodx_get_shot_target3(id, weapon, target) == 1) {
+			dodx_get_shot_target4(id, weapon, target) == 1) {
 		// target[0] is the ENTINDEX of the player the trace hit. Without a
 		// target identity a shot can only be correlated to damage by
 		// (attacker, time), which cannot tell "this shot damaged its target"
@@ -3172,6 +3174,7 @@ public dod_client_weapon_fire(id, weapon, Float:gametime) {
 		shooter_speed = target[19]
 		shooter_stamina = target[20]
 		hitgroup = target[21]
+		tgt_shift = target[22]
 	}
 
 	// The rewind belongs to the cmd, not to a weapon or a hit: no hitscan gate, so
@@ -3186,7 +3189,7 @@ public dod_client_weapon_fire(id, weapon, Float:gametime) {
 
 	new line[KSC_SHOT_BUF_LINE_LEN]
 	formatex(line, charsmax(line),
-		"^"%s^" triggered ^"shot^" (weapon_id ^"%d^") (position ^"%s^") (yaw ^"%.2f^") (pitch ^"%.2f^") (prone ^"%d^") (map ^"%s^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^") (tgt_userid ^"%d^") (tgt_health ^"%d^") (tgt_dead ^"%d^") (tgt_team ^"%d^") (shooter_team ^"%d^") (shot_ping ^"%d^") (shot_loss ^"%d^") (cmd_traces ^"%d^") (trace_frac ^"%d^") (trace_flags ^"%d^") (cmd_all_traces ^"%d^") (net_lerp ^"%d^") (net_dropped ^"%d^") (net_backup ^"%d^") (net_cmds ^"%d^") (shooter_flags ^"%d^") (shooter_speed ^"%d^") (shooter_stamina ^"%d^") (hitgroup ^"%d^") (rw_flags ^"%d^") (rw_depth ^"%d^") (rw_want ^"%d^")",
+		"^"%s^" triggered ^"shot^" (weapon_id ^"%d^") (position ^"%s^") (yaw ^"%.2f^") (pitch ^"%.2f^") (prone ^"%d^") (map ^"%s^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^") (tgt_userid ^"%d^") (tgt_health ^"%d^") (tgt_dead ^"%d^") (tgt_team ^"%d^") (shooter_team ^"%d^") (shot_ping ^"%d^") (shot_loss ^"%d^") (cmd_traces ^"%d^") (trace_frac ^"%d^") (trace_flags ^"%d^") (cmd_all_traces ^"%d^") (net_lerp ^"%d^") (net_dropped ^"%d^") (net_backup ^"%d^") (net_cmds ^"%d^") (shooter_flags ^"%d^") (shooter_speed ^"%d^") (shooter_stamina ^"%d^") (hitgroup ^"%d^") (rw_flags ^"%d^") (rw_depth ^"%d^") (rw_want ^"%d^") (tgt_shift ^"%d^")",
 		pstr, weapon, pos,
 		has_angles ? ksc_shot_angle(angles[1]) : -999.0,
 		has_angles ? ksc_shot_angle(angles[0]) : -999.0,
@@ -3197,7 +3200,7 @@ public dod_client_weapon_fire(id, weapon, Float:gametime) {
 		cmd_all_traces,
 		net_lerp, net_dropped, net_backup, net_cmds,
 		shooter_flags, shooter_speed, shooter_stamina,
-		hitgroup, rw_flags, rw_depth, rw_want)
+		hitgroup, rw_flags, rw_depth, rw_want, tgt_shift)
 
 	ksc_shot_buffer(line)
 }
