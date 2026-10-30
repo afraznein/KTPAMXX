@@ -1269,6 +1269,7 @@ def test_shot_wire_line_fits_shot_buffer() -> None:
         "rw_flags": "127",               # stampRewind masks to 7 bits; -1 when none
         "rw_depth": "9999",              # KTPShotGeom::clampMs, 0-9999; -1 when none
         "rw_want": "9999",               # same clamp
+        "tgt_shift": "9999",             # clampMs on units, 0-9999; -1 when none
     }
     # %.2f fields with a provable bound: ksc_shot_angle clamps to +/-360 and the
     # no-angles sentinel is -999.0, so -999.00 is the widest either can print.
@@ -1432,22 +1433,25 @@ def test_schema26_shot_hitgroup_rewind_and_manifest_ceiling() -> None:
     # trace_start_off retired, the sv_maxunlag in force on the manifest.
     assert re.search(r"#define\s+KSC_SCHEMA_CONTRACT\s+26(?:\s|$)", CAPTURE)
     fire = function_body(CAPTURE, "public dod_client_weapon_fire")
-    # target3 is target2 plus one cell; a widened target2 call would be the
-    # skewed-pair corruption the new name exists to prevent.
-    assert "new target[22]" in fire and "dodx_get_shot_target3(id, weapon, target) == 1" in fire
+    # target4 is target3 plus one cell (the rewind shift); a widened target3 call
+    # would be the skewed-pair corruption the new name exists to prevent.
+    assert "new target[23]" in fire and "dodx_get_shot_target4(id, weapon, target) == 1" in fire
     assert "dodx_get_shot_target2" not in CAPTURE and "dodx_get_shot_target(" not in CAPTURE
-    assert "hitgroup = target[21]" in fire
+    assert "dodx_get_shot_target3" not in CAPTURE
+    assert "hitgroup = target[21]" in fire and "tgt_shift = target[22]" in fire
     # The rewind belongs to the cmd: read under the detail gate only, never inside
     # the hitscan-firearm block that guards target state, so misses carry it.
-    target_block = fire[fire.index("dodx_get_shot_target3("):fire.index("hitgroup = target[21]")]
+    target_block = fire[fire.index("dodx_get_shot_target4("):fire.index("hitgroup = target[21]")]
     assert "dodx_get_shot_rewind" not in target_block
     assert "if (ksc_shot_detail_enabled() && dodx_get_shot_rewind(id, rw) == 1)" in fire
     before(fire, "hitgroup = target[21]", "dodx_get_shot_rewind(id, rw)")
     fmt = fire[fire.index('triggered ^"shot^"'):]
     fmt = fmt[:fmt.index('",')]
     assert "trace_start_off" not in fmt and "trace_start_off" not in fire
-    assert fmt.endswith('(hitgroup ^"%d^") (rw_flags ^"%d^") (rw_depth ^"%d^") (rw_want ^"%d^")')
-    assert "hitgroup, rw_flags, rw_depth, rw_want)" in fire
+    # tgt_shift is appended after the schema-26 group: the daemon reads it by name and
+    # stores NULL when absent, so it needs no contract bump.
+    assert fmt.endswith('(hitgroup ^"%d^") (rw_flags ^"%d^") (rw_depth ^"%d^") (rw_want ^"%d^") (tgt_shift ^"%d^")')
+    assert "hitgroup, rw_flags, rw_depth, rw_want, tgt_shift)" in fire
     assert "has_angles ? ksc_shot_angle(angles[1]) : -999.0" in fire
     assert "has_angles ? ksc_shot_angle(angles[0]) : -999.0" in fire
     assert "floatclamp(a, -360.0, 360.0)" in function_body(CAPTURE, "stock Float:ksc_shot_angle")
@@ -1777,6 +1781,22 @@ def test_dodx_shot_target3_is_target2_plus_hitgroup() -> None:
         assert re.search(r'\{"' + name + r'",\s+' + name + r"\}", DODX_NATIVE), f"{name} not registered"
     capture = function_body(DODX_MODULE, "static void KTPCaptureShotGeom(")
     before(capture, "sg.tgtEntIndex = tgtIdx;", "sg.tgtHitgroup = KTPShotGeom::clampHitgroup(ptr->iHitgroup);")
+
+
+def test_dodx_shot_target4_is_target3_plus_rewind_shift() -> None:
+    # Same rule one cell further: target4 = target3 + the engine's rewind shift.
+    three = _native_out_cells("static cell AMX_NATIVE_CALL dodx_get_shot_target3(")
+    four = _native_out_cells("static cell AMX_NATIVE_CALL dodx_get_shot_target4(")
+    assert four[:22] == three, "target4 must return target3's 22 cells in the same order"
+    assert four[22:] == [("22", "sg.tgtShiftUnits")], four[22:]
+    assert re.search(r"^native dodx_get_shot_target4\(id, weapon, target\[23\]\);", DODX_INCLUDE, re.M)
+    assert re.search(r'\{"dodx_get_shot_target4",\s+dodx_get_shot_target4\}', DODX_NATIVE)
+    # Stamped at trace time, inside the shooter's rewind window, keyed shooter then target
+    # (0-based slots); the engine refuses a read outside the window and dodx stores -1.
+    capture = function_body(DODX_MODULE, "static void KTPCaptureShotGeom(")
+    before(capture, "sg.tgtEntIndex = tgtIdx;", "GetTargetShift(pPlayer->index - 1, tgtIdx - 1, &shift)")
+    assert "? KTPShotGeom::clampMs(shift) : -1;" in capture
+    assert "g_ktpRewindShiftApi = shift;" in function_body(DODX_MODULE, "static void DODX_ResolveRewindApi(")
 
 
 def test_dodx_rewind_is_stamped_per_cmd_inside_the_rewind_window() -> None:

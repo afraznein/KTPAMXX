@@ -20,6 +20,7 @@
 #include "../../../public/resdk/common/hookchains.h"
 #include "../../../public/resdk/engine/rehlds_api.h"
 #include "../../../public/resdk/engine/ktp_rewind_api.h"
+#include "../../../public/resdk/engine/ktp_rewind_shift_api.h"
 #include "../../../public/resdk/engine/IMessageManager.h"
 
 // KTP: Extension mode state
@@ -1395,11 +1396,14 @@ static int g_ktpCmdOwner = 0;
 // KTP: the engine's per-packet rewind record (ktp_rewind_v1). NULL on an engine
 // that does not register it, and every rewind read then reports no record.
 static ktp_rewind_api_v1_t *g_ktpRewindApi = nullptr;
+// KTP: how far that rewind moved a target (ktp_rewind_shift_v1). Its own name, so an
+// engine with the record but not the shift leaves only the shift at -1.
+static ktp_rewind_shift_api_v1_t *g_ktpRewindShiftApi = nullptr;
 
 // Cached on the first lookup that succeeds; attach and every server activate retry.
 static void DODX_ResolveRewindApi()
 {
-	if (g_ktpRewindApi || !MF_GetRehldsApi)
+	if ((g_ktpRewindApi && g_ktpRewindShiftApi) || !MF_GetRehldsApi)
 		return;
 
 	IRehldsApi *pApi = (IRehldsApi *)MF_GetRehldsApi();
@@ -1407,11 +1411,20 @@ static void DODX_ResolveRewindApi()
 	if (!pFuncs || !pFuncs->GetPluginApi)
 		return;
 
-	ktp_rewind_api_v1_t *api = (ktp_rewind_api_v1_t *)pFuncs->GetPluginApi(KTP_REWIND_API_V1);
+	ktp_rewind_api_v1_t *api = g_ktpRewindApi ? nullptr
+		: (ktp_rewind_api_v1_t *)pFuncs->GetPluginApi(KTP_REWIND_API_V1);
 	if (api && api->size >= sizeof(ktp_rewind_api_v1_t) && api->GetCurrent)
 	{
 		g_ktpRewindApi = api;
 		MF_Log("dodx: engine rewind record %s resolved", KTP_REWIND_API_V1);
+	}
+
+	ktp_rewind_shift_api_v1_t *shift = g_ktpRewindShiftApi ? nullptr
+		: (ktp_rewind_shift_api_v1_t *)pFuncs->GetPluginApi(KTP_REWIND_SHIFT_API_V1);
+	if (shift && shift->size >= sizeof(ktp_rewind_shift_api_v1_t) && shift->GetTargetShift)
+	{
+		g_ktpRewindShiftApi = shift;
+		MF_Log("dodx: engine rewind shift %s resolved", KTP_REWIND_SHIFT_API_V1);
 	}
 }
 
@@ -1535,6 +1548,14 @@ static void KTPCaptureShotGeom(CPlayer *pPlayer, const float *v1, const float *v
 	sg.tgtSeq = sg.cmdSeq;
 	sg.tgtEntIndex = tgtIdx;
 	sg.tgtHitgroup = KTPShotGeom::clampHitgroup(ptr->iHitgroup);
+	// This trace runs inside the shooter's rewind window, so the engine still holds
+	// both of the target's origins. Outside it (the residual above) the read refuses.
+	{
+		float shift;
+		sg.tgtShiftUnits = (g_ktpRewindShiftApi
+			&& g_ktpRewindShiftApi->GetTargetShift(pPlayer->index - 1, tgtIdx - 1, &shift))
+			? KTPShotGeom::clampMs(shift) : -1;	// same 4-digit bound, in units
+	}
 	sg.tgtHealth = (int)ptr->pHit->v.health;
 	sg.tgtDead = (ptr->pHit->v.deadflag != DEAD_NO) ? 1 : 0;
 	sg.tgtTeam = (int)ptr->pHit->v.team;
