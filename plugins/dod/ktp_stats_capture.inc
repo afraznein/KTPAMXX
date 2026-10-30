@@ -783,6 +783,7 @@ stock ksc_close_producer_context() {
 	ksc_objective_reset_all(true)
 	ksc_grenade_cache_clear_all()
 	ksc_break_reset_boundary()
+	ksc_gun_ground_clear()
 	// The census window closes on the half, not on its own timer. The tick after
 	// this one finds no context and resets, so without this the movement between
 	// the last tick and the boundary was discarded rather than emitted.
@@ -1318,6 +1319,7 @@ stock ksc_clear_player(id) {
 	g_kscLifePhysicalAlive[id] = false
 	g_kscLifeOpen[id] = false
 	ksc_break_purge_player(id)
+	ksc_gun_reset_player(id)
 }
 
 // ---------------------------------------------------------------------------
@@ -1654,6 +1656,7 @@ public dod_client_spawn(id) {
 	// previous life's counts so a class change cannot read as a decrease.
 	g_kscGrenAmmo[id][0] = -1
 	g_kscGrenAmmo[id][1] = -1
+	ksc_gun_reset_player(id)
 	ksc_life_start(id, "spawn")
 }
 
@@ -2356,6 +2359,7 @@ public ksc_zone_poll_task() {
 	// It also deliberately precedes the capture kill switch's early return so
 	// an empty context always resets the pending baseline/open-life state.
 	ksc_sync_life_context()
+	ksc_gun_poll()
 
 	if (!ksc_enabled()) {
 		// The runtime kill switch is also a capture-state boundary. Never let
@@ -2364,6 +2368,7 @@ public ksc_zone_poll_task() {
 		ksc_break_clear_all()
 		ksc_objective_reset_all(false)
 		ksc_grenade_cache_clear_all()
+		ksc_gun_ground_clear()
 		g_kscBreakBaselineSuppressed = true
 		return
 	}
@@ -2395,6 +2400,8 @@ public ksc_zone_poll_task() {
 	}
 	if (suppress_breaks) {
 		ksc_break_clear_all()
+		// A restart removes every dropped gun with the rest of the round's debris.
+		ksc_gun_ground_clear()
 		// A restart/countdown invalidates the old capture-area state just as
 		// authoritatively as it invalidates break candidates. Close any active
 		// attempt against its cached old context, then suppress all lifecycle
@@ -3413,6 +3420,7 @@ stock ksc_on_death(killer, victim, wpnindex, hitplace, TK) {
 	// leaves that classification to later context. An empty match id (warmup)
 	// still fails closed.
 	ksc_life_end(victim, "death")
+	ksc_gun_on_death(killer, victim, wpnindex)
 
 	new bool:effectiveTeamkill = ksc_effective_teamkill(killer, victim, TK)
 	ksc_queue_break_candidate(killer, victim, effectiveTeamkill)
@@ -4034,4 +4042,201 @@ public client_command(id) {
 		return PLUGIN_CONTINUE
 	ksc_log_player_action(id, cmd)
 	return PLUGIN_CONTINUE
+}
+
+// ---------------------------------------------------------------------------
+// Own-weapon kills (1.35.0)
+//
+// A hidden fun stat (drew, 2026-10-30): a player killed with THEIR OWN gun -- one
+// they spawned with, dropped (death or the drop key), and somebody else picked up.
+// S10 official matches: 13% of kills use a picked-up gun, ~5-10 a match are the
+// victim's own (coordination research/stats-own-weapon-kills).
+//
+// No entity identity is needed. DODX's dod_client_weaponpickup is polled off
+// pev->weapons in PreThink and returns early when either side of the diff is 0,
+// so it is silent at spawn and at death and reports exactly the mid-life drops
+// (value 0) and pickups (value 1). The ledger:
+//   spawn  -> every gun the player carries is their own (stamp 0)
+//   death  -> each carried primary goes on the ground list with its stamp
+//   drop   -> same, at the dropper's origin
+//   pickup -> the nearest unclaimed ground gun of that type passes its stamp on
+//   kill   -> stamp == victim's userid -> own_weapon_kill
+// The stamp is the FIRST owner's userid, so it survives any number of hand-offs.
+// Weapon ids >= 32 (scoped FG42, folding carbine, scoped Enfield) are outside the
+// 32-bit pev->weapons diff and never report a pickup; none are KTP classes.
+// Untracked like the voice lines: a player-vs-player action (KTPHLStatsX migration
+// 051), no schema change.
+
+#define KSC_GUN_GROUND_MAX  64
+#define KSC_GUN_CLAIM_RADIUS 256.0   // pickup origin to drop origin; nearest wins
+#define KSC_GUN_GROUND_TTL  300.0    // seconds a dropped gun stays claimable
+
+new g_kscGunOwner[MAX_PLAYERS + 1][DODMAX_WEAPONS]       // 0 own, >0 first owner's userid, -1 unknown
+new Float:g_kscGunDropAt[MAX_PLAYERS + 1][DODMAX_WEAPONS] // when the first owner lost it
+new bool:g_kscGunDropDeath[MAX_PLAYERS + 1][DODMAX_WEAPONS]
+new g_kscGunCarried[MAX_PLAYERS + 1]                     // primaries bitfield, refreshed by the zone poll
+
+new g_kscGroundWpn[KSC_GUN_GROUND_MAX]                   // 0 = free slot
+new g_kscGroundOwner[KSC_GUN_GROUND_MAX]
+new Float:g_kscGroundDropAt[KSC_GUN_GROUND_MAX]
+new bool:g_kscGroundDeath[KSC_GUN_GROUND_MAX]
+new Float:g_kscGroundAt[KSC_GUN_GROUND_MAX]
+new Float:g_kscGroundPos[KSC_GUN_GROUND_MAX][3]
+
+// Guns that drop as a pickup-able weapon. Melee variants fold onto their gun.
+stock ksc_gun_base(wpn) {
+	switch (wpn) {
+		case DODW_GARAND_BUTT: return DODW_GARAND
+		case DODW_K43_BUTT: return DODW_K43
+		case DODW_KAR_BAYONET: return DODW_KAR
+		case DODW_ENFIELD_BAYONET: return DODW_ENFIELD
+	}
+	return wpn
+}
+
+stock bool:ksc_gun_is_primary(wpn) {
+	switch (wpn) {
+		case DODW_GARAND, DODW_SCOPED_KAR, DODW_THOMPSON, DODW_STG44, DODW_SPRINGFIELD,
+			DODW_KAR, DODW_BAR, DODW_MP40, DODW_MG42, DODW_30_CAL, DODW_M1_CARBINE,
+			DODW_MG34, DODW_GREASEGUN, DODW_FG42, DODW_K43, DODW_ENFIELD, DODW_STEN,
+			DODW_BREN, DODW_BAZOOKA, DODW_PANZERSCHRECK, DODW_PIAT:
+			return true
+	}
+	return false
+}
+
+stock ksc_gun_read_carried(id) {
+	new wpns[32], num, carried
+	new bits = get_user_weapons(id, wpns, num)
+	for (new w = 1; w < 32; w++)
+		if ((bits & (1 << w)) && ksc_gun_is_primary(w))
+			carried |= (1 << w)
+	return carried
+}
+
+stock ksc_gun_ground_clear() {
+	arrayset(g_kscGroundWpn, 0, sizeof(g_kscGroundWpn))
+}
+
+stock ksc_gun_reset_player(id) {
+	arrayset(g_kscGunOwner[id], 0, DODMAX_WEAPONS)
+	g_kscGunCarried[id] = 0
+}
+
+// Called on the zone poll: catches the spawn loadout, which no pickup reports.
+stock ksc_gun_poll() {
+	for (new id = 1; id <= MAX_PLAYERS; id++)
+		if (is_user_connected(id) && is_user_alive(id))
+			g_kscGunCarried[id] = ksc_gun_read_carried(id)
+}
+
+stock ksc_gun_put_ground(id, wpn, bool:death) {
+	new Float:origin[3]
+	if (!dodx_get_user_origin(id, origin))
+		return
+	new Float:now = get_gametime()
+	new slot = -1, oldest = 0
+	for (new i = 0; i < KSC_GUN_GROUND_MAX; i++) {
+		if (!g_kscGroundWpn[i] || now - g_kscGroundAt[i] > KSC_GUN_GROUND_TTL) {
+			slot = i
+			break
+		}
+		if (g_kscGroundAt[i] < g_kscGroundAt[oldest])
+			oldest = i
+	}
+	if (slot == -1)
+		slot = oldest
+
+	new stamp = g_kscGunOwner[id][wpn]
+	g_kscGroundWpn[slot] = wpn
+	if (stamp == 0) {
+		// Their own gun leaves their hands here.
+		g_kscGroundOwner[slot] = get_user_userid(id)
+		g_kscGroundDropAt[slot] = now
+		g_kscGroundDeath[slot] = death
+	} else {
+		g_kscGroundOwner[slot] = stamp
+		g_kscGroundDropAt[slot] = g_kscGunDropAt[id][wpn]
+		g_kscGroundDeath[slot] = g_kscGunDropDeath[id][wpn]
+	}
+	g_kscGroundAt[slot] = now
+	g_kscGroundPos[slot][0] = origin[0]
+	g_kscGroundPos[slot][1] = origin[1]
+	g_kscGroundPos[slot][2] = origin[2]
+	g_kscGunOwner[id][wpn] = 0
+}
+
+stock ksc_gun_claim(id, wpn) {
+	g_kscGunOwner[id][wpn] = -1
+	new Float:origin[3]
+	if (!dodx_get_user_origin(id, origin))
+		return
+	new Float:now = get_gametime()
+	new best = -1, Float:best_dist = KSC_GUN_CLAIM_RADIUS
+	for (new i = 0; i < KSC_GUN_GROUND_MAX; i++) {
+		if (g_kscGroundWpn[i] != wpn || now - g_kscGroundAt[i] > KSC_GUN_GROUND_TTL)
+			continue
+		new Float:d = get_distance_f(origin, g_kscGroundPos[i])
+		if (d <= best_dist) {
+			best = i
+			best_dist = d
+		}
+	}
+	if (best == -1)
+		return
+	g_kscGroundWpn[best] = 0
+	// Picking your own gun back up makes it yours again.
+	g_kscGunOwner[id][wpn] = (g_kscGroundOwner[best] == get_user_userid(id)) ? 0 : g_kscGroundOwner[best]
+	g_kscGunDropAt[id][wpn] = g_kscGroundDropAt[best]
+	g_kscGunDropDeath[id][wpn] = g_kscGroundDeath[best]
+}
+
+public dod_client_weaponpickup(id, weapon, value) {
+	if (id < 1 || id > MAX_PLAYERS || !ksc_gun_is_primary(weapon))
+		return
+	if (value) {
+		ksc_gun_claim(id, weapon)
+		g_kscGunCarried[id] |= (1 << weapon)
+	} else {
+		ksc_gun_put_ground(id, weapon, false)
+		g_kscGunCarried[id] &= ~(1 << weapon)
+	}
+}
+
+stock ksc_gun_on_death(killer, victim, wpnindex) {
+	if (victim < 1 || victim > MAX_PLAYERS)
+		return
+	new wpn = ksc_gun_base(wpnindex)
+	if (killer >= 1 && killer <= MAX_PLAYERS && killer != victim && wpn > 0 && wpn < DODMAX_WEAPONS
+			&& g_kscGunOwner[killer][wpn] > 0 && g_kscGunOwner[killer][wpn] == get_user_userid(victim)
+			&& ksc_enabled() && is_user_connected(killer) && is_user_connected(victim))
+		ksc_emit_own_weapon_kill(killer, victim, wpn)
+
+	for (new w = 1; w < 32; w++)
+		if (g_kscGunCarried[victim] & (1 << w))
+			ksc_gun_put_ground(victim, w, true)
+	g_kscGunCarried[victim] = 0
+}
+
+stock ksc_emit_own_weapon_kill(killer, victim, wpn) {
+	new killer_str[96], victim_str[96], weapon[32], k_pos[40], v_pos[40]
+	ksc_player_str(killer, killer_str, charsmax(killer_str))
+	ksc_player_str(victim, victim_str, charsmax(victim_str))
+	xmod_get_wpnlogname(wpn, weapon, charsmax(weapon))
+	new Float:since_drop = get_gametime() - g_kscGunDropAt[killer][wpn]
+	new owner_drop[8]
+	copy(owner_drop, charsmax(owner_drop), g_kscGunDropDeath[killer][wpn] ? "death" : "drop")
+
+	// attacker_position / victim_position land in the event row's pos/vpos columns
+	// (doEvent_PlayerPlayerAction). Omitted when unreadable, never "0 0 0".
+	new line[KSC_BUF_LINE_LEN]
+	if (ksc_origin_str(killer, k_pos, charsmax(k_pos)) && ksc_origin_str(victim, v_pos, charsmax(v_pos)))
+		formatex(line, charsmax(line),
+			"^"%s^" triggered ^"own_weapon_kill^" against ^"%s^" with ^"%s^" (attacker_position ^"%s^") (victim_position ^"%s^") (owner_drop ^"%s^") (since_drop_s ^"%.1f^")",
+			killer_str, victim_str, weapon, k_pos, v_pos, owner_drop, since_drop)
+	else
+		formatex(line, charsmax(line),
+			"^"%s^" triggered ^"own_weapon_kill^" against ^"%s^" with ^"%s^" (owner_drop ^"%s^") (since_drop_s ^"%.1f^")",
+			killer_str, victim_str, weapon, owner_drop, since_drop)
+	ksc_untracked_buffer(line)
 }
