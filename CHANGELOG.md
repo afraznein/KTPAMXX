@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - 1.34.0: own-weapon kills -- killed with the gun you dropped
+
+A hidden fun stat: a player killed with their OWN gun, one they spawned with, dropped (death or the
+drop key) and somebody else picked up. Logged as `"<killer>" triggered "own_weapon_kill" against
+"<victim>" with "<weapon>" (attacker_position ..) (victim_position ..) (owner_drop "death"|"drop")
+(since_drop_s "<s>")`, a player-vs-player action (KTPHLStatsX migration 051), untracked like the voice
+lines; not a stream, no schema bump.
+
+No entity identity is needed. DODX's `dod_client_weaponpickup` is polled off `pev->weapons` and is
+silent at spawn and at death (either side of the diff being 0 returns early), so it reports exactly
+the mid-life drops and pickups. `ktp_stats_capture.inc` keeps an owner stamp per carried primary
+(spawn = own), puts every primary a player dies with or drops on a ground list with its stamp and
+origin, and on a pickup claims the nearest ground gun of that type within 256 units. The stamp is the
+FIRST owner's userid, so a gun that changes hands twice still belongs to whoever spawned with it.
+The ground list clears on a round restart, a half boundary and the capture kill switch. Weapon ids
+>= 32 (scoped FG42, folding carbine, scoped Enfield) fall outside the 32-bit weapons diff and are not
+tracked; no KTP class carries one.
+
 ### Added - 1.33.0: voice-menu picks are counted, and kept apart from bound keys
 
 Most players send a voice command through DoD's server-drawn voice menu, not a bound key:
