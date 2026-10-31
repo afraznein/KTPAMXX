@@ -3966,10 +3966,11 @@ stock strtok_seq(const src[], out[], len) {
 // The voice commands and hand signals dod.so handles by name are seeded as
 // generic actions by KTPHLStatsX migrations 045 and 048; the daemon's stock
 // PlayerAction path records them, and recordEvent() injects match_id and gates
-// on KTP_ROUND_LIVE, so warmup chatter carries no match. voice_menu<N> and
-// voice_serverdebug share the prefix and are filtered below: migration 045
-// leaves both out of hlstats_Actions on purpose, so emitting them only feeds
-// the daemon actions it cannot resolve and discards.
+// on KTP_ROUND_LIVE, so warmup chatter carries no match. An ALLOWLIST decides
+// what is emitted, not a prefix with exclusions: the daemon drops a code it
+// cannot resolve, so a prefix match hands it every bind a player invents. It
+// already did -- `voice_bazooka` is nobody's command and reached production as
+// the one unresolved code migration 048 had to explain.
 // NOT a KSC stream: no sequence, no health row, no KSC_CAPABILITIES entry.
 // Untracked buffer, never a direct log_message -- this forward runs inside
 // SV_ClientCommand, where synchronous log I/O stalls the frame as it does in
@@ -3991,6 +3992,31 @@ new const g_kscVoiceMenuSlots[3][9][] = {
 #define KSC_VOICE_MENU_WINDOW 10.0   // seconds a voice menu stays "open" for a menuselect
 new g_kscVoiceMenu[MAX_PLAYERS + 1]
 new Float:g_kscVoiceMenuAt[MAX_PLAYERS + 1]
+
+// The 16 hand signals dod.so handles by name, seeded by KTPHLStatsX migration 048.
+// The 27 voice names are the slot table above -- the same set migration 045 seeds, so
+// the allowlist reads it rather than restating it and the two cannot drift apart.
+new const g_kscSignalNames[16][] = {
+	"areaclear", "backup", "coveringfire", "enemyleft", "enemyright", "enemyspotted",
+	"fallback", "flankleft", "flankright", "grenade", "holdposition", "moveout",
+	"no", "sniper", "sticktogether", "yes"
+}
+
+// True only for a code hlstats_Actions carries. voice_menu<N> and voice_serverdebug
+// fall out here for free: neither is a pick and migration 045 leaves both out.
+stock bool:ksc_is_seeded_chatter(const cmd[]) {
+	if (equal(cmd, "signal_", 7)) {
+		for (new i = 0; i < sizeof(g_kscSignalNames); i++)
+			if (equal(cmd[7], g_kscSignalNames[i]))
+				return true
+		return false
+	}
+	for (new m = 0; m < sizeof(g_kscVoiceMenuSlots); m++)
+		for (new s = 0; s < sizeof(g_kscVoiceMenuSlots[]); s++)
+			if (equal(cmd[6], g_kscVoiceMenuSlots[m][s]))
+				return true
+	return false
+}
 
 stock ksc_log_player_action(id, const code[]) {
 	new safe_cmd[40], who[96], line[KSC_BUF_LINE_LEN]
@@ -4037,8 +4063,7 @@ public client_command(id) {
 
 	if (!(equal(cmd, "voice_", 6) || equal(cmd, "signal_", 7)) || !ksc_enabled() || !is_user_connected(id))
 		return PLUGIN_CONTINUE
-	// The debug toggle is not a pick, and migration 045 keeps it out of the actions table.
-	if (equal(cmd, "voice_serverdebug", 17))
+	if (!ksc_is_seeded_chatter(cmd))
 		return PLUGIN_CONTINUE
 	ksc_log_player_action(id, cmd)
 	return PLUGIN_CONTINUE
