@@ -114,6 +114,7 @@ scripts/*.py
 !scripts/test_message_hooks_ext_mode.py
 !scripts/test_score_send_before_pause.py
 !scripts/test_amxxpc_image_zeroinit.py
+!scripts/test_voice_signal_allowlist.py
 
 # Build output directories
 obj-linux/

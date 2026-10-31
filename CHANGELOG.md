@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed - 1.36.0: voice commands and hand signals are allowlisted, not prefix-matched
+
+`ktp_stats_capture.inc` emitted any client command starting `voice_` or `signal_`, minus two
+named exclusions. The daemon drops a code `hlstats_Actions` does not carry, so every token a
+player invents with a bind was logged, counted once as an unresolved action and thrown away --
+and that already happened: `voice_bazooka` is nobody's command and is the one unresolved code
+KTPHLStatsX migration 048 had to explain. A deny-list also admits by default, so any future
+`voice_*` or `signal_*` the game or a client adds arrives pre-approved.
+
+Emission now consults the 43 codes the daemon actually resolves: the 27 voice names are read
+off the voice-menu slot table that was already in the file (the same set migration 045 seeds,
+verified equal in both directions), and the 16 hand signals from migration 048. `voice_menu<N>`
+and `voice_serverdebug` are no longer special-cased -- neither is in the list, so both fall out
+where everything unseeded does.
+
+No schema change, no new log line, no stream. Nothing that was being recorded stops being
+recorded; only codes the daemon was discarding stop being sent. Guarded by
+`scripts/test_voice_signal_allowlist.py`, which fails if the forward can reach the emit without
+passing the allowlist.
+
 ### Added - 1.35.0: own-weapon kills -- killed with the gun you dropped
 
 A hidden fun stat: a player killed with their OWN gun, one they spawned with, dropped (death or the
