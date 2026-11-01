@@ -39,6 +39,12 @@ This will:
 2. Output to `obj-linux/packages/`
 3. Auto-stage to `N:\Nein_\KTP Git Projects\KTP DoD Server\serverfiles\dod\addons\ktpamx\`
 
+⛔ **The HLSDK has to be a SIBLING directory, and a fresh `git clone` does not give it a name
+this script accepts.** `build_linux.sh` resolves it as `../hlsdk`, falling back to `../KTPhlsdk`; the
+upstream repo is `afraznein/KTPHLSDK`, so a default clone lands at `../KTPHLSDK` and matches neither on
+a case-sensitive filesystem. The build stops at `ERROR: HLSDK not found at ...` having compiled nothing,
+so clone it as `git clone <url> hlsdk` or rename the directory.
+
 ⛔ **Build from a real clone, never a git worktree.** `support/Versioning` opens
 `<sourcePath>/.git/HEAD` as a path and a worktree's `.git` is a FILE, so the build dies at
 `NotADirectoryError` before anything compiles — and callers pipe this script, so the shell still
