@@ -114,6 +114,15 @@ jobs:
         run: python3 scripts/test_score_send_before_pause.py
 
       # Selftest first, for the same reason as the gates above.
+      - name: Prove the voice/signal allowlist checks discriminate
+        working-directory: KTPAMXX
+        run: python3 scripts/test_voice_signal_allowlist.py --selftest
+
+      - name: Test the voice/signal emit is allowlisted
+        working-directory: KTPAMXX
+        run: python3 scripts/test_voice_signal_allowlist.py
+
+      # Selftest first, for the same reason as the gates above.
       - name: Prove the amxxpc image zero-init checks discriminate
         working-directory: KTPAMXX
         run: python3 scripts/test_amxxpc_image_zeroinit.py --selftest
