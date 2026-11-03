@@ -1319,6 +1319,153 @@ def test_shot_wire_line_fits_shot_buffer() -> None:
     )
 
 
+def _wire_worst_case(marker: str, int_literal: dict, str_width: dict,
+                     float_literal: dict) -> str:
+    """Build the widest line a marker's live format string can print.
+
+    Derived from the format string rather than transcribed from it, so adding a
+    field re-measures the bound instead of leaving a stale literal behind.
+    Anything absent from int_literal keeps the full int32 worst case: unproven
+    means worst case, not "probably fine".
+    """
+    start = CAPTURE.index('triggered ^"' + marker + '^"')
+    fmt_start = CAPTURE.rindex('"^"%s^"', 0, start)
+    fmt_end = CAPTURE.index('",', fmt_start)
+    fmt = CAPTURE[fmt_start:fmt_end].replace('^"', '"')
+
+    out, cursor, seen_player = [], 0, False
+    for token in re.finditer(r"%(?:\.2f|[ds])", fmt):
+        out.append(fmt[cursor:token.start()])
+        spec = token.group(0)
+        name_match = re.findall(r'\((\w+) "$', fmt[:token.start()])
+        name = name_match[0] if name_match else None
+        if spec == "%.2f":
+            out.append(float_literal.get(name, "-2147483648.00"))
+        elif spec == "%d":
+            out.append(int_literal.get(name, "-2147483648"))
+        elif not seen_player:
+            out.append("P" * 95)
+            seen_player = True
+        else:
+            out.append("X" * str_width.get(name or "", 63))
+        cursor = token.end()
+    out.append(fmt[cursor:])
+    return "".join(out)
+
+
+def test_shot_miss_wire_line_fits_buffer() -> None:
+    # The shot line could not take these fields -- its own worst case leaves
+    # under fifty characters below the engine ceiling and the ray is three
+    # coordinate triples -- so this is a second marker with its own ring and its
+    # own measured bound. Same derivation as the shot line's, and the same
+    # refusal to trust a figure written in a comment.
+    line = _wire_worst_case(
+        "shot_miss",
+        int_literal={
+            # The module's own counter, clamped <999 before increment -- the
+            # same bound the shot line's cmd_all_traces entry rests on, because
+            # dodx_get_shot_traces reads that same counter.
+            "cmd_traces_any": "999",
+            "trace_frac": "10000",   # flFraction clamped 0..1, x10000
+            "trace_flags": "15",     # 4-bit field
+        },
+        # Three integers at the clamped world bound plus two separators.
+        str_width={"matchid": 63, "ray_start": 20, "ray_aim": 20, "ray_end": 20},
+        float_literal={},
+    )
+
+    cap = re.search(r"#define\s+KSC_SHOT_MISS_BUF_LINE_LEN\s+(\d+)", CAPTURE)
+    assert cap, "missing KSC_SHOT_MISS_BUF_LINE_LEN"
+    assert len(line) < int(cap.group(1)), (
+        f"worst-case shot_miss line is {len(line)} bytes, buffer is "
+        f"{cap.group(1)}; raise KSC_SHOT_MISS_BUF_LINE_LEN (the ring costs "
+        f"ENTRIES * LINE_LEN * 4)"
+    )
+
+    # The plugin ring is not the binding ceiling -- log_message() reaches
+    # ReHLDS's Log_Printf, a hardcoded 1024-byte buffer that always prepends a
+    # ~25-byte timestamp. Same number the shot line is held to.
+    assert len(line) < 970, (
+        f"worst-case shot_miss line is {len(line)} bytes, which risks silent "
+        f"truncation inside ReHLDS's Log_Printf"
+    )
+
+
+def test_shot_miss_stream_wiring() -> None:
+    # A stream is only as present as its weakest link: an enum entry with no
+    # capability bit is refused by the daemon, and a capability bit with no
+    # boundary flush leaves rows in the ring when health is taken.
+    manifest = re.search(r'#define\s+KSC_CAPABILITIES\s+"([^"]+)"', CAPTURE)
+    assert manifest and "shot_miss" in manifest.group(1).split(",")
+
+    enum = function_body(CAPTURE, "enum {")
+    assert "KSC_EVENT_SHOT_MISS" in enum
+    # Appended, so no existing index shifts.
+    assert enum.index("KSC_EVENT_AIM_VIS") < enum.index("KSC_EVENT_SHOT_MISS")
+    names = function_body(CAPTURE, "new const g_kscEventNames")
+    assert '"shot_miss"' in names
+
+    # Own ring, never a share of the shot ring's measured capacity.
+    assert re.search(r"new\s+g_kscShotMissBuffer\[KSC_SHOT_MISS_BUF_MAX_ENTRIES\]"
+                     r"\[KSC_SHOT_MISS_BUF_LINE_LEN\]", CAPTURE)
+    assert re.search(r"#define\s+KSC_SHOT_MISS_BUF_MAX_ENTRIES\s+512", CAPTURE)
+
+    enqueue = function_body(CAPTURE, "stock bool:ksc_shot_miss_buffer(const line[])")
+    assert "g_kscShotMissBufferCount >= KSC_SHOT_MISS_BUF_MAX_ENTRIES" in enqueue
+    assert "g_kscShotMissDropped++" in enqueue
+    assert "g_kscDroppedByType[KSC_EVENT_SHOT_MISS]++" in enqueue
+
+    # Own repeating flush task on an id nothing else holds -- a shared id makes
+    # one remove_task() cancel both, which has happened in this file before.
+    cfg = function_body(CAPTURE, "stock ksc_cfg()")
+    assert ('set_task(KSC_SHOT_MISS_FLUSH_SECS, "ksc_shot_miss_flush_task", '
+            'KSC_TASK_SHOT_MISS_FLUSH') in cfg
+    ids = re.findall(r"#define\s+KSC_TASK_\w+\s+(\d+)", CAPTURE)
+    assert len(ids) == len(set(ids)), f"duplicate KSC_TASK_* id: {ids}"
+
+    # Drained at a context boundary as well as on the timer, and BEFORE health
+    # is emitted -- otherwise the half's counters are read while rows are still
+    # sitting in the ring.
+    close = function_body(CAPTURE, "stock ksc_close_producer_context()")
+    assert "ksc_shot_miss_flush()" in close
+    assert close.index("ksc_shot_miss_flush()") < close.index("ksc_emit_health(")
+
+
+def test_shot_miss_reads_both_natives_in_the_safe_order() -> None:
+    body = function_body(
+        CAPTURE,
+        "stock ksc_emit_shot_miss(id, weapon, const producer_matchid[], producer_half,")
+
+    # dodx_get_shot_traces is non-destructive; dodx_get_shot_miss consumes its
+    # stash. Taking the count first is what keeps the ray read from being able
+    # to disturb it.
+    assert body.index("dodx_get_shot_traces(") < body.index("dodx_get_shot_miss(")
+
+    # Either stash succeeding is enough. Gating on the ray alone would discard a
+    # count that survived without one.
+    assert "if (!have_traces && !have_ray)" in body
+
+    # Sampled with the rest of the shot diagnostics or not at all -- both reads
+    # are native calls on every weapon actuation.
+    assert "if (!ksc_shot_detail_enabled())" in body
+
+    # No hitscan gate: the ray belongs to the cmd, not to a weapon, the same
+    # reasoning dodx_get_shot_rewind is read under on the shot row.
+    assert "ksc_is_hitscan_firearm" not in body
+
+    # An absent ray must reach the daemon as an empty field, never as a zeroed
+    # triple -- the origin is a legal world coordinate.
+    assert "ray_start[0] = 0" in body
+
+    # The join key back to the shot row, which holds this row's map and position.
+    assert "shot_sequence" in body
+
+    fire = function_body(CAPTURE, "public dod_client_weapon_fire(id, weapon, Float:gametime)")
+    # Emitted after the shot row is queued, so the shot row's own sequence is
+    # already allocated and is what travels as the join key.
+    assert fire.index("ksc_shot_buffer(line)") < fire.index("ksc_emit_shot_miss(")
+
+
 def test_shot_context_stream() -> None:
     # ENGINE_STATS_EXPANSION_PLAN_20260909.md wave 0 (§3.6b): own buffer, own
     # cvar, own flush task -- must never share capacity with the damage/break

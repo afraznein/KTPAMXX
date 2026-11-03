@@ -191,6 +191,38 @@
 #define KSC_SHOT_BUF_LINE_LEN    960
 #define KSC_SHOT_FLUSH_SECS      1.0
 
+// The shot row's sibling, for the one thing that row structurally cannot
+// carry: a shot that hit nobody. dodx_get_shot_target4 is stamped from inside
+// the player-hit filter, so every diagnostic field on the shot line is a
+// sentinel on a miss -- which is the population the counterfactual work needs
+// most.
+//
+// A SECOND MARKER RATHER THAN MORE FIELDS, and that was measured rather than
+// preferred: test_shot_wire_line_fits_shot_buffer puts the shot line's worst
+// case under fifty characters below the ceiling where ReHLDS's Log_Printf
+// truncates it, and the ray alone is three coordinate triples. No version of
+// this fits on that line.
+//
+// Its own ring, for the same reason the shot ring exists at all:
+// KSC_SHOT_BUF_MAX_ENTRIES was sized against a measured burst, and a second
+// line per actuation would halve that margin without re-measuring it.
+//
+// Entries match the shot ring because the rate does -- at most one of these
+// per actuation -- so the same burst and the same 1s flush bound both.
+// ⚠️ A ring costs ENTRIES * LINE_LEN * 4 bytes, one 4-byte cell per
+// character, so this is MEGABYTES, not kilobytes -- adding this stream
+// measured +1.3 MB of stats_logging data size against the same amxxpc, about a
+// third again on top of what the plugin already carries. That is the price of
+// the second marker and it is paid at load on all 24. Read the LINE worst case
+// from test_shot_miss_wire_line_fits_buffer, never from a figure here.
+#define KSC_SHOT_MISS_BUF_MAX_ENTRIES 512
+#define KSC_SHOT_MISS_BUF_LINE_LEN    640
+#define KSC_SHOT_MISS_FLUSH_SECS      1.0
+// Coordinates are clamped to the GoldSrc world bound before they print, so the
+// field has a PROVABLE width rather than a plausible one -- the discipline the
+// shot line's budget comment demands. A ray past it is not geometry any more.
+#define KSC_RAY_COORD_MAX 32768.0
+
 // Allocation-free owner cache for grenade lifecycle identity. This is double
 // the existing DODX damage-attribution grenade pool and comfortably above a
 // legal match's plausible concurrent grenade count.
@@ -242,7 +274,7 @@
 // Bump this only for a change that really alters the storage contract, and
 // check what the next ordinal is already promised to before taking it.
 #define KSC_SCHEMA_CONTRACT 26
-#define KSC_CAPABILITIES "frag_context,damage,position,assist,life,break,flag_state,flag_position,objective_attempt,team_membership,grenade_entity,shot,score,duel,player_state,grenade_throw,position_state,map_revision,sequence,health,move,aim_vis"
+#define KSC_CAPABILITIES "frag_context,damage,position,assist,life,break,flag_state,flag_position,objective_attempt,team_membership,grenade_entity,shot,score,duel,player_state,grenade_throw,position_state,map_revision,sequence,health,move,aim_vis,shot_miss"
 
 enum {
 	KSC_EVENT_LIFE = 0,
@@ -272,6 +304,9 @@ enum {
 	KSC_EVENT_MOVE,
 	// Aim-vs-transmission census (tier 2.7), appended for the same reason.
 	KSC_EVENT_AIM_VIS,
+	// The shot row's miss sibling (own ring, KSC_SHOT_MISS_BUF_*), appended so
+	// no existing index shifts.
+	KSC_EVENT_SHOT_MISS,
 	KSC_EVENT_COUNT
 }
 
@@ -290,6 +325,7 @@ enum {
 // collided once already and the symptom was a silently cancelled flush.
 #define KSC_TASK_MOVE           88016
 #define KSC_TASK_AIM_VIS        88017
+#define KSC_TASK_SHOT_MISS_FLUSH 88018
 
 new g_kscBuffer[KSC_BUF_MAX_ENTRIES][KSC_BUF_LINE_LEN]
 new g_kscBufferType[KSC_BUF_MAX_ENTRIES]
@@ -317,6 +353,12 @@ new g_kscShotBuffer[KSC_SHOT_BUF_MAX_ENTRIES][KSC_SHOT_BUF_LINE_LEN]
 new g_kscShotBufferCount = 0
 new g_kscShotDropped = 0
 new g_kscShotTruncated = 0
+// Sibling ring for the miss marker -- separate from the shot ring on purpose,
+// see KSC_SHOT_MISS_BUF_MAX_ENTRIES.
+new g_kscShotMissBuffer[KSC_SHOT_MISS_BUF_MAX_ENTRIES][KSC_SHOT_MISS_BUF_LINE_LEN]
+new g_kscShotMissBufferCount = 0
+new g_kscShotMissDropped = 0
+new g_kscShotMissTruncated = 0
 new g_kscBufferOrderNext = 0
 new g_kscAttempted[KSC_EVENT_COUNT]
 new g_kscEnqueued[KSC_EVENT_COUNT]
@@ -344,7 +386,7 @@ new const g_kscEventNames[KSC_EVENT_COUNT][] = {
 	"life", "damage", "position", "frag", "assist", "break",
 	"flag_state", "flag_position", "objective_attempt", "team_membership",
 	"grenade_entity", "shot", "score", "duel", "player_state", "grenade_throw",
-	"move", "aim_vis"
+	"move", "aim_vis", "shot_miss"
 }
 
 // [victim][attacker] -- enemy damage dealt to victim since their last spawn.
@@ -586,6 +628,7 @@ stock ksc_cfg() {
 	set_task(KSC_SHOT_FLUSH_SECS, "ksc_shot_flush_task", KSC_TASK_SHOT_FLUSH, .flags="b")
 	set_task(KSC_MOVE_FLUSH_SECS, "ksc_move_flush_task", KSC_TASK_MOVE, .flags="b")
 	set_task(KSC_AIM_VIS_FLUSH_SECS, "ksc_aim_vis_flush_task", KSC_TASK_AIM_VIS, .flags="b")
+	set_task(KSC_SHOT_MISS_FLUSH_SECS, "ksc_shot_miss_flush_task", KSC_TASK_SHOT_MISS_FLUSH, .flags="b")
 	ksc_capture_map_revision()
 
 	// The arm that actually survives a changelevel. controlpoints_init runs
@@ -807,6 +850,7 @@ stock ksc_close_producer_context() {
 	// it has to be drained here too -- before health, or the counters health
 	// reports are taken while shots are still sitting in the ring.
 	ksc_shot_flush()
+	ksc_shot_miss_flush()
 	if (g_kscProducerContextConfirmed && g_kscProducerMatchId[0] &&
 			g_kscProducerHalf != 0)
 		ksc_emit_health(g_kscProducerMatchId, g_kscProducerHalf)
@@ -3040,6 +3084,58 @@ stock ksc_shot_flush() {
 
 // The engine keeps view angles normalized, so this clamp changes nothing real; it
 // is what makes -999.00 (the no-angles sentinel) the widest literal on the wire.
+stock bool:ksc_shot_miss_buffer(const line[]) {
+	g_kscAttempted[KSC_EVENT_SHOT_MISS]++
+	if (g_kscShotMissBufferCount >= KSC_SHOT_MISS_BUF_MAX_ENTRIES) {
+		g_kscShotMissDropped++
+		g_kscDroppedByType[KSC_EVENT_SHOT_MISS]++
+		return false
+	}
+	if (strlen(line) >= KSC_SHOT_MISS_BUF_LINE_LEN - 1)
+		g_kscShotMissTruncated++
+
+	copy(g_kscShotMissBuffer[g_kscShotMissBufferCount], KSC_SHOT_MISS_BUF_LINE_LEN - 1, line)
+	g_kscShotMissBufferCount++
+	g_kscEnqueued[KSC_EVENT_SHOT_MISS]++
+	return true
+}
+
+public ksc_shot_miss_flush_task() {
+	ksc_shot_miss_flush()
+}
+
+// Drained on its own timer and again at a context boundary, for the reason the
+// shot ring is: health reads these counters, so a ring still holding rows when
+// health is taken under-reports the half it describes.
+stock ksc_shot_miss_flush() {
+	for (new i = 0; i < g_kscShotMissBufferCount; i++) {
+		ksc_log_retain(g_kscShotMissBuffer[i], KSC_EVENT_SHOT_MISS)
+		g_kscEmitted[KSC_EVENT_SHOT_MISS]++
+	}
+	g_kscShotMissBufferCount = 0
+
+	if (g_kscShotMissDropped > 0) {
+		log_amx("[KTP-STATS] dropped %d shot_miss event(s) -- KSC_SHOT_MISS_BUF_MAX_ENTRIES capacity full", g_kscShotMissDropped)
+		g_kscShotMissDropped = 0
+	}
+	if (g_kscShotMissTruncated > 0) {
+		log_amx("[KTP-STATS] truncated %d shot_miss line(s) -- exceeded KSC_SHOT_MISS_BUF_LINE_LEN (%d), raise it", g_kscShotMissTruncated, KSC_SHOT_MISS_BUF_LINE_LEN)
+		g_kscShotMissTruncated = 0
+	}
+}
+
+// One coordinate triple off a dodx_get_shot_miss ray, in the same integer world
+// units and the same "x y z" shape ksc_origin_str already uses -- so a ray start
+// is directly comparable with the shot row's own position rather than needing a
+// unit conversion first. Clamped for a provable field width, not for realism.
+stock ksc_ray_str(const ray[], base, out[], len) {
+	out[0] = 0
+	formatex(out, len, "%d %d %d",
+		floatround(floatclamp(Float:ray[base],     -KSC_RAY_COORD_MAX, KSC_RAY_COORD_MAX)),
+		floatround(floatclamp(Float:ray[base + 1], -KSC_RAY_COORD_MAX, KSC_RAY_COORD_MAX)),
+		floatround(floatclamp(Float:ray[base + 2], -KSC_RAY_COORD_MAX, KSC_RAY_COORD_MAX)))
+}
+
 stock Float:ksc_shot_angle(Float:a) {
 	return floatclamp(a, -360.0, 360.0)
 }
@@ -3210,6 +3306,83 @@ public dod_client_weapon_fire(id, weapon, Float:gametime) {
 		hitgroup, rw_flags, rw_depth, rw_want, tgt_shift)
 
 	ksc_shot_buffer(line)
+
+	ksc_emit_shot_miss(id, weapon, producer_matchid, producer_half, gametime,
+		event_epoch, sequence)
+}
+
+// The record a shot that hit nobody leaves behind, which the row above cannot
+// hold: its whole diagnostic group is stamped from inside the player-hit
+// filter, so a miss carries sentinels there and the ray is lost with them.
+//
+// NO HITSCAN GATE, matching dodx_get_shot_rewind's treatment on the row above:
+// the ray and the count belong to the usercmd, not to a weapon, and the weapon
+// a consumer wants to filter on is already on the shot row. Riding
+// ksc_shot_detail_enabled() is what keeps this off in ordinary production --
+// both reads are native calls on every actuation.
+//
+// Read order is load-bearing: dodx_get_shot_traces is non-destructive and
+// dodx_get_shot_miss consumes its stash, so the count is taken first and
+// cannot be disturbed by the ray read.
+//
+// EITHER read succeeding is enough to emit. They are separate stashes keyed on
+// the same cmd, so a count can survive without a ray; the -1 sentinels say
+// which half is missing, and the native's own contract makes [0] at -1 the only
+// unambiguous "no sample" marker there is -- a world coordinate has no
+// out-of-range value to test instead.
+//
+// shot_sequence is the join key back to the shot row, which is where this
+// row's map, position, angles and weapon state live. Deliberately not copied
+// here: one more marker carrying the same map name is wire budget spent on a
+// value the join already has.
+stock ksc_emit_shot_miss(id, weapon, const producer_matchid[], producer_half,
+		Float:gametime, event_epoch, shot_sequence) {
+	if (!ksc_shot_detail_enabled())
+		return
+
+	new traces[1]
+	new bool:have_traces = (dodx_get_shot_traces(id, traces) == 1)
+
+	new ray[13]
+	new bool:have_ray = (dodx_get_shot_miss(id, ray) == 1)
+
+	if (!have_traces && !have_ray)
+		return
+
+	new cmd_traces_any = have_traces ? traces[0] : -1
+	new trace_frac = -1, trace_flags = -1, trace_ent = -1, trace_weapon_id = -1
+	new ray_start[32], ray_aim[32], ray_end[32]
+	if (have_ray) {
+		trace_frac = ray[0]
+		trace_flags = ray[1]
+		trace_ent = ray[2]
+		trace_weapon_id = ray[3]
+		ksc_ray_str(ray, 4, ray_start, charsmax(ray_start))
+		ksc_ray_str(ray, 7, ray_aim, charsmax(ray_aim))
+		ksc_ray_str(ray, 10, ray_end, charsmax(ray_end))
+	} else {
+		// Not "0 0 0": the origin is a legal world coordinate, so a zeroed
+		// triple would read as a measurement. An empty field reaches the
+		// daemon as a parse refusal, which is the direction we want.
+		ray_start[0] = 0
+		ray_aim[0] = 0
+		ray_end[0] = 0
+	}
+
+	new pstr[96]
+	ksc_player_str(id, pstr, charsmax(pstr))
+
+	new sequence = ksc_next_type_sequence(KSC_EVENT_SHOT_MISS)
+
+	new line[KSC_SHOT_MISS_BUF_LINE_LEN]
+	formatex(line, charsmax(line),
+		"^"%s^" triggered ^"shot_miss^" (weapon_id ^"%d^") (matchid ^"%s^") (half ^"%d^") (game_time ^"%.2f^") (event_epoch ^"%d^") (sequence ^"%d^") (shot_sequence ^"%d^") (cmd_traces_any ^"%d^") (trace_frac ^"%d^") (trace_flags ^"%d^") (trace_ent ^"%d^") (trace_weapon_id ^"%d^") (ray_start ^"%s^") (ray_aim ^"%s^") (ray_end ^"%s^")",
+		pstr, weapon, producer_matchid, producer_half, gametime, event_epoch,
+		sequence, shot_sequence, cmd_traces_any,
+		trace_frac, trace_flags, trace_ent, trace_weapon_id,
+		ray_start, ray_aim, ray_end)
+
+	ksc_shot_miss_buffer(line)
 }
 
 // Reads one player's CURRENT weapon's clip/ammo via dod_get_user_weapon --
