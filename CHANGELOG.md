@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - 1.37.0: a shot that hit nobody now records something -- the `shot_miss` stream
+
+`dodx_get_shot_miss` and `dodx_get_shot_traces` shipped in dodx `2.7.33.6004` and nothing called
+them, so the one population the counterfactual work needs most left no record at all. Every
+diagnostic field on the shot row is stamped from inside the player-hit filter, so a miss carries
+sentinels across the whole group and the ray is lost with them.
+
+`ktp_stats_capture.inc` now emits a second marker beside the shot row:
+
+```
+"<player>" triggered "shot_miss" (weapon_id ..) (matchid ..) (half ..) (game_time ..)
+(event_epoch ..) (sequence ..) (shot_sequence ..) (cmd_traces_any ..) (trace_frac ..)
+(trace_flags ..) (trace_ent ..) (trace_weapon_id ..) (ray_start "x y z")
+(ray_aim "x y z") (ray_end "x y z")
+```
+
+`shot_sequence` is the shot row's own sequence, which is where this row's map, position, angles
+and weapon state already live -- so neither is duplicated here.
+
+- A SECOND MARKER RATHER THAN MORE FIELDS, and that was measured:
+  `test_shot_wire_line_fits_shot_buffer` puts the shot line's worst case under fifty characters
+  below the ceiling where ReHLDS's `Log_Printf` truncates it, and the ray alone is three
+  coordinate triples. No version of this fits on that line.
+- Its own ring (`KSC_SHOT_MISS_BUF_*`, 512 entries, 1 s flush, own drop and truncation
+  counters), because `KSC_SHOT_BUF_MAX_ENTRIES` was sized against a measured burst and a second
+  line per actuation would have halved that margin without re-measuring it. The ring costs
+  `ENTRIES * LINE_LEN * 4` bytes: measured **+1.3 MB** of plugin data size against the same
+  `amxxpc`. Worst-case line 577 bytes against a 640 buffer, pinned by
+  `test_shot_miss_wire_line_fits_buffer`, which derives the bound from the live format string.
+- Read order is load-bearing. `dodx_get_shot_traces` is non-destructive and
+  `dodx_get_shot_miss` consumes its stash, so the count is taken first. Either stash succeeding
+  is enough to emit -- they are separate stashes on the same cmd, and gating on the ray alone
+  would discard a count that survived without one.
+- No hitscan gate, matching how `dodx_get_shot_rewind` is read on the shot row: the ray and the
+  count belong to the usercmd, not to a weapon. Rides `ktp_stats_shot_detail`, so it is off in
+  ordinary production like the rest of the diagnostic tier.
+- An absent ray reaches the daemon as an EMPTY coordinate field, never `0 0 0` -- the origin is
+  a legal world coordinate, so a zeroed triple would read as a measurement. Coordinates are
+  integer world units, the same shape and precision `ksc_origin_str` already uses, so a ray
+  start is directly comparable with the shot row's position; they are clamped to the world bound
+  only so the wire field has a provable width.
+- `trace_flags` bit3 says the cmd's first trace hit a PLAYER, in which case it was not a miss at
+  all. Those rows are kept rather than suppressed: the native declines to make that call and a
+  producer-side filter would make the table's population depend on a guess. Filter on bit3.
+- No `KSC_SCHEMA_CONTRACT` bump, following the move census: a stream is gated by its CAPABILITY
+  bit, so a producer ahead of its daemon loses only this stream instead of having its whole
+  manifest refused.
+
+The KTPHLStatsX side adds the handler and the table; its migration runs before its daemon.
+
 ### Changed - 1.36.0: voice commands and hand signals are allowlisted, not prefix-matched
 
 `ktp_stats_capture.inc` emitted any client command starting `voice_` or `signal_`, minus two
