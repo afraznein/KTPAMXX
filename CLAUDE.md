@@ -255,6 +255,27 @@ shipping a dodx that raises it, read MINOR from the commit the **live** engine b
   as little-endian 32-bit cells, with a control string you know is there.
 - If you can't decode it, the build base comes from the source repo's reflog and the artifact's mtime.
 
+### dodx and the C++ modules
+
+- **NOT reproducible the way the plugins above are, and the asymmetry is the trap.** A `.amxx` built
+  from a different directory still gave one md5; the module side does not survive that.
+  `modules/dod/dodx/moduleconfig.h` bakes `MODULE_DATE __DATE__`, so a module can never reproduce
+  across calendar days, and the absolute build path lands in the debug sections on top of it.
+  Measured at `978231e4` on 2026-11-04: two same-day builds from sibling paths `src-a` and `src-b`
+  gave `018abe50…` and `d83f5b86…` — identical size, 11,871 bytes different, still 20 after
+  `strip --strip-all` because the GNU build-id hashes everything else. Rebuilding at the **same**
+  path the same day reproduced `018abe50…` byte-for-byte.
+- ➡️ **So a mismatched rebuild is the expected result, not evidence the artifact is wrong**, and
+  rebuild-and-compare confirms a module only when path and date both match the original build. To
+  confirm a change is in a module, grep the binary for a symbol it added against a control symbol
+  present in both builds — never by reproducing the md5.
+- ⚠️ **A plugin and the module whose natives it calls are ONE wave.** AMXX resolves the natives
+  table at LOAD, so a plugin staged from a commit whose module half was left behind does not
+  degrade — it fails to load outright, on every instance, and nothing on the host says so. A
+  runtime `if` in front of the call buys nothing; the name is in the table either way.
+  `stats_logging` registers no `set_native_filter` and so has no graceful path, unlike
+  `KTPHudObserver`.
+
 ### `stats_logging` and the daemon's schema contract
 
 `KSC_SCHEMA_CONTRACT` (`plugins/dod/ktp_stats_capture.inc`) must not run ahead of what the
