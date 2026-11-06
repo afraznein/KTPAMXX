@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - 1.38.0: the producer half of the telemetry causal links
+
+Migration 054 added the columns and the daemon learned to read them; nothing emitted them, so
+`causal_parent_life_sequence` and `causal_parent_frag_sequence` were NULL on every row by
+construction. `ktp_stats_capture.inc` now emits the two wire properties that fill them:
+
+```
+"<player>" triggered "frag_context" against "<victim>" with "<weapon>" .. (causal_parent_life ..)
+"<player>" triggered "assist" against "<victim>" .. (causal_parent_life ..) (causal_parent_frag ..)
+```
+
+One DODX death hook observes the victim's life end, then the non-teamkill frag, then each assist, so
+the life-end key is available to the frag and to every assist and the frag key is available to every
+assist. That ordering is the whole point: these links are producer-observed, and a consumer is
+forbidden from manufacturing one from a nearest timestamp or a common player pair.
+
+- `ksc_emit_life_boundary` and `ksc_emit_frag_context` publish their minted sequence through an
+  out-parameter, and `ksc_on_death` threads it: life key in to the frag, frag key out to the
+  assists. The default-valued reference keeps the three other boundary call sites unchanged.
+- A KEY IS PUBLISHED ONLY ONCE ITS OWN MARKER IS QUEUED. A dropped boundary or a full ring leaves
+  the children parentless rather than pointing them at an event the daemon never receives, which is
+  what the spec asks for on a dropped frag marker.
+- ONE APPENDED SUFFIX, NOT A MATRIX. The assist line has four position variants and the frag two;
+  threading a parent through each format string would have multiplied them into sixteen. A single
+  `ksc_causal_suffix` renders the properties once per death group and `add()` appends it after
+  whichever variant was formatted.
+- A SEQUENCE OF 0 LEAVES THE PROPERTY OFF THE LINE. 0 is what an untracked emit carries and it is
+  also a legal `producer_sequence`, so a literal `0` on the wire would be read downstream as a real
+  parent. Only a positive value renders; the daemon's own `ktpLinkSeqOrNull` makes the same cut from
+  the other side, so the two halves fail in the same direction.
+- No `KSC_SCHEMA_CONTRACT` bump and no new capability name. These are two extra properties on two
+  existing streams, and an old daemon ignores a property it does not know -- so a producer ahead of
+  its daemon loses the links and nothing else. The deploy order is still migration, daemon, producer.
+- Width: the worst-case `frag_context` marker measures 922 bytes and the worst-case `assist` 573,
+  against the 997 that survives `Log_Printf` whole -- not the 1,024 of `KSC_BUF_LINE_LEN`, which is
+  the plugin buffer and 27 bytes too generous. `test_clocked_frag_and_assist_lines_fit_general_buffer`
+  now builds both worst cases with the suffix (and with the yaw/pitch and sequence fields it had been
+  missing), and KTPHLStatsX's `selftest-frag-context.pl` carries the 997 pin.
+
 ### Added - 1.37.0: a shot that hit nobody now records something -- the `shot_miss` stream
 
 `dodx_get_shot_miss` and `dodx_get_shot_traces` shipped in dodx `2.7.33.6004` and nothing called

@@ -159,6 +159,7 @@ def test_clocked_frag_and_assist_lines_fit_general_buffer() -> None:
     victim = "V" * 95
     weapon = "W" * 31
     number = "-2147483648"
+    sequence = "2147483647"  # a parent link is positive or absent
     position = f"{number} {number} {number}"
     matchid = "M" * 63
     frag = (
@@ -171,14 +172,25 @@ def test_clocked_frag_and_assist_lines_fit_general_buffer() -> None:
             )
         )
         + f' (k_position "{position}") (v_position "{position}") '
-        + f'(is_last_flag_defense "{number}") (matchid "{matchid}") '
-        + f'(half "255") (game_time "{number}.00") (event_epoch "2147483647")'
+        + f'(is_last_flag_defense "{number}") '
+        + " ".join(
+            f'({field} "{number}.0")'
+            for field in ("k_yaw", "k_pitch", "v_yaw", "v_pitch")
+        )
+        + f' (matchid "{matchid}") '
+        + f'(half "255") (game_time "{number}.00") (event_epoch "2147483647") '
+        + f'(sequence "{sequence}")'
+        # ksc_causal_suffix appends the life parent here; the frag has no frag
+        # parent (migration 054 fixes which stream carries which).
+        + f' (causal_parent_life "{sequence}")'
     )
     assist = (
         f'"{player}" triggered "assist" against "{victim}" '
         f'(assister_position "{position}") (victim_position "{position}") '
         f'(matchid "{matchid}") (half "255") (event_epoch "2147483647") '
-        f'(game_time "{number}.00")'
+        f'(game_time "{number}.00") (sequence "{sequence}")'
+        # Both parents, which is the widest suffix the helper can append.
+        f' (causal_parent_life "{sequence}") (causal_parent_frag "{sequence}")'
     )
     general = re.search(r"#define\s+KSC_BUF_LINE_LEN\s+(\d+)", CAPTURE)
     assert general
@@ -190,7 +202,7 @@ def test_clocked_frag_and_assist_lines_fit_general_buffer() -> None:
 def test_allowed_boundary_pairs() -> None:
     assert 'ksc_life_start(id, "spawn")' in CAPTURE
     assert 'ksc_emit_life_boundary(id, matchid, "start", "context_live")' in CAPTURE
-    assert 'ksc_life_end(victim, "death")' in CAPTURE
+    assert 'ksc_life_end(victim, "death", life_seq)' in CAPTURE
 
 
 def test_non_playing_team_is_normalized_for_wire_contract() -> None:
@@ -205,8 +217,8 @@ def test_spawn_and_death_ordering() -> None:
     before(spawn, "ksc_clear_damage_row(id)", 'ksc_life_start(id, "spawn")')
 
     death = function_body(CAPTURE, "stock ksc_on_death")
-    before(death, 'ksc_life_end(victim, "death")', "ksc_queue_break_candidate")
-    before(death, 'ksc_life_end(victim, "death")', "if (ksc_enabled())")
+    before(death, 'ksc_life_end(victim, "death", life_seq)', "ksc_queue_break_candidate")
+    before(death, 'ksc_life_end(victim, "death", life_seq)', "if (ksc_enabled())")
 
 
 def test_disconnect_precedes_slot_clear_and_pause_gate() -> None:
@@ -272,7 +284,8 @@ def test_life_boundaries_have_truthful_ordered_queue() -> None:
     assert "return true" in life_queue
 
     emit = function_body(CAPTURE, "stock bool:ksc_emit_life_boundary")
-    assert "return ksc_life_buffer(line)" in emit
+    assert "new bool:queued = ksc_life_buffer(line)" in emit
+    assert "return queued" in emit
     assert "ksc_buffer(line)" not in emit
 
     flush = function_body(CAPTURE, "stock ksc_flush")
@@ -1961,6 +1974,57 @@ def test_dodx_rewind_is_stamped_per_cmd_inside_the_rewind_window() -> None:
     before(rewind, "out[0] = out[1] = out[2] = -1;", "CHECK_PLAYER(index);")
     assert "readRewind(rw)" in rewind
     assert re.search(r"^native dodx_get_shot_rewind\(id, rw\[3\]\);", DODX_INCLUDE, re.M)
+
+
+def test_causal_parent_links_are_appended_once_and_omit_an_untracked_zero() -> None:
+    """The producer-observed parent links of one death group (migration 054).
+
+    Two traps, both silent. A parent is a producer_sequence and 0 is a legal
+    one, so an untracked or dropped emit has to leave the property OFF the
+    line -- a literal 0 reads downstream as a real parent. And the suffix is
+    appended once: the assist has four position variants and the frag two, so
+    carrying the parents inside those format strings multiplies them out.
+    """
+    suffix = function_body(CAPTURE, "stock ksc_causal_suffix")
+    # Every render is behind a positive test, and the else writes nothing.
+    assert suffix.count("parent_life > 0") == 2
+    assert suffix.count("parent_frag > 0") == 2
+    assert suffix.count('(causal_parent_life ^\"%d^\")') == 2
+    assert suffix.count('(causal_parent_frag ^\"%d^\")') == 2
+    assert "out[0] = 0" in suffix
+
+    # Neither emitter renders a parent property itself: one appended suffix.
+    for signature in ("stock ksc_emit_frag_context", "stock ksc_on_death"):
+        body = function_body(CAPTURE, signature)
+        assert "causal_parent" not in body, signature
+        assert body.count("ksc_causal_suffix(") == 1, signature
+        assert body.count("add(line, charsmax(line), causal)") == 1, signature
+
+    # frag_context carries the life parent only -- migration 054 fixes the two
+    # wire names, and frag has no frag parent.
+    frag = function_body(CAPTURE, "stock ksc_emit_frag_context")
+    assert "ksc_causal_suffix(causal, charsmax(causal), parent_life, 0)" in frag
+    # Published only once the emit was actually queued.
+    assert "if (ksc_buffer_event(line, KSC_EVENT_FRAG, tracked))" in frag
+    before(frag, "sequence_out = 0", "if (killer < 1 || killer > MAX_PLAYERS")
+
+    life = function_body(CAPTURE, "stock bool:ksc_emit_life_boundary")
+    before(life, "sequence_out = 0", "if (!ksc_enabled() || !matchid[0])")
+    assert "if (queued)" in life
+    assert "sequence_out = sequence" in life
+
+    end = function_body(CAPTURE, "stock ksc_life_end")
+    assert 'ksc_emit_life_boundary(id, matchid, "end", reason, sequence_out)' in end
+
+    # Life end, then frag, then the assists. That order is what the links
+    # assert; reconstructing them from timing is what the spec forbids.
+    death = function_body(CAPTURE, "stock ksc_on_death")
+    emit_frag = "ksc_emit_frag_context(killer, victim, wpnindex, hitplace, life_seq, frag_seq)"
+    before(death, 'ksc_life_end(victim, "death", life_seq)', emit_frag)
+    before(death, emit_frag, "ksc_causal_suffix(")
+    # A teamkill or a disabled capture skips the frag emit entirely, so the
+    # assists' frag parent has to start at 0 rather than inherit a stale cell.
+    assert "new life_seq = 0, frag_seq = 0" in death
 
 
 def main() -> None:
