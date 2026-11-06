@@ -1448,7 +1448,10 @@ stock ksc_round_live_now() {
 	return (current > limit) ? 0 : 1
 }
 
-stock bool:ksc_emit_life_boundary(id, const matchid[], const kind[], const reason[]) {
+stock bool:ksc_emit_life_boundary(id, const matchid[], const kind[], const reason[], &sequence_out = 0) {
+	// 0 before any early return: a caller that links to this boundary must see
+	// "no parent" rather than whatever its own variable held.
+	sequence_out = 0
 	if (!ksc_enabled() || !matchid[0])
 		return false
 	if (id < 1 || id > MAX_PLAYERS)
@@ -1494,7 +1497,13 @@ stock bool:ksc_emit_life_boundary(id, const matchid[], const kind[], const reaso
 		player_str, producer_matchid, producer_half, event_epoch, game_time,
 		kind, reason, team, class_id, id, round_live,
 		g_kscLifeShots[id], g_kscLifeShotsHitscan[id], first_shot_delay, sequence)
-	return ksc_life_buffer(line)
+	new bool:queued = ksc_life_buffer(line)
+	// Publish the key only once the boundary is really on the queue. A dropped
+	// boundary leaves its children honestly parentless instead of pointing them
+	// at an event the daemon never receives.
+	if (queued)
+		sequence_out = sequence
+	return queued
 }
 
 stock ksc_life_start(id, const reason[]) {
@@ -1578,7 +1587,8 @@ public dod_client_changeteam(id, team, oldteam) {
 	ksc_emit_team_membership(id, team, oldteam)
 }
 
-stock ksc_life_end(id, const reason[]) {
+stock ksc_life_end(id, const reason[], &sequence_out = 0) {
+	sequence_out = 0
 	if (id < 1 || id > MAX_PLAYERS)
 		return
 	ksc_duel_sample(id)
@@ -1589,7 +1599,7 @@ stock ksc_life_end(id, const reason[]) {
 
 	// Emit an authoritative death even if its start raced the context baseline;
 	// that is an honest left-censored life and is preferable to losing the end.
-	ksc_emit_life_boundary(id, matchid, "end", reason)
+	ksc_emit_life_boundary(id, matchid, "end", reason, sequence_out)
 	g_kscLifePhysicalAlive[id] = false
 	g_kscLifeOpen[id] = false
 }
@@ -3501,6 +3511,31 @@ stock bool:ksc_is_last_flag_defense(killer, killer_team) {
 	return dist2 <= (KSC_LAST_FLAG_RADIUS * KSC_LAST_FLAG_RADIUS)
 }
 
+// Widest causal suffix this file can append: both properties, each a positive
+// Pawn cell. KTPHLStatsX's selftest-frag-context.pl pins the resulting
+// worst-case marker against the ceiling where Log_Printf truncates it.
+#define KSC_CAUSAL_SUFFIX_LEN 72
+
+// The causal parent references of one death group, rendered once and appended to
+// whichever line variant was formatted. Built here rather than threaded through
+// each format string because the assist has four position variants and the frag
+// two: every pairing would need its own format call.
+//
+// A sequence of 0 means the emit was untracked or was never queued, and 0 is
+// also a legal producer_sequence on the wire -- so an absent parent leaves the
+// property OFF the line. Emitting 0 would read downstream as a real parent.
+stock ksc_causal_suffix(out[], len, parent_life, parent_frag) {
+	if (parent_life > 0 && parent_frag > 0)
+		formatex(out, len, " (causal_parent_life ^"%d^") (causal_parent_frag ^"%d^")",
+			parent_life, parent_frag)
+	else if (parent_life > 0)
+		formatex(out, len, " (causal_parent_life ^"%d^")", parent_life)
+	else if (parent_frag > 0)
+		formatex(out, len, " (causal_parent_frag ^"%d^")", parent_frag)
+	else
+		out[0] = 0
+}
+
 // frag_context: fired on every non-teamkill player frag (not just headshots),
 // carrying the state that makes a kill legible after the fact -- was the
 // victim prone, scoped, out of ammo. Teamkills live in a different HLStatsX
@@ -3511,7 +3546,8 @@ stock bool:ksc_is_last_flag_defense(killer, killer_team) {
 // disconnected participant. dod_get_pronestate returns 0 standing, 1 going
 // prone / MG teardown, 2 setting up an MG while down -- stored raw, not
 // collapsed to a bool, since the daemon column can hold the real value.
-stock ksc_emit_frag_context(killer, victim, wpnindex, hitplace) {
+stock ksc_emit_frag_context(killer, victim, wpnindex, hitplace, parent_life = 0, &sequence_out = 0) {
+	sequence_out = 0
 	if (killer < 1 || killer > MAX_PLAYERS || killer == victim)
 		return
 	if (victim < 1 || victim > MAX_PLAYERS)
@@ -3576,7 +3612,12 @@ stock ksc_emit_frag_context(killer, victim, wpnindex, hitplace) {
 			is_last_flag_defense, k_yaw, k_pitch, v_yaw, v_pitch,
 			producer_matchid, producer_half, game_time, event_epoch, sequence)
 
-	ksc_buffer_event(line, KSC_EVENT_FRAG, tracked)
+	new causal[KSC_CAUSAL_SUFFIX_LEN]
+	ksc_causal_suffix(causal, charsmax(causal), parent_life, 0)
+	add(line, charsmax(line), causal)
+
+	if (ksc_buffer_event(line, KSC_EVENT_FRAG, tracked))
+		sequence_out = sequence
 }
 
 // Called from stats_logging.sma's client_death, ahead of its old headshot-only
@@ -3592,7 +3633,11 @@ stock ksc_on_death(killer, victim, wpnindex, hitplace, TK) {
 	// stamp their live/freeze state without a DODX getter, so this raw ledger
 	// leaves that classification to later context. An empty match id (warmup)
 	// still fails closed.
-	ksc_life_end(victim, "death")
+	//
+	// Life end, then frag, then the assists: that order is what makes the parent
+	// links below producer-observed rather than reconstructed from timing.
+	new life_seq = 0, frag_seq = 0
+	ksc_life_end(victim, "death", life_seq)
 	ksc_gun_on_death(killer, victim, wpnindex)
 
 	new bool:effectiveTeamkill = ksc_effective_teamkill(killer, victim, TK)
@@ -3603,7 +3648,7 @@ stock ksc_on_death(killer, victim, wpnindex, hitplace, TK) {
 	// marker for a TK can only produce a false no-row diagnostic (and has no
 	// Teamkills context columns to populate).
 	if (ksc_enabled() && !effectiveTeamkill)
-		ksc_emit_frag_context(killer, victim, wpnindex, hitplace)
+		ksc_emit_frag_context(killer, victim, wpnindex, hitplace, life_seq, frag_seq)
 
 	if (victim < 1 || victim > MAX_PLAYERS)
 		return
@@ -3624,6 +3669,10 @@ stock ksc_on_death(killer, victim, wpnindex, hitplace, TK) {
 		}
 		new event_epoch = get_systime()
 		new Float:game_time = get_gametime()
+		// One render for the whole death group: every assister below shares the
+		// same two parents.
+		new causal[KSC_CAUSAL_SUFFIX_LEN]
+		ksc_causal_suffix(causal, charsmax(causal), life_seq, frag_seq)
 
 		for (new a = 1; a <= MAX_PLAYERS; a++) {
 			if (a == killer || a == final_attacker || a == victim)
@@ -3679,6 +3728,11 @@ stock ksc_on_death(killer, victim, wpnindex, hitplace, TK) {
 					"^"%s^" triggered ^"assist^" against ^"%s^" (matchid ^"%s^") (half ^"%d^") (event_epoch ^"%d^") (game_time ^"%.2f^") (sequence ^"%d^")",
 					assister_str, victim_str,
 					producer_matchid, producer_half, event_epoch, game_time, sequence)
+
+			// Appended once, after whichever position variant was formatted:
+			// carrying the parents inside those format strings would need one
+			// per pairing of position variant and parent combination.
+			add(line, charsmax(line), causal)
 
 			ksc_buffer_event(line, KSC_EVENT_ASSIST, tracked)
 		}
