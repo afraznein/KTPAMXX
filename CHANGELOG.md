@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - dodx: objective points taken with a weapon that never fired are logged again
+
+`CPlayer::updateScore` credits the objective-score delta to `weapons[current]` -- the weapon
+held when the engine's `ObjScore` message arrives -- and to `weapons[0]`, the aggregate slot.
+`get_user_wstats` then refused to return any row whose `shots` was zero, and
+`plugins/dod/stats_logging.sma` walks weapons from index 1, so the aggregate is never read
+either. A cap taken while holding a weapon the player had not fired that half therefore
+reached no `weaponstats` line at all.
+
+Measured 2026-10-05 on 2026-10-04's matches across all 24 instances: 73 of 700 scoring
+player-halves had a `weaponstats` score sum below the last `KTP_SCORE_EVENT` total, always
+short and never over. That direction is what the mechanism predicts -- points can only be
+dropped, never invented -- and it is not the `savedScore` bug (#120, verified fixed the same
+day), whose signature was a negative delta after a half restart.
+
+`get_user_wstats` now returns a row when `shots` OR `points` is non-zero. The shot and hit
+counters downstream are already zero-guarded, so a shots-zero row adds a score and nothing
+else: `hlstats.pl`'s `$g_ktpScoreAccum` picks the points up and `doEvent_Statsme` increments
+nothing it did not increment before.
+
+`get_user_wlstats` and `get_user_wrstats` carry the identical gate over the life- and
+round-scoped tables and are deliberately untouched: no plugin under `plugins/dod/` calls
+either one, so the same defect is latent there rather than live, and widening a module
+change that reaches 24 instances buys nothing.
+
 ### Added - 1.38.0: the producer half of the telemetry causal links
 
 Migration 054 added the columns and the daemon learned to read them; nothing emitted them, so
