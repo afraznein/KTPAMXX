@@ -201,7 +201,10 @@ static cell AMX_NATIVE_CALL get_user_wstats(AMX *amx, cell *params) /* 4 param *
 		return 0;
 	}
 
-	if (pPlayer->weapons[weapon].shots){
+	// Objective points are credited to the weapon held at capture time, which may
+	// never fire this half, so a shots-only gate dropped those rows and the logged
+	// per-weapon score sum ran short of the engine's own total.
+	if (pPlayer->weapons[weapon].shots || pPlayer->weapons[weapon].points){
 		cell *cpStats = MF_GetAmxAddr(amx,params[3]);
 		cell *cpBodyHits = MF_GetAmxAddr(amx,params[4]);
 		CPlayer::PlayerWeapon* stats = &pPlayer->weapons[weapon];
