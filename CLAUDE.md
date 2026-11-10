@@ -237,14 +237,24 @@ shipping a dodx that raises it, read MINOR from the commit the **live** engine b
 
 ### `.amxx` plugins
 
-- **Byte-reproducible against the same `amxxpc` — and the compiler is pinned by no commit.** This
-  repo's `plugins/compile.sh` generates no `build_info.inc`, and no in-tree `.sma` includes
-  `ktp_version_reporter`, so `stats_logging.amxx` and `admin.amxx` bake no timestamp: five compiles of
-  1.23.1, two straddling a minute rollover and one from a different directory, gave one md5
-  (2026-09-17). ⚠️ **A different `amxxpc` still changes the bytes** — which is why a 09-07 rebuild
-  at an old pin mismatched, and `amxxpc` is a gitignored build output. So **still** never rebuild an
-  artifact whose md5 is pinned to a review, and never try to recover a build base by rebuilding
-  candidates and comparing hashes — the correct base mismatches whenever the compiler moved.
+- **Byte-reproducible from the same commit AND the same relative include layout — the layout, not
+  the compiler, is the variable that bites.** This repo's `plugins/compile.sh` generates no
+  `build_info.inc`, and no in-tree `.sma` includes `ktp_version_reporter`, so `stats_logging.amxx` and
+  `admin.amxx` bake no timestamp. ⚠️ **But the debug block records every include by the path the
+  compiler opened it under**, so sources copied flat beside an `include/` dir (`./include/float.inc`)
+  and the same sources compiled in `plugins/dod` with `-i../include` (`../include/float.inc`) are
+  different bytes. The code and data segments are identical; only the trailing debug block differs.
+  Moving the whole tree to another absolute directory changes nothing; moving the include dir
+  relative to the working directory does. Measured 2026-11-10: `stats_logging` 1.32.1 at `0b16b3b0`
+  reproduces the fielded `3bb25eae…` only in the `../include` layout, 1.37.0 at `978231e4` reproduces
+  the fielded `1b14bcc4…` only in the flat layout, and in both cases two different `amxxpc` builds
+  (2.7.33.5921 and 2.7.33.6010) gave identical output.
+  ➡️ **So a rebuild that mismatches a recorded base is NOT evidence the base is wrong** until both
+  layouts have been tried — that is exactly how two correctly recorded wave bases came to read as bad
+  provenance. To compare two builds, inflate both payloads: equal bytes up to the AMX header's `size`
+  field means the same code, and a diff that starts after it is debug metadata. ⚠️ A different
+  `amxxpc` can still change the bytes and nothing pins it (it is a gitignored build output), so
+  **still** never rebuild an artifact whose md5 is pinned to a review.
   ⚠️ **The standalone plugin repos are the OPPOSITE case:** their own `compile.sh` writes a
   per-minute `KTP_BUILD_TIME` into a generated `build_info.inc`, which
   `plugins/include/ktp_version_reporter.inc` `#tryinclude`s. Measured on KTPMatchHandler `526da23`:
@@ -258,7 +268,7 @@ shipping a dodx that raises it, read MINOR from the commit the **live** engine b
 ### dodx and the C++ modules
 
 - **NOT reproducible the way the plugins above are, and the asymmetry is the trap.** A `.amxx` built
-  from a different directory still gave one md5; the module side does not survive that.
+  from a different absolute directory still gives one md5; the module side does not survive that.
   `modules/dod/dodx/moduleconfig.h` bakes `MODULE_DATE __DATE__`, so a module can never reproduce
   across calendar days, and the absolute build path lands in the debug sections on top of it.
   Measured at `978231e4` on 2026-11-04: two same-day builds from sibling paths `src-a` and `src-b`
