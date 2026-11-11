@@ -22,6 +22,8 @@
 
 void CPlayer::Disconnect()
 {
+	DODX_FlushPendingKill(index, true);
+
 	ingame = false;
 	bot = false;
 	savedScore = 0;
@@ -446,6 +448,8 @@ void CPlayer::PreThink()
 	// KTP: Safety check - pEdict must be valid before any access
 	if (!pEdict || pEdict->free)
 		return;
+
+	DODX_FlushPendingKill(index, false);
 
 	// Player observed alive = current life's death can't have been counted
 	// yet. Backstop for the observed-deaths per-life gate in case a spawn

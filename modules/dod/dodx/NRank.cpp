@@ -437,6 +437,9 @@ static cell AMX_NATIVE_CALL dodx_reset_all_stats(AMX *amx, cell *params)
 	// Re-baseline the offset-validation death counter for every slot, not
 	// just ingame players — it's slot-inherited and otherwise monotonic for
 	// the whole server process (Connect() never runs in extension mode).
+	// A kill still waiting on its DeathMsg happened before this reset.
+	DODX_FlushAllPendingKills();
+
 	extern int g_observedDeaths[33];
 	extern bool g_deathCountedThisLife[33];
 	memset(g_observedDeaths, 0, sizeof(g_observedDeaths));
