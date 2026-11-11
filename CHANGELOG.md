@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - dodx: a kill the Damage hook sees first is reported under the weapon the engine logged
+
+The frag-context marker, the headshot flag and DODX's own per-weapon kill counter all take
+their weapon from the `client_death` forward, and HLStatsX joins the marker to the stock kill
+line on that name. When the Damage hook reported a death it used the attacker's held weapon,
+which can be one the engine never logged: a bot respawned into a new class before any
+`CurWeapon` for the new gun, a weapon switch, a butt or bayonet hit. The daemon's
+`AND weapon IN (...)` then matches no row and the kill reads as frag loss.
+
+The 2.7.33.6004 fix reached only the late-`Health` ordering, where `DeathMsg` reports first
+and leaves a record. The ordering the Lane B nightly keeps hitting is the other one: `Health`
+arrives first and suppresses `DeathMsg`, so the held weapon went out. Run `42970288647`
+carried two such kills (held `mp44` against logged `kar`, on a headshot; held `scopedkar`
+against logged `kar`), and between them they account for every content failure in that run:
+`headshot` 11 vs 10, `frag_context_diagnostics`, `frag_context_claimed`,
+`frag_producer_clocks`, `capture_health`, `capture_context_isolation`, and the
+`v5_match_report` frag-counter reconcile (*daemon rejected 2*).
+
+The Damage hook now holds its report (attacker, held weapon, hitplace, teamkill flag) until
+`DeathMsg` for the same victim names the engine's weapon, and reports then. The hook's
+attacker, hitplace and teamkill detection are kept; only the weapon comes from `DeathMsg`,
+and only when `DeathMsg` names the same killer and a weapon `weaponData` knows. A held kill
+whose `DeathMsg` has not arrived within the existing 33 ms dedup window is reported with the
+held weapon from the victim's next `PreThink`, so a kill is never lost; a disconnect or
+`dodx_reset_all_stats` reports any held kill first, and one stamped after the current time
+(a map change) is dropped rather than credited into the new map.
+
+What moves for a consumer:
+
+- **One `client_death` per death, as before.** The dedup window and the observed-deaths
+  tally are unchanged; the forward fires from the `DeathMsg` handler instead of the `Health`
+  handler, normally within the same server frame.
+- **The weapon changes only where the two names disagreed.** `weaponstats` kill counts move
+  from the held weapon to the logged one, which is what the stock kill line HLStatsX already
+  stores in `hlstats_Events_Frags` says. Hits and damage still book to the held weapon: a
+  non-lethal hit has no `DeathMsg` to correct it.
+- No wire field, schema ordinal, native, forward signature or migration moves.
+
+The hold is `modules/dod/dodx/KTPKillHold.h`, plain values only, and
+`scripts/test_kill_hold.cpp` drives it with the Lane B pairs. Its negative control is the
+pre-fix flow (report at once with the held weapon), which fails 11 checks; the fix passes
+all of them.
+
 ### Fixed - dodx: objective points taken with a weapon that never fired are logged again
 
 `CPlayer::updateScore` credits the objective-score delta to `weapons[current]` -- the weapon

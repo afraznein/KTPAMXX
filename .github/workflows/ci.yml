@@ -230,6 +230,26 @@ jobs:
             -Imodules/dod/dodx -o /tmp/test_shot_miss scripts/test_shot_miss.cpp
           /tmp/test_shot_miss
 
+      # The Damage-hook kill held for DeathMsg's weapon. The negative control here is the
+      # pre-fix flow (report at once with the held weapon), so it fails on the bug itself.
+      - name: Prove the kill-hold test discriminates
+        working-directory: KTPAMXX
+        run: |
+          set -e
+          ${{ matrix.cxx }} -m32 -O2 -std=gnu++14 -DNEGATIVE_CONTROL             -Imodules/dod/dodx -o /tmp/test_kill_hold_neg scripts/test_kill_hold.cpp
+          if /tmp/test_kill_hold_neg; then
+            echo 'FAIL: the negative control PASSED, so this gate asserts nothing'
+            exit 1
+          fi
+          echo 'negative control failed as required'
+
+      - name: Test the Damage-hook kill hold
+        working-directory: KTPAMXX
+        run: |
+          set -e
+          ${{ matrix.cxx }} -m32 -O2 -std=gnu++14             -Imodules/dod/dodx -o /tmp/test_kill_hold scripts/test_kill_hold.cpp
+          /tmp/test_kill_hold
+
       - name: Install AMBuild
         run: |
           python3 -m pip install --upgrade pip setuptools wheel

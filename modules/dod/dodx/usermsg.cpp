@@ -14,6 +14,7 @@
 
 #include "amxxmodule.h"
 #include "dodx.h"
+#include "KTPKillHold.h"
 #include <string.h>
 
 // KTP: Per-victim "client_death already fired this frame" gate.
@@ -21,6 +22,7 @@
 // DeathMsg always fires (incl. suicide / world-kill / fall). We need DeathMsg to
 // cover the no-Damage cases without double-firing for the normal kill flow.
 static float g_lastDeathReportTime[33] = {0};
+static const float kDeathReportWindow = 0.033f;
 
 // KTP 2026-05-21: per-player observed deaths counter for the score/deaths
 // offset validation gate. Ticks once per death event (any cause — frags,
@@ -91,6 +93,33 @@ static int takeEngineDeathWeapon(int victimIdx)
 	int weapon = g_engineDeathWeapon[victimIdx];
 	g_engineDeathWeapon[victimIdx] = 0;
 	return weapon;
+}
+
+static void reportKill(int attackerIdx, int victimIdx, int weapon, int aim, int TA, float reportTime)
+{
+	CPlayer* pAttacker = GET_PLAYER_POINTER_I(attackerIdx);
+	CPlayer* pVictim = GET_PLAYER_POINTER_I(victimIdx);
+
+	pAttacker->saveKill(pVictim, weapon, (aim == 1) ? 1 : 0, TA);
+	MF_ExecuteForward(iFDeath, attackerIdx, victimIdx, weapon, aim, TA);
+	g_lastDeathReportTime[victimIdx] = reportTime;
+	countObservedDeath(victimIdx);
+}
+
+static KTPKillHold g_killHold;
+
+// A held kill whose DeathMsg never came is reported with the hook's own read.
+void DODX_FlushPendingKill(int victimIdx, bool force)
+{
+	KTPHeldKill k;
+	if (g_killHold.expire(victimIdx, gpGlobals ? gpGlobals->time : 0.0f, force, kDeathReportWindow, k))
+		reportKill(k.attacker, victimIdx, k.weapon, k.aim, k.TA, k.time);
+}
+
+void DODX_FlushAllPendingKills()
+{
+	for (int i = 1; i < 33; i++)
+		DODX_FlushPendingKill(i, true);
 }
 
 void Client_ResetHUD_End(void* mValue)
@@ -414,22 +443,35 @@ void Client_Health_End(void* mValue)
 		if (mPlayer->index >= 1 && mPlayer->index < 33 && gpGlobals)
 		{
 			float delta = gpGlobals->time - g_lastDeathReportTime[mPlayer->index];
-			if (delta >= 0.0f && delta < 0.033f)
+			if (delta >= 0.0f && delta < kDeathReportWindow)
 				return;
 		}
+
+		int victimIdx = mPlayer->index;
+		float now = gpGlobals ? gpGlobals->time : 0.0f;
 
 		// HLStatsX joins the frag marker to the stock kill line on the weapon, and
 		// the engine's own name for it carries the melee and butt variants a
 		// held-weapon read gets wrong.
-		int killWeapon = takeEngineDeathWeapon(mPlayer->index);
-		if (killWeapon < 0)
-			killWeapon = weapon;
+		int killWeapon = takeEngineDeathWeapon(victimIdx);
+		if (killWeapon >= 0)
+		{
+			reportKill(pAttacker->index, victimIdx, killWeapon, aim, TA, now);
+			return;
+		}
 
-		pAttacker->saveKill(mPlayer,killWeapon,( aim == 1 ) ? 1:0 ,TA);
-		MF_ExecuteForward( iFDeath, pAttacker->index, mPlayer->index, killWeapon, aim, TA );
-		if (mPlayer->index >= 1 && mPlayer->index < 33)
-			g_lastDeathReportTime[mPlayer->index] = gpGlobals ? gpGlobals->time : 0.0f;
-		countObservedDeath(mPlayer->index);
+		if (!KTPKillHold::validSlot(victimIdx))
+		{
+			pAttacker->saveKill(mPlayer, weapon, (aim == 1) ? 1 : 0, TA);
+			MF_ExecuteForward(iFDeath, pAttacker->index, victimIdx, weapon, aim, TA);
+			return;
+		}
+
+		DODX_FlushPendingKill(victimIdx, true);
+		g_killHold.hold(victimIdx, pAttacker->index, weapon, aim, TA, now);
+		// Stamped now, not at report time, so a duplicate Health inside the window is
+		// still dropped exactly as it was when this hook reported immediately.
+		g_lastDeathReportTime[victimIdx] = now;
 	}
 }
 
@@ -785,8 +827,8 @@ void Client_PStatus(void* mValue)
 // Format: BYTE killer_index, BYTE victim_index, STRING weapon_logname.
 // DeathMsg fires for every death — including suicides via "kill" console,
 // world deaths (fall, drown, kill triggers) where no Damage message is sent.
-// Damage hook already fires iFDeath for normal kills, so dedup against
-// g_lastDeathReportTime to avoid double-firing for the same death.
+// A kill the Damage hook is holding is reported here with this message's weapon;
+// otherwise dedup against g_lastDeathReportTime so one death fires once.
 void Client_DeathMsg(void* mValue)
 {
 	static int killerIdx;
@@ -810,26 +852,7 @@ void Client_DeathMsg(void* mValue)
 
 		if (victimIdx < 1 || victimIdx > maxClients) break;
 
-		// Dedup: skip if Damage hook already fired iFDeath for this victim
-		// in the current or last few frames. Damage and DeathMsg normally ship
-		// in the same server frame (both generated during the same SV_RunCmd
-		// pass), so well under 1ms apart. A 33ms window (~4 frames at
-		// sv_maxupdaterate 120) is comfortably beyond expected engine timing
-		// jitter while minimizing the chance of suppressing a legitimate
-		// quick re-death.
-		//
-		// KNOWN LIMITATION: If a damage message races the DeathMsg by >33ms
-		// (e.g. under a server FPS dip), DeathMsg fires first with TA=0 and
-		// the Damage hook's subsequent fire gets suppressed by this guard.
-		// A real teamkill via a world-damage source (grenade, trigger_hurt)
-		// could then be logged as non-TK in HLStatsX. Narrow edge case —
-		// the Damage hook owns real-time TK detection for the >99% normal
-		// kill path. Revisit if stats regressions surface.
 		float now = gpGlobals->time;
-		// Negative delta = server time restarted (map change), not a dup.
-		float delta = now - g_lastDeathReportTime[victimIdx];
-		if (delta >= 0.0f && delta < 0.033f)
-			break;
 
 		// Resolve weapon name to wpnindex (matches xmod_get_wpnlogname behavior).
 		int weapon = 0;
@@ -849,6 +872,36 @@ void Client_DeathMsg(void* mValue)
 		// to mark it as a suicide.
 		if (killerIdx < 0) killerIdx = 0;
 		if (killerIdx > maxClients) killerIdx = 0;
+
+		// The Damage hook got here first and is holding its report for this name.
+		KTPHeldKill held;
+		if (g_killHold.resolve(victimIdx, killerIdx, weapon, held))
+		{
+			reportKill(held.attacker, victimIdx, held.weapon, held.aim, held.TA, held.time);
+			// Must follow reportKill's countObservedDeath: the tally is this record's key.
+			noteEngineDeathWeapon(victimIdx, weapon);
+			break;
+		}
+
+		// Dedup: skip if Damage hook already fired iFDeath for this victim
+		// in the current or last few frames. Damage and DeathMsg normally ship
+		// in the same server frame (both generated during the same SV_RunCmd
+		// pass), so well under 1ms apart. A 33ms window (~4 frames at
+		// sv_maxupdaterate 120) is comfortably beyond expected engine timing
+		// jitter while minimizing the chance of suppressing a legitimate
+		// quick re-death.
+		//
+		// KNOWN LIMITATION: If a damage message races the DeathMsg by >33ms
+		// (e.g. under a server FPS dip), DeathMsg fires first with TA=0 and
+		// the Damage hook's subsequent fire gets suppressed by this guard.
+		// A real teamkill via a world-damage source (grenade, trigger_hurt)
+		// could then be logged as non-TK in HLStatsX. Narrow edge case —
+		// the Damage hook owns real-time TK detection for the >99% normal
+		// kill path. Revisit if stats regressions surface.
+		// Negative delta = server time restarted (map change), not a dup.
+		float delta = now - g_lastDeathReportTime[victimIdx];
+		if (delta >= 0.0f && delta < kDeathReportWindow)
+			break;
 
 		int aim = 0;   // No hitplace info on DeathMsg
 		int TA = 0;    // Teamkill flag — Damage hook owns the proper detection

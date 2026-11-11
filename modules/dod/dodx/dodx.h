@@ -480,6 +480,8 @@ void Client_PStatus(void*);
 void Client_InitObj(void*);
 void Client_SetObj(void*);
 void Client_DeathMsg(void*);  // KTP: Suicide / world-kill detection
+void DODX_FlushPendingKill(int victimIdx, bool force);
+void DODX_FlushAllPendingKills();
 void Client_WeaponList(void*);  // KTP: per-map ammo-index registry
 
 typedef void (*funEventCall)(void*);
