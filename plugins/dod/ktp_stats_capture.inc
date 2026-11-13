@@ -828,8 +828,8 @@ stock ksc_close_producer_context() {
 	ksc_break_reset_boundary()
 	ksc_gun_ground_clear()
 	// The census window closes on the half, not on its own timer. The tick after
-	// this one finds no context and resets, so without this the movement between
-	// the last tick and the boundary was discarded rather than emitted.
+	// this one finds no context, so without this the half's last partial window
+	// would be emitted as untracked play.
 	if (g_kscProducerContextConfirmed && g_kscProducerMatchId[0] &&
 			g_kscProducerHalf != 0)
 		ksc_move_flush_window(true, g_kscProducerMatchId, g_kscProducerHalf)
@@ -2766,6 +2766,17 @@ stock ksc_move_flush_window(bool:tracked, const matchid[], half) {
 	new mapname[32]
 	get_mapname(mapname, charsmax(mapname))
 
+	// Untracked play (warm-up, pubs, between halves) is emitted too, under the
+	// explicit "-" / 0 sentinel the daemon stores as match_id NULL / half 0. It needs
+	// a daemon that admits that sentinel; an older one refuses every such line.
+	new wire_matchid[64], wire_half = 0
+	if (tracked) {
+		copy(wire_matchid, charsmax(wire_matchid), matchid)
+		wire_half = half
+	} else {
+		copy(wire_matchid, charsmax(wire_matchid), "-")
+	}
+
 	for (new id = 1; id <= MAX_PLAYERS; id++) {
 		if (!is_user_connected(id))
 			continue
@@ -2775,19 +2786,6 @@ stock ksc_move_flush_window(bool:tracked, const matchid[], half) {
 		// next one, and the widths this line's budget assumes come from the window
 		// bounding them -- so a missed reset is a malformed line later, not just a
 		// wrong number.
-		//
-		// No tracked match: warmup and pub noise. Reset and say nothing -- not because
-		// the state is uninteresting, but because the daemon refuses it: every
-		// manifest-gated stream is keyed on (matchid, half), and there is no manifest
-		// for a window that belongs to no half. Emitting it would log a wide line per
-		// player per window straight into a drop path. The boundary callers above are
-		// what now keeps a tracked window from starting inside warmup; this branch no
-		// longer carries that job.
-		if (!tracked) {
-			dodx_reset_move_stats(id)
-			continue
-		}
-
 		new stats[8]
 		if (!dodx_get_move_stats(id, stats)) {
 			dodx_reset_move_stats(id)
@@ -2823,7 +2821,9 @@ stock ksc_move_flush_window(bool:tracked, const matchid[], half) {
 		ksc_player_str(id, pstr, charsmax(pstr))
 
 		new event_epoch = get_systime()
-		new sequence = ksc_next_type_sequence(KSC_EVENT_MOVE)
+		// An untracked window takes no sequence and is not charged to any half's
+		// health, the same rule ksc_untracked_buffer() states for the other streams.
+		new sequence = tracked ? ksc_next_type_sequence(KSC_EVENT_MOVE) : 0
 
 		new line[KSC_BUF_LINE_LEN]
 		formatex(line, charsmax(line),
@@ -2832,9 +2832,9 @@ stock ksc_move_flush_window(bool:tracked, const matchid[], half) {
 			taps_ground, taps_air, ground_standing, ground_ducked, air_ducked,
 			stats[1], stats[2], stats[3], stats[4], stats[5], stats[6], stats[7],
 			steps_ducked, ducked_silent, air_standing,
-			mapname, matchid, half, now, event_epoch, sequence)
+			mapname, wire_matchid, wire_half, now, event_epoch, sequence)
 
-		ksc_buffer(line, KSC_EVENT_MOVE)
+		ksc_buffer_event(line, KSC_EVENT_MOVE, tracked)
 		dodx_reset_move_stats(id)
 	}
 }

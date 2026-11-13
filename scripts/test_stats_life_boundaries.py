@@ -2027,6 +2027,67 @@ def test_causal_parent_links_are_appended_once_and_omit_an_untracked_zero() -> N
     assert "new life_seq = 0, frag_seq = 0" in death
 
 
+
+def test_move_census_emits_untracked_play_under_the_sentinel() -> None:
+    # Ruled 2026-11-02: untracked windows are kept, labelled, never mixed into a
+    # tracked figure. The daemon stores exactly matchid "-" / half 0 / sequence 0
+    # as match_id NULL / half 0, so the line has to carry exactly that.
+    flush = function_body(CAPTURE, "stock ksc_move_flush_window")
+    assert "if (!tracked) {" not in flush, "the untracked early-out is back: untracked play is dropped again"
+    assert 'copy(wire_matchid, charsmax(wire_matchid), "-")' in flush
+    assert "new wire_matchid[64], wire_half = 0" in flush
+    assert "copy(wire_matchid, charsmax(wire_matchid), matchid)" in flush
+    # No tracked sequence for an untracked line, and it goes on the untracked ring
+    # path, which charges no half's health and is never retained for resend.
+    assert "new sequence = tracked ? ksc_next_type_sequence(KSC_EVENT_MOVE) : 0" in flush
+    assert "ksc_buffer_event(line, KSC_EVENT_MOVE, tracked)" in flush
+    assert "ksc_buffer(line, KSC_EVENT_MOVE)" not in flush
+    assert flush.count("ksc_next_type_sequence(") == 1
+    # Every per-player path still resets the module counters.
+    assert flush.count("dodx_reset_move_stats(id)") == 3
+    before(flush, "copy(wire_matchid, charsmax(wire_matchid), \"-\")", "for (new id = 1; id <= MAX_PLAYERS; id++)")
+
+    # The wire line carries the sentinel fields, not the caller's arguments.
+    fmt = re.search(r'triggered \^"move_census\^".*?",\s*\n(.*?)\)\n', flush, re.S)
+    assert fmt, "move_census formatex not found"
+    args = [a.strip() for a in fmt.group(1).replace("\n", " ").split(",")]
+    assert "wire_matchid" in args and "wire_half" in args, args
+    assert "matchid" not in args and "half" not in args, args
+
+    # Render the real format string with untracked values and parse it the way the
+    # daemon's property parser does: matchid "-", half "0", sequence "0".
+    raw = re.search(r'formatex\(line, charsmax\(line\),\s*\n\s*"(\^"%s\^" triggered \^"move_census\^".*?)",', flush, re.S)
+    assert raw
+    template = raw.group(1).replace('^"', '"')
+    names = re.findall(r'\((\w+) "%', template)
+    assert names[-5:] == ["matchid", "half", "game_time", "event_epoch", "sequence"], names[-5:]
+    untracked = {"matchid": "-", "half": 0, "sequence": 0, "map": "dod_x", "event_epoch": 1762900000}
+    specs = re.findall(r"%(?:\.\d+)?[dsf]", template)
+    assert len(specs) == len(names) + 1, "one spec per property plus the player string"
+    values = ["P<1><BOT><Allies>"] + [untracked.get(n, "0 0" if s == "%s" else 0)
+                                    for n, s in zip(names, specs[1:])]
+    props = _parse_marker_properties(template % tuple(values))
+    assert (props["matchid"], props["half"], props["sequence"]) == ("-", "0", "0"), props
+    # And the sentinel variables sit in the matchid / half slots of that template.
+    assert args.index("wire_matchid") == names.index("matchid") + 1, (args, names)
+    assert args.index("wire_half") == names.index("half") + 1, (args, names)
+    assert args[-1] == "sequence" and len(args) == len(specs), (args, specs)
+
+
+def test_move_census_boundaries_split_tracked_from_untracked() -> None:
+    # Activation closes the warm-up window as UNTRACKED before the manifest, and
+    # the half's close emits its last partial window as TRACKED before the context
+    # is cleared. Either order reversed labels one population as the other.
+    activate = function_body(CAPTURE, "stock bool:ksc_activate_producer_context")
+    before(activate, 'ksc_move_flush_window(false, "-", 0)', "ksc_emit_manifest(")
+    before(activate, 'ksc_move_flush_window(false, "-", 0)', "g_kscProducerContextConfirmed = true")
+    close = function_body(CAPTURE, "stock ksc_close_producer_context")
+    before(close, "ksc_move_flush_window(true, g_kscProducerMatchId, g_kscProducerHalf)",
+           "g_kscProducerMatchId[0] = 0")
+    task = function_body(CAPTURE, "public ksc_move_flush_task")
+    before(task, "ksc_event_context(", "ksc_move_flush_window(")
+
+
 def main() -> None:
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:

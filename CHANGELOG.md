@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed - 1.39.0: the move census emits untracked play, under the explicit sentinel
+
+Ruled 2026-11-02 (keep untracked play separate, and make it reachable). `ksc_move_flush_window`
+reset and discarded every window that belonged to no tracked half -- warm-up, pubs, the gap between
+halves -- so the census never measured the population that holds most of the duck-actuation volume.
+It now emits those windows with `(matchid "-") (half "0") (sequence "0")`, the same sentinel the
+damage, frag-context, cap-break and assist streams already use.
+
+- An untracked line takes no per-type sequence and goes through `ksc_untracked_buffer()`: it is not
+  charged to any half's health counters and is never retained for resend, so tracked continuity and
+  health are unchanged.
+- The boundary splits are the ones 1.27.1 added. Activation closes the warm-up window as untracked
+  BEFORE the manifest; a half's close emits its last partial window as tracked BEFORE the context is
+  cleared. Neither population is labelled as the other.
+- The sentinel is written from the trackedness flag inside the function, not taken from the caller's
+  arguments.
+- Tracked lines are unchanged: same fields, same order, same sequence space.
+
+**Deploy order is load-bearing: the KTPHLStatsX daemon that admits the sentinel ships FIRST.** An
+older daemon refuses every untracked `move_census` line at dispatch, silently, and the census then
+reads as if this producer never shipped. No `KSC_SCHEMA_CONTRACT` bump and no new capability: the
+line's shape is unchanged.
+
+Volume: at most one line per connected, moving player per 30 s window on a server with no tracked
+half, on the shared 128-entry ring that drains every 5 s.
+
 ### Fixed - dodx: a kill the Damage hook sees first is reported under the weapon the engine logged
 
 The frag-context marker, the headshot flag and DODX's own per-weapon kill counter all take
