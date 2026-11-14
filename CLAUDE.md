@@ -50,6 +50,10 @@ so clone it as `git clone <url> hlsdk` or rename the directory.
 `NotADirectoryError` before anything compiles — and callers pipe this script, so the shell still
 reports exit 0. Judge it by `build_linux.sh`'s `[KTP-BUILD]` banners, never the exit code.
 
+⚠️ **Those banners cover the C++ side only.** `build_linux.sh` runs `configure.py --no-plugins`, so it
+never builds `stats_logging.amxx` or any other in-tree plugin, and `BUILD SUCCESS!` still prints. Gate a
+plugin build on its own `amxxpc` run (0 errors) and an artifact newer than the run, never on this banner.
+
 ## Project Structure
 - `build_linux.sh` - Main WSL build script
 - `configure.py` - AMBuild configuration
