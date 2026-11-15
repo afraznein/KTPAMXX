@@ -15,6 +15,7 @@
 #include "amxxmodule.h"
 #include "dodx.h"
 #include "KTPKillHold.h"
+#include "KTPCurWeapon.h"
 #include <string.h>
 
 // KTP: Per-victim "client_death already fired this frame" gate.
@@ -243,7 +244,9 @@ void Client_CurWeapon(void* mValue)
 			break;
 
 		case 2:
-			if(!iState || !isModuleActive() || !mPlayer)
+			// KTP: no isModuleActive() gate here. A pause stops the shot count, not the
+			// in-hand weapon; see KTPCurWeapon.h.
+			if(!iState || !mPlayer)
 				break;
 
 			// KTP: Safety check - mPlayer->pEdict must be valid
@@ -254,32 +257,8 @@ void Client_CurWeapon(void* mValue)
 			if (iId < 0 || iId >= DODMAX_WEAPONS)
 				break;
 
-			int iClip = *(int*)mValue;
-
-			mPlayer->old = mPlayer->current;
-			mPlayer->current = iId;
-
-			if(weaponData[iId].needcheck)
-			{
-				iId = get_weaponid(mPlayer);
-				mPlayer->current = iId;
-			}
-
-			if(iClip > -1)
-			{
-				if(mPlayer->current == 17)
-				{
-					if(iClip+2 == mPlayer->weapons[iId].clip)
-						mPlayer->saveShot(iId);
-				}
-				else
-				{
-					if (iClip+1 == mPlayer->weapons[iId].clip)
-						mPlayer->saveShot(iId);
-				}
-			}
-
-			mPlayer->weapons[iId].clip = iClip;
+			KTPApplyCurWeapon(*mPlayer, iId, *(int*)mValue, weaponData[iId].needcheck,
+				isModuleActive(), [](CPlayer &p) { return get_weaponid(&p); });
 			mCurWpnEnd = 1;
 			break;
 	};
