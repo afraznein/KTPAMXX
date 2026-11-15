@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - dodx: DeathMsg's weapon is a byte id, so the engine-weapon fixes finally take effect
+
+`Client_DeathMsg` read the message's third parameter as a logname string. DoD sends it as a
+BYTE weapon id, and the core hands a byte to a module handler as a pointer to an int, so the
+handler compared the bytes of that int against every `logname`, matched none, and always
+resolved weapon 0. Both earlier fixes depended on that resolution and so did nothing in
+production: the kill hold above released every held kill under the hook's held weapon
+(`resolve()` keeps the held read when the engine weapon is 0), and the 2.7.33.6004 record was
+never written.
+
+Measured on eight Lane B runs (11-09 to 11-15): none of the seven kills whose hook read
+disagreed with the engine's weapon was reported under the engine's weapon, before the hold or
+after it. Run
+`43166041981`, on a build carrying the hold, leaked three (held `bar` against logged `garand`
+and `thompson`, held `mp40` against `mp44`), each a bot's first kill after a round-freeze
+respawn into a new class. The `mortar` frag-context markers the nightlies show on most runs
+are the same defect on the other ordering: when `DeathMsg` reports first it fired
+`client_death` with weapon 0, which is `mortar`.
+
+The weapon is now the byte itself, accepted when it is a stock `weaponData` index (DoD's
+DeathMsg ids are those indices, `garandbutt` and `k43butt` included) and 0 otherwise.
+
+What moves for a consumer:
+
+- **A held kill is reported under the engine's weapon**, as the kill-hold entry above
+  already described; `weaponstats` kill counts move from the held weapon to the logged one.
+- **A kill `DeathMsg` reports first carries its real weapon instead of `mortar`**, so its
+  frag-context marker joins on the weapon instead of falling to the daemon's `mortar` escape.
+  The same applies to suicides and world deaths whose `DeathMsg` names a weapon.
+- **The late-`Health` record is now written**, so that path's second report carries the
+  engine's weapon. How many reports fire is unchanged.
+- No wire field, schema ordinal, native, forward signature or migration moves.
+
+`scripts/test_kill_hold.cpp` now feeds `DeathMsg` the pointer-to-int the core delivers and
+decodes it with the handler's own call. A second negative control,
+`-DNEGATIVE_CONTROL_STRING_DECODE`, restores the string read and fails on every Lane B pair,
+the ones the kill-hold entry was written against included.
+
 ### Changed - 1.39.0: the move census emits untracked play, under the explicit sentinel
 
 Ruled 2026-11-02 (keep untracked play separate, and make it reachable). `ksc_move_flush_window`

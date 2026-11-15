@@ -824,7 +824,7 @@ void Client_PStatus(void* mValue)
 }
 
 // KTP: DeathMsg user message handler.
-// Format: BYTE killer_index, BYTE victim_index, STRING weapon_logname.
+// Format: BYTE killer_index, BYTE victim_index, BYTE weapon id (a weaponData index).
 // DeathMsg fires for every death — including suicides via "kill" console,
 // world deaths (fall, drown, kill triggers) where no Damage message is sent.
 // A kill the Damage hook is holding is reported here with this message's weapon;
@@ -844,7 +844,6 @@ void Client_DeathMsg(void* mValue)
 		break;
 	case 2:
 	{
-		const char *weaponName = (const char *)mValue;
 		if (!gpGlobals) break;
 
 		int maxClients = gpGlobals->maxClients;
@@ -854,19 +853,7 @@ void Client_DeathMsg(void* mValue)
 
 		float now = gpGlobals->time;
 
-		// Resolve weapon name to wpnindex (matches xmod_get_wpnlogname behavior).
-		int weapon = 0;
-		if (weaponName && weaponName[0])
-		{
-			for (int i = 0; i < DODMAX_WEAPONS; i++)
-			{
-				if (strcmp(weaponName, weaponData[i].logname) == 0)
-				{
-					weapon = i;
-					break;
-				}
-			}
-		}
+		int weapon = KTPKillHold::deathMsgWeapon(mValue, DODMAX_WEAPONS - DODMAX_CUSTOMWPNS);
 
 		// killer 0 (world) is left as-is; the SMA already remaps killer<1 to victim
 		// to mark it as a suicide.
