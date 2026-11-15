@@ -243,6 +243,19 @@ jobs:
           fi
           echo 'negative control failed as required'
 
+      # The old DeathMsg handler read the weapon BYTE as a logname string, so it never
+      # resolved and the hold above released every kill under the held weapon.
+      - name: Prove the DeathMsg weapon decode discriminates
+        working-directory: KTPAMXX
+        run: |
+          set -e
+          ${{ matrix.cxx }} -m32 -O2 -std=gnu++14 -DNEGATIVE_CONTROL_STRING_DECODE             -Imodules/dod/dodx -o /tmp/test_kill_hold_strneg scripts/test_kill_hold.cpp
+          if /tmp/test_kill_hold_strneg; then
+            echo 'FAIL: the string-decode negative control PASSED, so this gate asserts nothing'
+            exit 1
+          fi
+          echo 'string-decode negative control failed as required'
+
       - name: Test the Damage-hook kill hold
         working-directory: KTPAMXX
         run: |

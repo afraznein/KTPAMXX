@@ -29,6 +29,17 @@ public:
 
 	static bool validSlot(int victim) { return victim >= 1 && victim < kSlots; }
 
+	// DoD's DeathMsg weapon is a BYTE id, not a logname string, and the core hands a
+	// byte to a module handler as a pointer to an int. The ids are weaponData indices;
+	// anything outside the stock table is 0, DODX's unresolved slot.
+	static int deathMsgWeapon(const void *param, int stockWeapons)
+	{
+		if (!param)
+			return 0;
+		int id = *(const int *)param;
+		return (id > 0 && id < stockWeapons) ? id : 0;
+	}
+
 	bool holding(int victim) const { return validSlot(victim) && slot[victim].active; }
 
 	// Overwrites: the caller must expire() the slot with force first, or a held kill is lost.

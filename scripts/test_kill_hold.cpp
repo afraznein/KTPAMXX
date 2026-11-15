@@ -9,6 +9,11 @@
 //
 // The driver mirrors the call order in modules/dod/dodx/usermsg.cpp: Client_Health_End
 // holds, Client_DeathMsg resolves, CPlayer::PreThink expires, Disconnect forces.
+//
+// DeathMsg's weapon reaches the handler as the core delivers it, a pointer to the int
+// holding the message's BYTE, and is decoded by the same call usermsg.cpp makes. The
+// second negative control, -DNEGATIVE_CONTROL_STRING_DECODE, is the old handler that
+// read that pointer as a logname string: it never resolves, so the held read leaks.
 #include <stdio.h>
 #include <string.h>
 #include "KTPKillHold.h"
@@ -16,8 +21,29 @@
 static int fails = 0;
 #define CHECK(cond, msg) do { if (!(cond)) { printf("FAIL: %s\n", msg); fails++; } } while (0)
 
-// weaponData indices (modules/dod/dodx/Utils.cpp).
-enum { W_GARAND = 5, W_SCOPEDKAR = 6, W_MP44 = 8, W_KAR = 10, W_BAR = 11, W_GARANDBUTT = 38 };
+// weaponData indices (modules/dod/dodx/Utils.cpp), which are also DoD's DeathMsg ids.
+enum { W_GARAND = 5, W_SCOPEDKAR = 6, W_THOMPSON = 7, W_MP44 = 8, W_KAR = 10, W_BAR = 11,
+       W_MP40 = 12, W_GARANDBUTT = 38, W_K43BUTT = 41 };
+
+// DODMAX_WEAPONS - DODMAX_CUSTOMWPNS (modules/dod/dodx/CMisc.h).
+static const int kStockWeapons = 42;
+
+static int DecodeDeathMsgWeapon(int messageByte)
+{
+    int iValue = messageByte;
+    const void *mValue = &iValue;
+#ifdef NEGATIVE_CONTROL_STRING_DECODE
+    static const char *const lognames[] = { "mortar", "amerknife", "gerknife", "colt",
+        "luger", "garand", "scopedkar", "thompson", "mp44", "spring", "kar", "bar", "mp40" };
+    const char *name = (const char *)mValue;
+    for (int i = 0; i < (int)(sizeof(lognames) / sizeof(lognames[0])); i++)
+        if (name[0] && strcmp(name, lognames[i]) == 0)
+            return i;
+    return 0;
+#else
+    return KTPKillHold::deathMsgWeapon(mValue, kStockWeapons);
+#endif
+}
 
 static const float kWindow = 0.033f;
 
@@ -59,10 +85,10 @@ static void DamageDeath(int victim, int attacker, int heldWeapon, int aim, int T
 #endif
 }
 
-static void DeathMsg(int killer, int victim, int engineWeapon)
+static void DeathMsg(int killer, int victim, int messageByte)
 {
     KTPHeldKill k;
-    if (hold.resolve(victim, killer, engineWeapon, k))
+    if (hold.resolve(victim, killer, DecodeDeathMsgWeapon(messageByte), k))
         Report_(k.attacker, victim, k.weapon, k.aim, k.TA);
 }
 
@@ -100,6 +126,21 @@ int main()
     // Run 40907170635: a butt kill.
     EngineNamesTheKill("bar held, garandbutt logged", W_BAR, W_GARANDBUTT, 0);
     EngineNamesTheKill("garand held, garandbutt logged", W_GARAND, W_GARANDBUTT, 0);
+
+    // Run 43166041981, on a build carrying the hold: each a bot's first kill after a
+    // round-freeze respawn into a new class, so the hook still held the old class's gun.
+    EngineNamesTheKill("bar held, garand logged", W_BAR, W_GARAND, 0);
+    EngineNamesTheKill("bar held, thompson logged, headshot", W_BAR, W_THOMPSON, 1);
+    EngineNamesTheKill("mp40 held, mp44 logged, headshot", W_MP40, W_MP44, 1);
+
+    // ---------------- DeathMsg's weapon byte ----------------
+    CHECK(DecodeDeathMsgWeapon(W_KAR) == W_KAR, "a stock id decodes to itself");
+    CHECK(DecodeDeathMsgWeapon(W_K43BUTT) == W_K43BUTT, "the last stock id decodes");
+    CHECK(DecodeDeathMsgWeapon(0) == 0, "id 0 stays the unresolved slot");
+    CHECK(DecodeDeathMsgWeapon(kStockWeapons) == 0, "a custom-weapon slot is not a DeathMsg id");
+    CHECK(DecodeDeathMsgWeapon(255) == 0, "an out-of-table byte is unresolved");
+    CHECK(DecodeDeathMsgWeapon(-1) == 0, "a negative value is unresolved");
+    CHECK(KTPKillHold::deathMsgWeapon(0, kStockWeapons) == 0, "no parameter is unresolved");
 
     // ---------------- agreement is unchanged ----------------
     EngineNamesTheKill("kar held, kar logged", W_KAR, W_KAR, 2);
