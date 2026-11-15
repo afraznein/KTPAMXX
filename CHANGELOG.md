@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - dodx: CurWeapon is applied while stats are paused, so a freeze respawn gets its own gun
+
+`Client_CurWeapon` dropped the whole message while `isModuleActive()` was false, and the round
+freeze pauses stats. A player who respawned into a new class during the freeze kept `current`
+on the previous life's weapon until the next CurWeapon, so hits, damage, `weaponstats` hit
+counts, the `damage` line and frag-context `k_clip` went to a gun they no longer held. Three
+Lane B 11-12 kills show it (held `bar` against logged `garand` and `thompson`, held `mp40`
+against `mp44`). The DeathMsg byte fix above corrects the kill's weapon; this corrects
+everything else read from `current`.
+
+The in-hand weapon, `old` and the tracked clip now follow every CurWeapon. Only `saveShot`
+still waits for stats to be live, so nothing fired during a pause is counted. Tracking the
+clip through the pause also means the first live shot is compared against the clip the player
+actually holds; before, it was compared against the pre-pause clip and was missed whenever that had changed. That
+is the only shot-count change, at most one shot per weapon per pause, and it is a shot that
+was really fired.
+
+`dod_client_weaponswitch` now also fires for a switch made during a pause, which is when it
+first becomes true. KTPMatchHandler's AC weapon timeline is its one consumer and wants exactly
+that.
+
+The update lives in `KTPCurWeapon.h`; `scripts/test_cur_weapon.cpp` drives it, and its
+negative control (the old drop-while-paused handler) fails 11 checks including all three Lane
+B pairs.
+
 ### Fixed - dodx: DeathMsg's weapon is a byte id, so the engine-weapon fixes finally take effect
 
 `Client_DeathMsg` read the message's third parameter as a logname string. DoD sends it as a

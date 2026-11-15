@@ -263,6 +263,26 @@ jobs:
           ${{ matrix.cxx }} -m32 -O2 -std=gnu++14             -Imodules/dod/dodx -o /tmp/test_kill_hold scripts/test_kill_hold.cpp
           /tmp/test_kill_hold
 
+      # CurWeapon while stats are paused. The negative control drops the message whole,
+      # as the old handler did, so a freeze respawn keeps the previous life's weapon.
+      - name: Prove the cur-weapon test discriminates
+        working-directory: KTPAMXX
+        run: |
+          set -e
+          ${{ matrix.cxx }} -m32 -O2 -std=gnu++14 -DNEGATIVE_CONTROL             -Imodules/dod/dodx -o /tmp/test_cur_weapon_neg scripts/test_cur_weapon.cpp
+          if /tmp/test_cur_weapon_neg; then
+            echo 'FAIL: the negative control PASSED, so this gate asserts nothing'
+            exit 1
+          fi
+          echo 'negative control failed as required'
+
+      - name: Test CurWeapon during a stats pause
+        working-directory: KTPAMXX
+        run: |
+          set -e
+          ${{ matrix.cxx }} -m32 -O2 -std=gnu++14             -Imodules/dod/dodx -o /tmp/test_cur_weapon scripts/test_cur_weapon.cpp
+          /tmp/test_cur_weapon
+
       - name: Install AMBuild
         run: |
           python3 -m pip install --upgrade pip setuptools wheel
