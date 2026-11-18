@@ -463,6 +463,55 @@ def test_authoritative_producer_context_and_clocks() -> None:
             assert field in body, f"{signature} missing producer field {field}"
 
 
+def _functions_assigning(source: str, statement: str) -> list[str]:
+    names = []
+    for match in re.finditer(r"^(?:stock|public) (?:\w+:)?(\w+)\(", source, re.M):
+        if statement in function_body(source[match.start():], match.group(0)):
+            names.append(match.group(1))
+    return names
+
+
+def test_untracked_gate_reopens_only_at_a_clean_match_end() -> None:
+    # Closing a context shuts untracked damage/frag/assist/break rows off. Before
+    # this, only the next match start reopened them, so pub play after a server's
+    # first match was lost until the process restarted.
+    assert _functions_assigning(CAPTURE, "g_kscAllowUntrackedEvents = true") == [
+        "ksc_on_match_start", "ksc_on_match_end"]
+    assert _functions_assigning(CAPTURE, "g_kscAllowUntrackedEvents = false") == [
+        "ksc_close_producer_context", "ksc_activate_producer_context"]
+
+    # Only the match-end forward can reopen; the H1 end is a match in progress.
+    match_end = function_body(STATS, "public ktp_match_end")
+    assert "ksc_on_match_end(matchId, map)" in match_end
+    assert "ksc_on_match_context_end(" not in match_end
+    half_end = function_body(STATS, "public ktp_half_end")
+    assert "ksc_on_match_context_end(matchId)" in half_end
+    assert "ksc_on_match_end(" not in half_end
+
+    # Close first, then reopen only with no context held: a newer match's
+    # candidate or stream must keep the gate exactly where its own start left it.
+    end = function_body(CAPTURE, "stock ksc_on_match_end")
+    before(end, "ksc_on_match_context_end(matchid)",
+           "g_kscAllowUntrackedEvents = true")
+    reopen = end[end.index("ksc_on_match_context_end(matchid)"):]
+    assert ("if (!g_kscProducerMatchId[0] && ksc_match_end_is_clean(map))"
+            in reopen)
+
+    # Clean means the forward names the map being played. The abandon path
+    # fires from the next map with the old map's name; an empty name fails closed.
+    clean = function_body(CAPTURE, "stock bool:ksc_match_end_is_clean")
+    before(clean, "if (!map[0])", "get_mapname(current")
+    before(clean, "get_mapname(current", "if (!equali(map, current))")
+    assert clean.count("return true") == 1
+    before(clean, "if (!equali(map, current))", "return true")
+
+    # The other closing edges still leave it shut.
+    context_end = function_body(CAPTURE, "stock ksc_on_match_context_end")
+    assert "g_kscAllowUntrackedEvents" not in context_end
+    context = function_body(CAPTURE, "stock bool:ksc_event_context")
+    assert "g_kscAllowUntrackedEvents" not in context
+
+
 def test_match_start_emits_outgoing_half_health_before_reset() -> None:
     # ktp_half_end fires only with half=1 and ktp_match_end only at true match
     # end, so H2->OT and OT->OT boundaries arrive solely as the next

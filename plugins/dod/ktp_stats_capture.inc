@@ -910,6 +910,29 @@ stock ksc_on_match_context_end(const matchid[]) {
 	ksc_close_producer_context()
 }
 
+// KTPMatchHandler reports a completed match on the map it was played on. Its
+// abandon path fires the same forward from the NEXT map with the old map's name.
+stock bool:ksc_match_end_is_clean(const map[]) {
+	if (!map[0])
+		return false
+
+	new current[32]
+	get_mapname(current, charsmax(current))
+	if (!equali(map, current))
+		return false
+
+	return true
+}
+
+stock ksc_on_match_end(const matchid[], const map[]) {
+	ksc_on_match_context_end(matchid)
+
+	// Untracked play resumes only once the match is over and no other context is
+	// held. Half ends, abandons and resets leave it closed until the next start.
+	if (!g_kscProducerMatchId[0] && ksc_match_end_is_clean(map))
+		g_kscAllowUntrackedEvents = true
+}
+
 stock ksc_shutdown() {
 	// plugin_end is the last reliable old-map point in the Pawn lifecycle.
 	// Close attempts while their cached context is still available, then drain.

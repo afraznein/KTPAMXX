@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - 1.39.1: untracked play is logged again after a server's first match
+
+`g_kscAllowUntrackedEvents` starts true, is cleared whenever a producer context closes or activates,
+and was set again only by the next match start. So once a server had hosted one match, every
+untracked `damage`, `frag_context`, `assist` and `cap_break` line stopped, along with the map-load
+`KTP_FLAG_POSITION` rows, until the nightly restart.
+
+It now reopens when `ktp_match_end` reports a clean end: the forward names the map currently being
+played and no producer context is held once this match's has closed. That covers a regulation end,
+a decisive OT, the OT round limit and the completed-second-half finalize on reload.
+
+It stays closed on:
+
+- `ktp_half_end`. The first half's end is a match still in progress.
+- An abandoned match. KTPMatchHandler's `finalize_abandoned_match` fires `ktp_match_end` from the
+  next map and passes the abandoned map's name, so the map check fails.
+- `.forcereset` and `.cancel`. Neither fires the forward; the context closes on the DODX id mismatch
+  as before.
+- A `ktp_match_end` for some other match while a newer candidate or stream is held.
+
+Tracked lines, sequences and health are unchanged. No `KSC_SCHEMA_CONTRACT` bump: untracked lines
+keep the `(matchid "-") (half "0") (sequence "0")` form the daemon already accepts before a first
+match. Ships in a plugin wave with no module dependency.
+
 ### Fixed - dodx: CurWeapon is applied while stats are paused, so a freeze respawn gets its own gun
 
 `Client_CurWeapon` dropped the whole message while `isModuleActive()` was false, and the round
