@@ -17,7 +17,7 @@
 #include <ktp_version_reporter>
 
 #define PLUGIN_NAME "Stats Logging"
-#define PLUGIN_VERSION "1.39.0"
+#define PLUGIN_VERSION "1.39.1"
 
 // KTP: extra per-match stat capture for HLStatsX (assists, cap breaks,
 // positions and frag context today; the per-hit damage ledger in a later
@@ -84,7 +84,7 @@ public ktp_half_end(const matchId[], const map[], matchType, half, team1Score, t
 }
 
 public ktp_match_end(const matchId[], const map[], matchType, team1Score, team2Score) {
-  ksc_on_match_context_end(matchId)
+  ksc_on_match_end(matchId, map)
 }
 
 // KTP: Append a formatted log line to the memory buffer instead of writing to disk.
