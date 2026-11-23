@@ -1533,8 +1533,10 @@ static int PF_precache_model_I_RH(IRehldsHook_PF_precache_model_I *chain, const 
 	if (g_bRunningWithMetamod)
 		return chain->callNext(s);
 
-	// Only process once per map
-	if (!g_bExtPrecacheProcessed)
+	// Only once per map, and only while the map loads: the engine Host_Errors on
+	// force_unmodified outside ss_loading, and the game can precache during
+	// changelevel teardown, after SV_InactivateClients_RH has re-armed this.
+	if (!g_bExtPrecacheProcessed && (!RehldsData || RehldsData->GetState() == ss_loading))
 	{
 		g_bExtPrecacheProcessed = true;
 
