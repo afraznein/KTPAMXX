@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - core: plugin_precache no longer runs during changelevel teardown
+
+In extension mode, `PF_precache_model_I_RH` runs `plugin_precache` and registers every queued
+`force_unmodified` file on the first `precache_model` after `SV_InactivateClients_RH` re-arms it.
+It took that first call to mean the next map had started loading. It does not have to: on
+2026-11-22 a server took a `precache_model` while it was still dropping clients for an admin
+changelevel, ran `plugin_precache` before any map had started loading, and the engine stopped the
+server with `Host_Error: PF_ForceUnmodified: '...' Precache can only be done in spawn functions`.
+
+The hook now does that work only while `IRehldsServerData::GetState()` reports `ss_loading`,
+which is the condition `PF_ForceUnmodified` itself enforces. Any other call passes straight
+through and leaves the hook armed for the real load. With no ReHLDS server data it behaves as
+before.
+
+`public/resdk/engine/rehlds_interfaces.h` (vendored ReSDK) gains the `IRehldsServerData` slots
+from `GetOldTime` through `GetSignonBuf`, copied in order from KTP-ReHLDS so the class now matches
+the engine's slot for slot. No API version change: the engine has implemented them at 3.16 all
+along. The header-drift gate covers `rehlds_api.h` only, not this class.
+
+Ships in a core wave (`ktpamx_i386.so`); no plugin or dodx dependency.
+
 ### Fixed - 1.39.1: untracked play is logged again after a server's first match
 
 `g_kscAllowUntrackedEvents` starts true, is cleared whenever a producer context closes or activates,
