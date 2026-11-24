@@ -70,6 +70,40 @@ plugin build on its own `amxxpc` run (0 errors) and an artifact newer than the r
 ## Purpose
 Custom AMX Mod X fork that operates in extension mode (loaded directly by KTP-ReHLDS without Metamod). This is the scripting platform layer that provides the plugin compiler and runtime.
 
+## Extension mode: `plugin_precache` must only run while the map is loading
+
+In extension mode, `plugin_precache` and the
+`force_unmodified` queue are driven from the `PF_precache_model_I` hook in
+`amxmodx/meta_api.cpp`. `SV_InactivateClients_RH` fires `plugin_end` at the start of a map
+change and re-arms `g_bExtPrecacheProcessed`; the next `precache_model` call is then taken
+as the new map's precache. The game can call `precache_model` while clients are still being
+dropped during that teardown. If the hook acted on that call, it would run `plugin_precache`
+and pass every queued file to `ENGINE_FORCE_UNMODIFIED` while the server is `ss_active`,
+and the engine `Host_Error`s, because `PF_ForceUnmodified` only accepts a new file during
+`ss_loading` (KTP-ReHLDS `rehlds/engine/pr_cmds.cpp`). The server dies mid-changelevel.
+
+**The gate:** `PF_precache_model_I_RH` does its once-per-map work only when
+`RehldsData->GetState() == ss_loading` (#198). Any other call goes straight to `callNext`
+and leaves the hook armed for the real load. Do not remove or loosen that condition, and
+keep any new once-per-map work in this hook behind it. `GetState()` needs the full
+`IRehldsServerData` vtable in the vendored `public/resdk/engine/rehlds_interfaces.h`;
+`header-drift.yml` does not check that class, so compare it slot by slot against
+KTP-ReHLDS if you touch it.
+
+The `KTPAMX_InitAsRehldsExtension` fallback (`if (!g_bExtPrecacheProcessed)`) runs
+`plugin_precache` without `ENGINE_FORCE_UNMODIFIED`, so it cannot hit this error.
+
+**What it looks like** in `log/console/*.log` (grep `Precache can only be done in spawn`):
+
+```
+Host_Error: PF_ForceUnmodified: 'models/player/axis-inf/axis-inf.mdl' Precache can only be done in spawn functions
+```
+
+It comes after the disconnect lines and KTPFileChecker's `Loaded <N> file consistency checks`,
+with no `Loading map` in between. LinuxGSM respawns the instance on its own,
+and a core lands in `/tmp`. The Tier-2 suite does not reproduce teardown-time precache, so a
+green run does not prove the gate still holds.
+
 ## Key Include Files
 | Include | Purpose |
 |---------|---------|
